@@ -5,5 +5,3 @@ res_patch.zip
 shell_secret.zip
 build/
 *.log
-*.txt
-!README.md
