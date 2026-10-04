@@ -196,7 +196,7 @@ bool AppDelegate::applicationDidFinishLaunching()
             "      orig(self, r)\n"
             "      local names = {}\n"
             "      pcall(function() Helper:callChildren(self, function(c) names[#names+1] = tostring(c:getName()) end) end)\n"
-            "      __wjjhlog("WJJH_CONVERTUI n=" .. #names .. " [" .. table.concat(names, ",") .. "]")\n"
+            "      __wjjhlog(\"WJJH_CONVERTUI n=\" .. #names .. \" [\" .. table.concat(names, ",") .. \"]"\n"
             "    end\n"
             "  end\n"
             "end\n"
