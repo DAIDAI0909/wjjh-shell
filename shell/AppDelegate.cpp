@@ -109,7 +109,8 @@ bool AppDelegate::applicationDidFinishLaunching()
             "end\n"
             // C/D 类桩工厂：实例=真 cc.Node（可 addChild）+ tolua peer 自动 no-op（富文本/骨骼等方法名未知），
             // create 时把游戏给类表打的补丁拷进 peer；后续报错会点名真正需要实现的类
-            "local __noop = setmetatable({}, {__index = function() return __noop end, __call = function() return __noop end})\n"
+            "local __noop = function() return nil end\n"
+            "local __chain = setmetatable({}, {__index = function() return __chain end, __call = function() return __chain end})\n"
             "local __stubClass = function(name)\n"
             "  if _G[name] then return _G[name] end\n"
             "  local t = {}\n"
@@ -117,19 +118,28 @@ bool AppDelegate::applicationDidFinishLaunching()
             "    local node = cc.Node:create()\n"
             "    if tolua and tolua.setpeer then\n"
             "      local peer = {}\n"
-            "      setmetatable(peer, {__index = function(tt, k) return __noop end})\n"
+            "      setmetatable(peer, {__index = function(tt, k) local f = function() return nil end; rawset(tt, k, f); return f end})\n"
             "      tolua.setpeer(node, peer)\n"
             "      for k, v in pairs(t) do if k ~= 'create' then peer[k] = v end end\n"
             "    end\n"
             "    return node\n"
             "  end\n"
-            "  setmetatable(t, {__index = function(tt, k) return __noop end})\n"
+            "  setmetatable(t, {__index = function(tt, k) local f = __noop; rawset(tt, k, f); return f end})\n"
             "  _G[name] = t\n"
             "  return t\n"
             "end\n"
             "for _, n in ipairs({'ExtRichText','ExtRichTextScroll','ExtPageView','YXShaderSprite','YXMotionStreak',"
-            "'YXEaseAction','YXSkeletonAnimation','YXSkeletonAnimationCache','NewSkeletonAnimation','spine38','YXHelper','encrypt','LogManager'}) do\n"
+            "'YXEaseAction','YXHelper','encrypt','LogManager'}) do\n"
             "  __stubClass(n)\n"
+            "end\n"
+            // 骨骼动画族用链式哑表（可无限索引+可调用）：AnimResManager 会
+            // spine38.NewSkeletonAnimation:createWithBinaryFile 深链调用（b76 实证）；
+            // 普通类不能用链式——与 Decorator 的 __decorator 记账互踩（gh4 实证）
+            "local __chainClass = function(name)\n"
+            "  _G[name] = setmetatable({}, {__index = function() return __chain end, __call = function() return __chain end})\n"
+            "end\n"
+            "for _, n in ipairs({'YXSkeletonAnimation','YXSkeletonAnimationCache','NewSkeletonAnimation','spine38'}) do\n"
+            "  __chainClass(n)\n"
             "end\n"
             "__wjjhlog('WJJH_BOOT: C/D class stubs installed')\n"
             // luaTableEncode/Decode：安卓在自定义 libcocos2dlua.so 里提供（全 Lua 树无定义），
