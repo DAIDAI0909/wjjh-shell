@@ -1,0 +1,124 @@
+name: wjjh-ios-shell
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 60
+    env:
+      WJJH_GAME_URL: ${{ secrets.WJJH_GAME_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 工具检查 + Xcode 选择（16.x 最新）
+        run: |
+          which ninja || brew install ninja
+          cmake --version
+          XCODE=$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -V | tail -1)
+          echo "picked Xcode: $XCODE"
+          sudo xcode-select -s "$XCODE/Contents/Developer"
+          xcodebuild -version
+          xcrun simctl list runtimes
+
+      - name: Clone cocos2d-x 3.15.1
+        run: git clone --depth 1 -b cocos2d-x-3.15.1 https://github.com/cocos2d/cocos2d-x.git "$GITHUB_WORKSPACE/cocos2d"
+
+      - name: Clone ios-cmake toolchain
+        run: git clone --depth 1 https://github.com/leetal/ios-cmake.git "$GITHUB_WORKSPACE/ios-cmake"
+
+      - name: 拉取受保护件（游戏脚本/服务端/密钥壳源码）
+        run: python3 scripts/fetch_private.py
+
+      - name: 组装 Python 私服运行时（仓库内置 tar）
+        run: |
+          python3 scripts/py_ios_bootstrap.py 2>&1 | tee py_ios_log.txt
+          python3 scripts/overlay_res_patch.py
+
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/ios-cmake/ios.toolchain.cmake" \
+            -DPLATFORM=SIMULATOR64 \
+            -DDEPLOYMENT_TARGET=13.0 \
+            -DENABLE_BITCODE=OFF \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DWJJH_LAUNCH_LOG="$GITHUB_WORKSPACE/launch.log" 2>&1 | tee configure_output.txt
+
+      - name: Build
+        run: |
+          cmake --build build --parallel 2 2>&1 | tee build_output.txt
+          grep -E "error:|FAILED:|Undefined symbol|duplicate symbol|ld: " build_output.txt | grep -v "platform load command" | head -120 > build_errors.txt || true
+
+      - name: Boot simulator & launch
+        run: |
+          xcrun simctl list devices available | head -25
+          UDID=$(xcrun simctl list devices available | grep -m1 "iPhone" | sed -E 's/.*\(([A-Z0-9-]+)\).*/\1/')
+          echo "UDID=$UDID"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b || true
+          sleep 10
+          APP=$(find build -name "WJJH.app" -type d | head -1)
+          xcrun simctl install "$UDID" "$APP"
+          xcrun simctl listapps "$UDID" > installed.txt 2>&1 || true
+          (grep -i wjjh installed.txt || echo "NOT INSTALLED") > installed_wjjh.txt
+          set +e
+          xcrun simctl spawn "$UDID" launchctl stop com.apple.SpringBoard || true
+          sleep 8
+          for ATTEMPT in 1 2 3 4 5; do
+            xcrun simctl launch "$UDID" com.wjjh.ios >> launch.log 2>&1
+            RC=$?
+            echo "launch attempt $ATTEMPT rc=$RC" >> launch.log
+            [ $RC -eq 0 ] && break
+            sleep 10
+          done
+          sleep 15
+          xcrun simctl spawn "$UDID" launchctl list | grep -i wjjh > alive.txt 2>&1 || echo "NOT RUNNING" >> alive.txt
+          xcrun simctl io "$UDID" screenshot screenshot.png || true
+          sleep 45
+          xcrun simctl spawn "$UDID" launchctl list | grep -i wjjh >> alive.txt 2>&1 || echo "NOT RUNNING after +45s" >> alive.txt
+          xcrun simctl io "$UDID" screenshot screenshot2.png || true
+          tail -80 launch.log > launch2.log || true
+          xcrun simctl spawn "$UDID" ls /Library/Logs/DiagnosticReports > crashes.txt 2>&1 || true
+          sleep 20
+          {
+            ls -tR ~/Library/Logs/DiagnosticReports/ 2>/dev/null | head -20
+            NEWEST=$(ls -t ~/Library/Logs/DiagnosticReports/WJJH* ~/Library/Logs/DiagnosticReports/Retired/WJJH* 2>/dev/null | head -1)
+            if [ -n "$NEWEST" ]; then
+              echo "== $NEWEST =="
+              head -c 8000 "$NEWEST"
+            fi
+          } > crashreport.txt 2>&1 || true
+          APPDATA=$(xcrun simctl get_app_container "$UDID" com.wjjh.ios data 2>/dev/null) || true
+          {
+            echo "== Documents =="; ls -la "$APPDATA/Documents" 2>&1
+            echo "== py_err.log =="; cat "$APPDATA/Documents/py_err.log" 2>&1 | head -60
+            echo "== jhserver/boot_log.txt =="; tail -40 "$APPDATA/Documents/jhserver/boot_log.txt" 2>&1
+          } > server_log.txt 2>&1 || true
+
+      - name: 回传诊断到自有服务器
+        if: always()
+        run: |
+          T="${WJJH_GAME_URL##*t=}"
+          for f in launch.log launch2.log alive.txt installed_wjjh.txt crashes.txt screenshot.png screenshot2.png xcodever.txt server_log.txt crashreport.txt configure_output.txt build_output.txt build_errors.txt py_ios_log.txt; do
+            [ -f "$f" ] || continue
+            for TRY in 1 2 3 4 5; do
+              curl -s -m 120 -X POST --data-binary @"$f" "http://134.175.113.201/report?name=gh${GITHUB_RUN_NUMBER}_$f&t=$T" > /dev/null && break
+              sleep 3
+            done
+          done
+
+      - name: 上传产物
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wjjh-diag
+          path: |
+            launch.log
+            screenshot.png
+            screenshot2.png
+            build_errors.txt
+            crashreport.txt
