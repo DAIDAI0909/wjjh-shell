@@ -23,13 +23,16 @@ def fail(msg):
     sys.exit(3)
 
 
+def fetch_url(u, dest):
+    print('[fetch-private] %s -> %s' % (u.split('?')[0], dest), flush=True)
+    urllib.request.urlretrieve(u, dest)
+    print('[fetch-private] %d bytes' % os.path.getsize(dest), flush=True)
+
+
 def fetch(name, dest):
     token = GAME_URL.split('t=')[-1]
     base = GAME_URL.split('/game.zip')[0]
-    u = '%s/fz/%s?t=%s' % (base, name, token)
-    print('[fetch-private] %s -> %s' % (u, dest), flush=True)
-    urllib.request.urlretrieve(u, dest)
-    print('[fetch-private] %d bytes' % os.path.getsize(dest), flush=True)
+    fetch_url('%s/fz/%s?t=%s' % (base, name, token), dest)
 
 
 def diag(tag):
@@ -45,7 +48,8 @@ def main():
         fail('WJJH_GAME_URL secret missing or malformed')
 
     os.makedirs('gamelua', exist_ok=True)
-    fetch('game.zip', 'gamelua/game.zip')
+    # game.zip 走 WJJH_GAME_URL 本身（专用通道，文件不在 /fz/ 下）
+    fetch_url(GAME_URL, 'gamelua/game.zip')
     fetch('res_patch.zip', 'res_patch.zip')
     fetch('jhserver.zip', 'jhserver_private.zip')
     fetch('shell_secret.zip', 'shell_secret.zip')
