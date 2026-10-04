@@ -186,6 +186,21 @@ bool AppDelegate::applicationDidFinishLaunching()
             "  cpp.Game = g\n"
             "__wjjhlog('WJJH_BOOT: cpp.Game stub installed')\n"
             "end\n"
+            // 诊断：convertUI 后打印走到的子节点名（PrintUI Panel_print nil 排查，gh14）
+            "local __wjjh_origConvert = nil\n"
+            "__wjjh_origConvert = function()\n"
+            "  if Helper and Helper.convertUI and not __wjjh_origConvert._hooked then\n"
+            "    __wjjh_origConvert._hooked = true\n"
+            "    local orig = Helper.convertUI\n"
+            "    Helper.convertUI = function(self, r)\n"
+            "      orig(self, r)\n"
+            "      local names = {}\n"
+            "      pcall(function() Helper:callChildren(self, function(c) names[#names+1] = tostring(c:getName()) end) end)\n"
+            "      __wjjhlog("WJJH_CONVERTUI n=" .. #names .. " [" .. table.concat(names, ",") .. "]")\n"
+            "    end\n"
+            "  end\n"
+            "end\n"
+            "__wjjh_origConvert()\n"
             // luaTableEncode/Decode：安卓在自定义 libcocos2dlua.so 里提供（全 Lua 树无定义），
             // 本地存档读写（DataBase:getData/getLuaTable→User.lua:21）第一步就要用；
             // 自洽格式：string.format(%q) + loadstring 回读，完整保留键类型/嵌套
