@@ -165,6 +165,23 @@ bool AppDelegate::applicationDidFinishLaunching()
             "end\n"
             "spine38 = setmetatable({}, {__index = function(tt, k) local g = _G[k]; if g ~= nil then return g end; return __newChain(nil) end})\n"
             "__wjjhlog('WJJH_BOOT: C/D class stubs installed')\n"
+            // cpp.Game 桩：native Game 单例（时间/用户/渠道）。渠道值与服务端
+            // getWebConfig 模板的 PackageChecklist guanfang 一致
+            "if not cpp then\n"
+            "  cpp = {}\n"
+            "  local g = { _uid = 0, _time = os.time(), _channel = 'guanfang' }\n"
+            "  g.getInstance = function() return g end\n"
+            "  g.getTime = function() return g._time end\n"
+            "  g.setTime = function(t) g._time = t end\n"
+            "  g.getUserId = function() return g._uid end\n"
+            "  g.setUserId = function(id) g._uid = id end\n"
+            "  g.getChannelId = function() return g._channel end\n"
+            "  g.setChannelId = function(c) g._channel = c end\n"
+            "  g.getPackageId = function() return g._channel end\n"
+            "  setmetatable(g, {__index = function(tt, k) local f = function() return 0 end; rawset(tt, k, f); return f end})\n"
+            "  cpp.Game = g\n"
+            "__wjjhlog('WJJH_BOOT: cpp.Game stub installed')\n"
+            "end\n"
             // luaTableEncode/Decode：安卓在自定义 libcocos2dlua.so 里提供（全 Lua 树无定义），
             // 本地存档读写（DataBase:getData/getLuaTable→User.lua:21）第一步就要用；
             // 自洽格式：string.format(%q) + loadstring 回读，完整保留键类型/嵌套
