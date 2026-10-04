@@ -281,7 +281,19 @@ bool AppDelegate::applicationDidFinishLaunching()
             "  if ok then __wjjhlog('WJJH_BOOT: main.lua finished OK')\n"
             "  else __wjjhlog('WJJH_BOOTERR runtime: ' .. tostring(e)) end\n"
             "end\n";
-        engine->executeString(chunk.c_str());
+        // executeString 会静默吞掉语法/运行错误；显式 load+pcall 把错误打进 launch.log
+        lua_pushlstring(L, chunk.c_str(), chunk.size());
+        lua_setglobal(L, "__WJJH_CHUNK");
+        engine->executeString(
+            "__WJJH_ERR = nil\n"
+            "local f, e = load(__WJJH_CHUNK, 'wjjh-chunk')\n"
+            "if not f then\n"
+            "  __WJJH_ERR = 'syntax: ' .. tostring(e)\n"
+            "else\n"
+            "  local ok, r = xpcall(f, function(er) return debug.traceback(er, 2) end)\n"
+            "  if not ok then __WJJH_ERR = 'runtime: ' .. tostring(r) end\n"
+            "end\n"
+            "__wjjhlog('WJJH_CHUNK ' .. (__WJJH_ERR or 'OK'))\n");
 
         auto sc = Director::getInstance()->getRunningScene();
         wjjh_bootlog(("WJJH_BOOT: runningScene=" +
