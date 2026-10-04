@@ -32,7 +32,15 @@ def fetch(name, dest):
     print('[fetch-private] %d bytes' % os.path.getsize(dest), flush=True)
 
 
+def diag(tag):
+    """脱敏诊断：只透出长度/关键片段是否存在/前缀，绝不打印完整 token"""
+    print('[fetch-private][DIAG] %s: len=%d has_game_zip=%s has_t=%s head=%r' % (
+        tag, len(GAME_URL), '/game.zip' in GAME_URL, 't=' in GAME_URL,
+        GAME_URL[:28]), flush=True)
+
+
 def main():
+    diag('start')
     if '/game.zip?t=' not in GAME_URL:
         fail('WJJH_GAME_URL secret missing or malformed')
 
