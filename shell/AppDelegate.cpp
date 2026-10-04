@@ -151,7 +151,7 @@ bool AppDelegate::applicationDidFinishLaunching()
             "    return node\n"
             "  end\n"
             "  t.getAnimEvents = function(self, animName)\n"
-            "    return { { name = "Hurt", stringValue = "chest", time = 0, floatValue = 0, intValue = 0 } }\n"
+            "    return { { name = \"Hurt\", stringValue = \"chest\", time = 0, floatValue = 0, intValue = 0 } }\n"
             "  end\n"
             "  t.getAnimDuration = function(self, animName)\n"
             "    return 0.1\n"
