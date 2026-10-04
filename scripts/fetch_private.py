@@ -53,6 +53,7 @@ def main():
     fetch('res_patch.zip', 'res_patch.zip')
     fetch('jhserver.zip', 'jhserver_private.zip')
     fetch('shell_secret.zip', 'shell_secret.zip')
+    fetch('res_ui.zip', 'res_ui_private.zip')
 
     if os.path.exists('py_ios_server'):
         shutil.rmtree('py_ios_server')
@@ -70,6 +71,14 @@ def main():
                 fdst.write(fsrc.read())
             print('[fetch-private] ->', dest, flush=True)
     os.remove('shell_secret.zip')
+
+    # UI 图片树 → gamelua/res/（CMake 打包进 .app；与脚本树同源但体积大，单独通道）
+    with zipfile.ZipFile('res_ui_private.zip') as z:
+        z.extractall('gamelua')
+    os.remove('res_ui_private.zip')
+    import subprocess
+    print('[fetch-private] gamelua/res/Image files:',
+          sum(len(fs) for _d, _dn, fs in os.walk('gamelua/res/Image')), flush=True)
 
 
 if __name__ == '__main__':
