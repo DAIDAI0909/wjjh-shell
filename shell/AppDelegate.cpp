@@ -135,12 +135,27 @@ bool AppDelegate::applicationDidFinishLaunching()
             // 骨骼动画族用链式哑表（可无限索引+可调用）：AnimResManager 会
             // spine38.NewSkeletonAnimation:createWithBinaryFile 深链调用（b76 实证）；
             // 普通类不能用链式——与 Decorator 的 __decorator 记账互踩（gh4 实证）
-            "local __chainClass = function(name)\n"
-            "  _G[name] = setmetatable({}, {__index = function() return __chain end, __call = function() return __chain end})\n"
+            "local __stubClassChain = function(name)\n"
+            "  if _G[name] then return _G[name] end\n"
+            "  local t = {}\n"
+            "  t.create = function(...)\n"
+            "    local node = cc.Node:create()\n"
+            "    if tolua and tolua.setpeer then\n"
+            "      local peer = {}\n"
+            "      setmetatable(peer, {__index = function(tt, k) local f = function() return __chain end; rawset(tt, k, f); return f end})\n"
+            "      tolua.setpeer(node, peer)\n"
+            "      for k, v in pairs(t) do if k ~= 'create' then peer[k] = v end end\n"
+            "    end\n"
+            "    return node\n"
+            "  end\n"
+            "  setmetatable(t, {__index = function(tt, k) local f = function() return __chain end; rawset(tt, k, f); return f end})\n"
+            "  _G[name] = t\n"
+            "  return t\n"
             "end\n"
-            "for _, n in ipairs({'YXSkeletonAnimation','YXSkeletonAnimationCache','NewSkeletonAnimation','spine38'}) do\n"
-            "  __chainClass(n)\n"
+            "for _, n in ipairs({'YXSkeletonAnimation','YXSkeletonAnimationCache','NewSkeletonAnimation'}) do\n"
+            "  __stubClassChain(n)\n"
             "end\n"
+            "spine38 = setmetatable({}, {__index = function(tt, k) local g = _G[k]; if g ~= nil then return g end; return __chain end})\n"
             "__wjjhlog('WJJH_BOOT: C/D class stubs installed')\n"
             // luaTableEncode/Decode：安卓在自定义 libcocos2dlua.so 里提供（全 Lua 树无定义），
             // 本地存档读写（DataBase:getData/getLuaTable→User.lua:21）第一步就要用；
