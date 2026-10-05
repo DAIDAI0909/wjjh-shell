@@ -88,6 +88,27 @@ bool AppDelegate::applicationDidFinishLaunching()
         // 会吞掉游戏 xpcall 的 LUA ERROR
         std::string chunk =
             "__wjjhlog('WJJH_BOOT: print redirect installed, jit=' .. tostring(jit and jit.status and jit.status() or '?'))\n"
+            // ★ 安卓自定义 so 的 tolua 类带 .isclass 标志(quick class 据此走原生分支),
+            //   官方 3.15.1 的 ccui/ccs 系没有 → class("X", ccui.Widget) 走纯 Lua 分支,
+            //   实例=无元表裸 table,所有 cocos 方法全 nil(gh33 实证)。补章:
+            "local function __wjjh_stamp(ns)\n"
+            "  if type(ns) ~= 'table' then return 0 end\n"
+            "  local cnt = 0\n"
+            "  for _k, v in pairs(ns) do\n"
+            "    if type(v) == 'table' and type(v.create) == 'function' and v['.isclass'] ~= true then\n"
+            "      v['.isclass'] = true\n"
+            "      cnt = cnt + 1\n"
+            "    end\n"
+            "  end\n"
+            "  return cnt\n"
+            "end\n"
+            "local __ns = 0\n"
+            "__ns = __ns + __wjjh_stamp(cc)\n"
+            "__ns = __ns + __wjjh_stamp(ccui)\n"
+            "__ns = __ns + __wjjh_stamp(ccs)\n"
+            "__ns = __ns + __wjjh_stamp(spine)\n"
+            "__ns = __ns + __wjjh_stamp(cc.Sprite3D)\n"
+            "__wjjhlog('WJJH_BOOT: isclass stamped on ' .. __ns .. ' native classes')\n"
             // A 类空壳绑定：UpdateManager/SdkMethod 在 Android 由 Java/JNI 提供，iOS 离线壳用 Lua 桩；
             // 未列出的方法由 __index 自动生成 no-op（返回 false）
             "if not UpdateManager then\n"
