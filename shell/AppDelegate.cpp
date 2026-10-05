@@ -192,6 +192,18 @@ bool AppDelegate::applicationDidFinishLaunching()
             "end\n"
             "spine38 = setmetatable({}, {__index = function(tt, k) local g = _G[k]; if g ~= nil then return g end; return __newChain(nil) end})\n"
             "__wjjhlog('WJJH_BOOT: C/D class stubs installed')\n"
+            // addChild 兼容包装:ccui 系 tolua 绑定固定 (child,z,tag) 三参,
+            // 游戏大量 1/2 参调用(安卓自定义 so 支持),此处自动补 0
+            "if cc and cc.Node and type(cc.Node.addChild) == 'function' then\n"
+            "  local __origAddChild = cc.Node.addChild\n"
+            "  cc.Node.addChild = function(self, child, z, tag)\n"
+            "    if child == nil then return end\n"
+            "    if z == nil then return __origAddChild(self, child, 0, 0) end\n"
+            "    if tag == nil then return __origAddChild(self, child, z, 0) end\n"
+            "    return __origAddChild(self, child, z, tag)\n"
+            "  end\n"
+            "  __wjjhlog('WJJH_BOOT: addChild compat wrapper installed')\n"
+            "end\n"
             // ExtRichTextScroll 真实现(打印/战斗日志滚动区,PrintUI 全套要用):
             // 真 cc.Node(可 addChild/move)+ peer 提供 getRichText 等方法,
             // 富文本本体=哑对象(数字返回 0,其他 no-op),后续要真排版再接 ccui.RichText
