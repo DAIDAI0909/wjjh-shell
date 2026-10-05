@@ -10,6 +10,7 @@
 // 完成回调：NSURLSession 线程 → performFunctionInCocosThread → GL 线程写回字段
 //           并调用 handler()（无参；Request.lua 在里面读 status/response）。
 #import <Foundation/Foundation.h>
+#import <dispatch/dispatch.h>
 #import "cocos2d.h"
 #import "scripting/lua-bindings/manual/CCLuaEngine.h"
 #include <string>
@@ -202,8 +203,15 @@ int xhr_send(lua_State* L)
     // 完成块里先落成普通局部量再按值捕获）
     void* key = ud;
 
+    static NSMutableArray* __sessions = nil;
+    static dispatch_once_t once;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        __sessions = [NSMutableArray new];
+    });
     NSURLSession* session = [NSURLSession
         sessionWithConfiguration:[NSURLSessionConfiguration defaultSessionConfiguration]];
+    [__sessions addObject:session];  // 强持有,防请求中途被释放
     [[session dataTaskWithRequest:req
                 completionHandler:^(NSData* data, NSURLResponse* resp, NSError* err) {
         NSHTTPURLResponse* hr = (NSHTTPURLResponse*)resp;
