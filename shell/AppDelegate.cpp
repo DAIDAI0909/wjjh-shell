@@ -237,7 +237,6 @@ bool AppDelegate::applicationDidFinishLaunching()
             "      for k, _v in pairs(self) do ks[#ks+1] = tostring(k) if #ks >= 12 then break end end\n"
             "      ident = tostring(self) .. ' keys=[' .. table.concat(ks, ',') .. ']'\n"
             "    end)\n"
-            "    pcall(function() ident = tostring(rawget(self, '__cname') or '-') .. '/' .. tostring(rawget(self, 'class') and rawget(self, 'class').__cname or '-') .. '/inh=' .. tostring(rawget(self, '__inherit') ~= nil) .. '/mt=' .. tostring(getmetatable(self) ~= nil) end)\n"
             "    local tb = '?'\n"
             "    pcall(function() tb = string.gsub(debug.traceback('', 3), '[%c]', ' ') end)\n"
             "    __wjjhlog('WJJH_CONVERTUI ident=' .. ident .. ' who=' .. tostring(who) .. ' err=' .. tostring(err) .. ' @' .. string.sub(tb, 1, 140))\n"
