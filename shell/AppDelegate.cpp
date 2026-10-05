@@ -171,6 +171,26 @@ end
 for _, n in ipairs({'ExtRichText','ExtRichTextScroll','ExtPageView','YXShaderSprite','YXMotionStreak','YXEaseAction','YXHelper','encrypt','LogManager'}) do
   __stubClass(n)
 end
+local __stubClassChain = function(name)
+  if _G[name] then return _G[name] end
+  local t = {}
+  t.create = function(...)
+    local node = cc.Node:create()
+    if tolua and tolua.setpeer then
+      local peer = {}
+      setmetatable(peer, {__index = function(tt, k) local f = function() return __chain end; rawset(tt, k, f); return f end})
+      tolua.setpeer(node, peer)
+      for k, v in pairs(t) do if k ~= 'create' then peer[k] = v end end
+    end
+    return node
+  end
+  setmetatable(t, {__index = function(tt, k) local f = function() return __chain end; rawset(tt, k, f); return f end})
+  _G[name] = t
+  return t
+end
+for _, n in ipairs({'YXSkeletonAnimation','YXSkeletonAnimationCache'}) do
+  __stubClassChain(n)
+end
 
 -- ===== 骨骼桩 v2(真 cc.Node+peer 骨骼方法)=====
 local __mkSkel = function(...)
