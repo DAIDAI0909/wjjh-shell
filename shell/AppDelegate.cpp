@@ -168,7 +168,7 @@ local __stubClass = function(name)
   _G[name] = t
   return t
 end
-for _, n in ipairs({'ExtRichText','ExtPageView','YXShaderSprite','YXMotionStreak','YXEaseAction','YXHelper','encrypt','LogManager'}) do
+for _, n in ipairs({'ExtRichText','ExtRichTextScroll','ExtPageView','YXShaderSprite','YXMotionStreak','YXEaseAction','YXHelper','encrypt','LogManager'}) do
   __stubClass(n)
 end
 
