@@ -192,6 +192,30 @@ bool AppDelegate::applicationDidFinishLaunching()
             "end\n"
             "spine38 = setmetatable({}, {__index = function(tt, k) local g = _G[k]; if g ~= nil then return g end; return __newChain(nil) end})\n"
             "__wjjhlog('WJJH_BOOT: C/D class stubs installed')\n"
+            // ExtRichTextScroll 真实现(打印/战斗日志滚动区,PrintUI 全套要用):
+            // 真 cc.Node(可 addChild/move)+ peer 提供 getRichText 等方法,
+            // 富文本本体=哑对象(数字返回 0,其他 no-op),后续要真排版再接 ccui.RichText
+            "if ExtRichTextScroll and not ExtRichTextScroll.__wjjh_real then\n"
+            "  local __inner = { setVerticalSpace = function() end,\n"
+            "    getNewContentSizeHeight = function() return 0 end,\n"
+            "    pushBackText = function() end, pushBackNewLine = function() end, removeAllChildren = function() end }\n"
+            "  setmetatable(__inner, {__index = function() return function() return __inner end end})\n"
+            "  local __peer = {\n"
+            "    getRichText = function() return __inner end,\n"
+            "    setBounceEnabled = function() end, setDirection = function() end,\n"
+            "    setSize = function() end, pushBackText = function() end,\n"
+            "    pushBackNewLine = function() end, setDirectionEnabled = function() end }\n"
+            "  local __node = cc.Node:create()\n"
+            "  tolua.setpeer(__node, __peer)\n"
+            "  local __oldCreate = ExtRichTextScroll.create\n"
+            "  ExtRichTextScroll.create = function(...)\n"
+            "    local n = cc.Node:create()\n"
+            "    tolua.setpeer(n, __peer)\n"
+            "    return n\n"
+            "  end\n"
+            "  ExtRichTextScroll.__wjjh_real = true\n"
+            "  __wjjhlog('WJJH_BOOT: ExtRichTextScroll real impl installed')\n"
+            "end\n"
             // cpp.Game 桩：native Game 单例（时间/用户/渠道）。渠道值与服务端
             // getWebConfig 模板的 PackageChecklist guanfang 一致
             "if not cpp then\n"
