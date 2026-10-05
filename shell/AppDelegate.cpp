@@ -91,8 +91,7 @@ bool AppDelegate::applicationDidFinishLaunching()
     } else {
         // pcall 包住 main.lua；print 重定向：cocos 的 print 在 COCOS2D_DEBUG=0 下静默，
         // 会吞掉游戏 xpcall 的 LUA ERROR
-        std::string chunk = R"wjjh(
-__wjjhlog('WJJH_BOOT: print redirect installed, jit=' .. tostring(jit and jit.status and jit.status() or '?'))
+        std::string chunk = R"wjjh(__wjjhlog('WJJH_BOOT: print redirect installed, jit=' .. tostring(jit and jit.status and jit.status() or '?'))
 
 -- ===== isclass 补章(安卓自定义 so 带 .isclass,官方 3.15.1 缺)=====
 local function __wjjh_stamp1(tbl)
@@ -120,7 +119,7 @@ for _i, path in ipairs(__list) do
 end
 __wjjhlog('WJJH_BOOT: isclass stamped ' .. __ns .. ' [' .. __detail .. ']')
 
--- ===== addChild 兼容包装(ccui 系 tolua 绑定固定三参,游戏大量 1/2 参调用)=====
+-- ===== addChild 兼容包装 =====
 if cc and cc.Node and type(cc.Node.addChild) == 'function' then
   local __origAddChild = cc.Node.addChild
   cc.Node.addChild = function(self, child, z, tag)
@@ -150,9 +149,8 @@ if not SdkMethod then
   __wjjhlog('WJJH_BOOT: SdkMethod stub installed')
 end
 
--- ===== C/D 桩工厂(普通类=函数 no-op;骨骼族=链式)=====
+-- ===== C/D 桩工厂 =====
 local __noop = function() return nil end
-local __chain = setmetatable({}, {__index = function() return __chain end, __call = function() return __chain end})
 local __stubClass = function(name)
   if _G[name] then return _G[name] end
   local t = {}
@@ -173,28 +171,8 @@ end
 for _, n in ipairs({'ExtRichText','ExtPageView','YXShaderSprite','YXMotionStreak','YXEaseAction','YXHelper','encrypt','LogManager'}) do
   __stubClass(n)
 end
-local __stubClassChain = function(name)
-  if _G[name] then return _G[name] end
-  local t = {}
-  t.create = function(...)
-    local node = cc.Node:create()
-    if tolua and tolua.setpeer then
-      local peer = {}
-      setmetatable(peer, {__index = function(tt, k) local f = function() return __chain end; rawset(tt, k, f); return f end})
-      tolua.setpeer(node, peer)
-      for k, v in pairs(t) do if k ~= 'create' then peer[k] = v end end
-    end
-    return node
-  end
-  setmetatable(t, {__index = function(tt, k) local f = function() return __chain end; rawset(tt, k, f); return f end})
-  _G[name] = t
-  return t
-end
-for _, n in ipairs({'YXSkeletonAnimation','YXSkeletonAnimationCache'}) do
-  __stubClassChain(n)
-end
 
--- ===== 骨骼对象工厂:真 cc.Node+peer(菜单标题动画 addChild 需要真节点)=====
+-- ===== 骨骼桩 v2(真 cc.Node+peer 骨骼方法)=====
 local __mkSkel = function(...)
   local sk = cc.Node:create()
   local events = { { name = 'Hurt', stringValue = 'chest', time = 0, floatValue = 0, intValue = 0 } }
@@ -286,7 +264,7 @@ if not luaTableEncode then
   __wjjhlog('WJJH_BOOT: luaTableEncode/Decode stubs installed')
 end
 
--- ===== ExtRichTextScroll 真实现(真节点+peer,getRichText 返回哑富文本)=====
+-- ===== ExtRichTextScroll 真实现 =====
 if ExtRichTextScroll and rawget(ExtRichTextScroll, '__wjjh_real') ~= true then
   local __inner = { setVerticalSpace = function() end,
     getNewContentSizeHeight = function() return 0 end,
@@ -308,6 +286,37 @@ if ExtRichTextScroll and rawget(ExtRichTextScroll, '__wjjh_real') ~= true then
   __wjjhlog('WJJH_BOOT: ExtRichTextScroll real impl installed')
 end
 
+-- ===== XMLHttpRequest(NSURLSession 原生实现)=====
+if cc then
+  cc.XMLHttpRequest = __wjjh_xhr_class()
+  cc.XMLHTTPREQUEST_RESPONSE_STRING = 0
+  cc.XMLHTTPREQUEST_RESPONSE_JSON = 1
+  cc.XMLHTTPREQUEST_RESPONSE_ARRAY_BUFFER = 2
+  __wjjhlog('WJJH_BOOT: native XMLHttpRequest (NSURLSession) installed')
+end
+
+-- ===== JM 兜底桩 =====
+if not JM then
+  local jm = {}
+  jm.stringDecrypt = function(self, s) return s end
+  jm.stringEncrypt = function(self, s, v) return s end
+  jm.getKey = function(self) return '' end
+  jm.isEncrypted = function(self, s) return false end
+  setmetatable(jm, {__index = function(t, k) local f = function() return false end; rawset(t, k, f); return f end})
+  JM = jm
+  __wjjhlog('WJJH_BOOT: JM stub installed')
+end
+
+-- ===== print 重定向 =====
+local _origprint = print
+print = function(...)
+  local n = select('#', ...)
+  local parts = {}
+  for i = 1, n do parts[i] = tostring(select(i, ...)) end
+  __wjjhlog(table.concat(parts, '\t'))
+  _origprint(...)
+end
+
 -- ===== LoadingLayer.update 守卫(setTotalCount 之前不执行)=====
 local __wjjh_llTried = false
 local function __wjjh_tryHook()
@@ -325,7 +334,7 @@ local function __wjjh_tryHook()
 end
 cc.Director:getInstance():getScheduler():scheduleScriptFunc(__wjjh_tryHook, 0.5, false)
 
-"// ===== XMLHttpRequest(NSURLSession 原生实现)=====\nif cc then\n  cc.XMLHttpRequest = __wjjh_xhr_class()\n  cc.XMLHTTPREQUEST_RESPONSE_STRING = 0\n  cc.XMLHTTPREQUEST_RESPONSE_JSON = 1\n  cc.XMLHTTPREQUEST_RESPONSE_ARRAY_BUFFER = 2\n  __wjjhlog('WJJH_BOOT: native XMLHttpRequest (NSURLSession) installed')\nend\n\n// ===== JM 兜底桩(native wjjh_jm_install 失败时才生效)=====\nif not JM then\n  local jm = {}\n  jm.stringDecrypt = function(self, s) return s end\n  jm.stringEncrypt = function(self, s, v) return s end\n  jm.getKey = function(self) return '' end\n  jm.isEncrypted = function(self, s) return false end\n  setmetatable(jm, {__index = function(t, k) local f = function() return false end; rawset(t, k, f); return f end})\n  JM = jm\n  __wjjhlog('WJJH_BOOT: JM stub installed')\nend\n\n// ===== print 重定向(游戏错误上报走 print,不重定向则全被静默吞掉)=====\nlocal _origprint = print\nprint = function(...)\n  local n = select('#', ...)\n  local parts = {}\n  for i = 1, n do parts[i] = tostring(select(i, ...)) end\n  __wjjhlog(table.concat(parts, '\t'))\n  _origprint(...)\nend\n\n-- ===== main.lua =====
+-- ===== main.lua =====
 local f, err = loadfile(__WJJH_MAINLUA)
 if not f then
   __wjjhlog('WJJH_BOOTERR loadfile: ' .. tostring(err))
