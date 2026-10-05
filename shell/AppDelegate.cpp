@@ -205,7 +205,7 @@ bool AppDelegate::applicationDidFinishLaunching()
             "      if okr and kids then realn = #kids end\n"
             "    end)\n"
             "    local ident = '?'\n"
-            "    pcall(function() ident = tostring(rawget(self, '__cname') or '-') .. '/' .. tostring(rawget(self, 'class') and rawget(self, 'class').__cname or '-') .. '/inh=' .. tostring(rawget(self, '__inherit') ~= nil) .. '/mt=' .. tostring(getmetatable(self) ~= nil)) end)\n"
+            "    pcall(function() ident = tostring(rawget(self, '__cname') or '-') .. '/' .. tostring(rawget(self, 'class') and rawget(self, 'class').__cname or '-') .. '/inh=' .. tostring(rawget(self, '__inherit') ~= nil) .. '/mt=' .. tostring(getmetatable(self) ~= nil) end)\n"
             "    __wjjhlog('WJJH_CONVERTUI ident=' .. ident .. ' who=' .. tostring(who) .. ' walked=' .. #names .. ' ok=' .. tostring(ok) .. ' err=' .. tostring(err))\n"
             "  end\n"
             "  __wjjhlog('WJJH_BOOT: convertUI hook installed')\n"
