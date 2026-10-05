@@ -384,9 +384,7 @@ bool AppDelegate::applicationDidFinishLaunching()
             "      })\n"
             "      return sk\n"
             "    end\n"
-            "    m.createWithBinaryFile = __mkSkel\n"
-            "    m.createWithFile = __mkSkel\n"
-            "    m.create = __mkSkel\n"
+
             "    local onw = m.new\n"
             "    if type(onw) == 'function' then\n"
             "      m.new = function(...)\n"
