@@ -217,6 +217,7 @@ bool AppDelegate::applicationDidFinishLaunching()
             "local __wjjh_hookInstalled = false\n"
                         "local __wjjh_tryHook\n"
             "__wjjh_tryHook = function()\n"
+            "  return -- 已定位:此前误报全是钩子把 Helper 表当 self 遍历;真错只有 PrintUI:34\n"
             "  if __wjjh_hookInstalled or not (Helper and Helper.convertUI) then return end\n"
             "  __wjjh_hookInstalled = true\n"
             "  local orig = Helper.convertUI\n"
