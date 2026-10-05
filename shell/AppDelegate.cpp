@@ -325,6 +325,37 @@ local function __wjjh_tryHook()
 end
 cc.Director:getInstance():getScheduler():scheduleScriptFunc(__wjjh_tryHook, 0.5, false)
 
+"// ===== XMLHttpRequest(NSURLSession 原生实现)=====\n"
+"if cc then\n"
+"  cc.XMLHttpRequest = __wjjh_xhr_class()\n"
+"  cc.XMLHTTPREQUEST_RESPONSE_STRING = 0\n"
+"  cc.XMLHTTPREQUEST_RESPONSE_JSON = 1\n"
+"  cc.XMLHTTPREQUEST_RESPONSE_ARRAY_BUFFER = 2\n"
+"  __wjjhlog('WJJH_BOOT: native XMLHttpRequest (NSURLSession) installed')\n"
+"end\n"
+"\n"
+"// ===== JM 兜底桩(native wjjh_jm_install 失败时才生效)=====\n"
+"if not JM then\n"
+"  local jm = {}\n"
+"  jm.stringDecrypt = function(self, s) return s end\n"
+"  jm.stringEncrypt = function(self, s, v) return s end\n"
+"  jm.getKey = function(self) return '' end\n"
+"  jm.isEncrypted = function(self, s) return false end\n"
+"  setmetatable(jm, {__index = function(t, k) local f = function() return false end; rawset(t, k, f); return f end})\n"
+"  JM = jm\n"
+"  __wjjhlog('WJJH_BOOT: JM stub installed')\n"
+"end\n"
+"\n"
+"// ===== print 重定向(游戏错误上报走 print,不重定向则全被静默吞掉)=====\n"
+"local _origprint = print\n"
+"print = function(...)\n"
+"  local n = select('#', ...)\n"
+"  local parts = {}\n"
+"  for i = 1, n do parts[i] = tostring(select(i, ...)) end\n"
+"  __wjjhlog(table.concat(parts, '\t'))\n"
+"  _origprint(...)\n"
+"end\n"
+"\n"
 -- ===== main.lua =====
 local f, err = loadfile(__WJJH_MAINLUA)
 if not f then
