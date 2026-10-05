@@ -77,8 +77,13 @@ bool AppDelegate::applicationDidFinishLaunching()
         return 1;
     });
 
+
     std::string path = FileUtils::getInstance()->fullPathForFilename("src/main.lua");
     std::string probeRes = FileUtils::getInstance()->fullPathForFilename("res/LuaExtend.lua");
+
+    // main.lua 路径注入给 chunk
+    lua_pushlstring(L, path.c_str(), path.size());
+    lua_setglobal(L, "__WJJH_MAINLUA");
     wjjh_bootlog(("WJJH_BOOT: src/main.lua -> " + path).c_str());
     wjjh_bootlog(("WJJH_BOOT: res/LuaExtend.lua -> " + probeRes).c_str());
     if (path.empty()) {
@@ -86,463 +91,251 @@ bool AppDelegate::applicationDidFinishLaunching()
     } else {
         // pcall 包住 main.lua；print 重定向：cocos 的 print 在 COCOS2D_DEBUG=0 下静默，
         // 会吞掉游戏 xpcall 的 LUA ERROR
-        std::string chunk =
-            "__wjjhlog('WJJH_BOOT: print redirect installed, jit=' .. tostring(jit and jit.status and jit.status() or '?'))\n"
-            // ★ 安卓自定义 so 的 tolua 类带 .isclass 标志(quick class 据此走原生分支),
-            //   官方 3.15.1 的 ccui/ccs 系没有 → class("X", ccui.Widget) 走纯 Lua 分支,
-            //   实例=无元表裸 table,所有 cocos 方法全 nil(gh33 实证)。补章:
-            "local function __wjjh_stamp1(tbl)\n"
-            "  if type(tbl) == 'table' and type(tbl.create) == 'function' and tbl['.isclass'] ~= true then\n"
-            "    tbl['.isclass'] = true\n"
-            "    return 1\n"
-            "  end\n"
-            "  return 0\n"
-            "end\n"
-            "local __ns, __detail = 0, ''\n"
-            "local __list = { 'cc.Node', 'cc.Layer', 'cc.LayerColor', 'cc.Sprite', 'cc.Scene',\n"
-            "  'ccui.Widget', 'ccui.Layout', 'ccui.Text', 'ccui.Button', 'ccui.ImageView',\n"
-            "  'ccui.ScrollView', 'ccui.ListView', 'ccui.PageView', 'cc.MenuItemSprite' }\n"
-            "for _i, path in ipairs(__list) do\n"
-            "  local cur = _G\n"
-            "  for w in string.gmatch(path, '[%a]+') do\n"
-            "    if type(cur) == 'table' then cur = cur[w] end\n"
-            "  end\n"
-            "  if type(cur) == 'table' then\n"
-            "    __ns = __ns + __wjjh_stamp1(cur)\n"
-            "    __detail = __detail .. path .. '=' .. tostring(cur['.isclass'] == true) .. ' '\n"
-            "  else\n"
-            "    __detail = __detail .. path .. '=miss '\n"
-            "  end\n"
-            "end\n"
-            "__wjjhlog('WJJH_BOOT: isclass stamped ' .. __ns .. ' [' .. __detail .. ']')\n"
-            // A 类空壳绑定：UpdateManager/SdkMethod 在 Android 由 Java/JNI 提供，iOS 离线壳用 Lua 桩；
-            // 未列出的方法由 __index 自动生成 no-op（返回 false）
-            "if not UpdateManager then\n"
-            "  local um = {}\n"
-            "  um.getDomain = function() return 'http://127.0.0.1:7900/' end\n"
-            "  um.getSocketDomain = function() return '' end\n"
-            "  um.getVersion = function() return '0' end\n"
-            "  um.getStringVersion = function() return '0' end\n"
-            "  um.getUpdatePath = function() return '' end\n"
-            "  setmetatable(um, {__index = function(t, k) local f = function() return false end; rawset(t, k, f); return f end})\n"
-            "  UpdateManager = um\n"
-            "  __wjjhlog('WJJH_BOOT: UpdateManager stub installed')\n"
-            "end\n"
-            "if not SdkMethod then\n"
-            "  local sm = {}\n"
-            "  setmetatable(sm, {__index = function(t, k) local f = function() return false end; rawset(t, k, f); return f end})\n"
-            "  SdkMethod = sm\n"
-            "  __wjjhlog('WJJH_BOOT: SdkMethod stub installed')\n"
-            "end\n"
-            // C/D 类桩工厂：实例=真 cc.Node（可 addChild）+ tolua peer 自动 no-op（富文本/骨骼等方法名未知），
-            // create 时把游戏给类表打的补丁拷进 peer；后续报错会点名真正需要实现的类
-            "local __noop = function() return nil end\n"
-            "local __newChain = function(parent)\n"
-            "    local d = {}\n"
-            "    return setmetatable(d, {__index = function(tt, k) local v = parent and parent[k]; if v ~= nil then return v end; return __newChain(parent) end, __call = function() return __newChain(parent) end})\n"
-            "  end\n"            "local __stubClass = function(name)\n"
-            "  if _G[name] then return _G[name] end\n"
-            "  local t = {}\n"
-            "  t.create = function(...)\n"
-            "    local node = cc.Node:create()\n"
-            "    if tolua and tolua.setpeer then\n"
-            "      local peer = {}\n"
-            "      setmetatable(peer, {__index = function(tt, k) local f = function() return nil end; rawset(tt, k, f); return f end})\n"
-            "      tolua.setpeer(node, peer)\n"
-            "      for k, v in pairs(t) do if k ~= 'create' then peer[k] = v end end\n"
-            "    end\n"
-            "    return node\n"
-            "  end\n"
-            "  setmetatable(t, {__index = function(tt, k) local f = __noop; rawset(tt, k, f); return f end})\n"
-            "  _G[name] = t\n"
-            "  return t\n"
-            "end\n"
-            "for _, n in ipairs({'ExtRichText','ExtRichTextScroll','ExtPageView','YXShaderSprite','YXMotionStreak',"
-            "'YXEaseAction','YXHelper','encrypt','LogManager'}) do\n"
-            "  __stubClass(n)\n"
-            "end\n"
-            // 骨骼动画族用链式哑表（可无限索引+可调用）：AnimResManager 会
-            // spine38.NewSkeletonAnimation:createWithBinaryFile 深链调用（b76 实证）；
-            // 普通类不能用链式——与 Decorator 的 __decorator 记账互踩（gh4 实证）
-            "local __stubClassChain = function(name)\n"
-            "  if _G[name] then return _G[name] end\n"
-            "  local t = {}\n"
-            "  t.create = function(...)\n"
-            "    local node = cc.Node:create()\n"
-            "    if tolua and tolua.setpeer then\n"
-            "      local peer = {}\n"
-            "      setmetatable(peer, {__index = function(tt, k) local f = function() return __newChain(t) end; rawset(tt, k, f); return f end})\n"
-            "      tolua.setpeer(node, peer)\n"
-            "      for k, v in pairs(t) do if k ~= 'create' then peer[k] = v end end\n"
-            "    end\n"
-            "    return node\n"
-            "  end\n"
-            "  t.getAnimEvents = function(self, animName)\n"
-            "    return { { name = \"Hurt\", stringValue = \"chest\", time = 0, floatValue = 0, intValue = 0 } }\n"
-            "  end\n"
-            "  t.getAnimDuration = function(self, animName)\n"
-            "    return 0.1\n"
-            "  end\n"
-            "  setmetatable(t, {__index = function(tt, k) local f = function() return __newChain(t) end; rawset(tt, k, f); return f end})\n"
-            "  _G[name] = t\n"
-            "  return t\n"
-            "end\n"
-            "for _, n in ipairs({'YXSkeletonAnimation','YXSkeletonAnimationCache','NewSkeletonAnimation'}) do\n"
-            "  __stubClassChain(n)\n"
-            "end\n"
-            "spine38 = setmetatable({}, {__index = function(tt, k) local g = _G[k]; if g ~= nil then return g end; return __newChain(nil) end})\n"
-            "__wjjhlog('WJJH_BOOT: C/D class stubs installed')\n"
-            // addChild 兼容包装:ccui 系 tolua 绑定固定 (child,z,tag) 三参,
-            // 游戏大量 1/2 参调用(安卓自定义 so 支持),此处自动补 0
-            "if cc and cc.Node and type(cc.Node.addChild) == 'function' then\n"
-            "  local __origAddChild = cc.Node.addChild\n"
-            "  cc.Node.addChild = function(self, child, z, tag)\n"
-            "    if child == nil then return end\n"
-            "    if z == nil then return __origAddChild(self, child, 0, 0) end\n"
-            "    if tag == nil then return __origAddChild(self, child, z, 0) end\n"
-            "    return __origAddChild(self, child, z, tag)\n"
-            "  end\n"
-            "  __wjjhlog('WJJH_BOOT: addChild compat wrapper installed')\n"
-            "end\n"
-            // ExtRichTextScroll 真实现(打印/战斗日志滚动区,PrintUI 全套要用):
-            // 真 cc.Node(可 addChild/move)+ peer 提供 getRichText 等方法,
-            // 富文本本体=哑对象(数字返回 0,其他 no-op),后续要真排版再接 ccui.RichText
-            "if ExtRichTextScroll and rawget(ExtRichTextScroll, '__wjjh_real') ~= true then\n"
-            "  local __inner = { setVerticalSpace = function() end,\n"
-            "    getNewContentSizeHeight = function() return 0 end,\n"
-            "    pushBackText = function() end, pushBackNewLine = function() end, removeAllChildren = function() end }\n"
-            "  setmetatable(__inner, {__index = function() return function() return __inner end end})\n"
-            "  local __peer = {\n"
-            "    getRichText = function() return __inner end,\n"
-            "    setBounceEnabled = function() end, setDirection = function() end,\n"
-            "    setSize = function() end, pushBackText = function() end,\n"
-            "    pushBackNewLine = function() end, setDirectionEnabled = function() end }\n"
-            "  local __node = cc.Node:create()\n"
-            "  tolua.setpeer(__node, __peer)\n"
-            "  local __oldCreate = ExtRichTextScroll.create\n"
-            "  ExtRichTextScroll.create = function(...)\n"
-            "    local n = cc.Node:create()\n"
-            "    tolua.setpeer(n, __peer)\n"
-            "    return n\n"
-            "  end\n"
-            "  ExtRichTextScroll.__wjjh_real = true\n"
-            "  __wjjhlog('WJJH_BOOT: ExtRichTextScroll real impl installed')\n"
-            "end\n"
-            // cpp.Game 桩：native Game 单例（时间/用户/渠道）。渠道值与服务端
-            // getWebConfig 模板的 PackageChecklist guanfang 一致
-            "if not cpp then\n"
-            "  cpp = {}\n"
-            "  local g = { _uid = 0, _time = os.time(), _channel = 'guanfang' }\n"
-            "  g.getInstance = function() return g end\n"
-            "  g.getTime = function() return g._time end\n"
-            "  g.setTime = function(t) g._time = t end\n"
-            "  g.getUserId = function() return g._uid end\n"
-            "  g.setUserId = function(id) g._uid = id end\n"
-            "  g.getChannelId = function() return g._channel end\n"
-            "  g.setChannelId = function(c) g._channel = c end\n"
-            "  g.getPackageId = function() return g._channel end\n"
-            "  g.connectServer = function(cb)\n"
-            "    if type(cb) == \"function\" then cb(\"TRUE\") end\n"
-            "    return \"TRUE\"\n"
-            "  end\n"
-            "  setmetatable(g, {__index = function(tt, k) local f = function() return 0 end; rawset(tt, k, f); return f end})\n"
-            "  cpp.Game = g\n"
-            "__wjjhlog('WJJH_BOOT: cpp.Game stub installed')\n"
-            "end\n"
-            // 诊断：convertUI 后打印走到的子节点名（PrintUI Panel_print nil 排查，gh14）
-            "local __wjjh_hookInstalled = false\n"
-                        "local __wjjh_tryHook\n"
-            "__wjjh_tryHook = function()\n"
-            "  local LL = package.loaded['app.views.layer.LoadingLayer']\n"
-            "  if type(LL) ~= 'table' or LL.__wjjh_wrap then return end\n"
-            "  LL.__wjjh_wrap = true\n"
-            "  local oup = LL.update\n"
-            "  LL.update = function(self, ft)\n"
-            "    if self._loadingIndex == nil or self._totalCount == nil then return end\n"
-            "    return oup(self, ft)\n"
-            "  end\n"
-            "  __wjjhlog('WJJH_BOOT: LoadingLayer.update guarded')\n"
-            "end\n"
-            "  if __wjjh_hookInstalled or not (Helper and Helper.convertUI) then return end\n"
-            "  __wjjh_hookInstalled = true\n"
-            "  local orig = Helper.convertUI\n"
-            "  Helper.convertUI = function(self, r)\n"
-            "    orig(self, r)\n"
-            "    local names = {}\n"
-            "    local ok, err = pcall(function() Helper:callChildren(self, function(c) names[#names+1] = tostring(c:getName()) end) end)\n"
-            "    local who = type(self)\n"
-            "    local realn = '?'\n"
-            "    pcall(function()\n"
-            "      who = tolua.type(self)\n"
-            "      local okr, kids = pcall(self.getChildren, self)\n"
-            "      if okr and kids then realn = #kids end\n"
-            "    end)\n"
-            "    local ident = '?'\n"
-            "    pcall(function()\n"
-            "      local ks = {}\n"
-            "      for k, _v in pairs(self) do ks[#ks+1] = tostring(k) if #ks >= 12 then break end end\n"
-            "      ident = tostring(self) .. ' keys=[' .. table.concat(ks, ',') .. ']'\n"
-            "    end)\n"
-            "    local tb = '?'\n"
-            "    pcall(function() tb = string.gsub(debug.traceback('', 3), '[%c]', ' ') end)\n"
-            "    __wjjhlog('WJJH_CONVERTUI ident=' .. ident .. ' who=' .. tostring(who) .. ' err=' .. tostring(err) .. ' @' .. string.sub(tb, 1, 140))\n"
-            "  end\n"
-            "  __wjjhlog('WJJH_BOOT: convertUI hook installed')\n"
-            "  pcall(function()\n"
-            "      local C = class('WjjhProbe', cc.Node)\n"
-            "      local t = C:create()\n"
-            "      local ttype = '?'\n"
-            "      pcall(function() ttype = tolua.type(t) end)\n"
-            "      local gok, gerr = pcall(function() return #t:getChildren() end)\n"
-            "      __wjjhlog('WJJH_Q ttype=' .. tostring(ttype) .. ' isFuncGC=' .. tostring(type(t.getChildren)) .. ' gcok=' .. tostring(gok) .. ' gerr=' .. tostring(gerr))\n"
-            "      local L = class('WjjhProbeL', cc.Layer)\n"
-            "      local li = L:create()\n"
-            "      local ltype = '?'\n"
-            "      local lok, lerr = pcall(function() ltype = tolua.type(li) end)\n"
-            "      local lgok, lgerr = pcall(function() return #li:getChildren() end)\n"
-            "      local lctor = '?'\n"
-            "      pcall(function() lctor = type(li.ctor) end)\n"
-            "      __wjjhlog('WJJH_QL ttype=' .. tostring(ltype) .. ' tok=' .. tostring(lok) .. ' terr=' .. tostring(lerr) .. ' isFuncGC=' .. tostring(type(li.getChildren)) .. ' gcok=' .. tostring(lgok) .. ' gerr=' .. tostring(lgerr) .. ' ctor=' .. tostring(lctor))\n"
-            "      local W = class('WjjhProbeW', ccui.Widget)\n"
-            "      local wi = W:new()\n"
-            "      local wtype, wmt = '?', '?'\n"
-            "      pcall(function() wtype = tolua.type(wi) end)\n"
-            "      pcall(function() wmt = tostring(getmetatable(wi) ~= nil) end)\n"
-            "      local wgok, wgerr = pcall(function() return #wi:getChildren() end)\n"
-            "      __wjjhlog('WJJH_W type=' .. type(wi) .. ' tolua=' .. tostring(wtype) .. ' mt=' .. wmt .. ' gcok=' .. tostring(wgok) .. ' gerr=' .. tostring(wgerr) .. ' isclass=' .. tostring(ccui.Widget['.isclass']))\n"
-            "  end)\n"
-            "  pcall(function()\n"
-            "    __wjjhlog('WJJH_TOLUA Node.new=' .. tostring(cc.Node.new ~= nil) .. ' Layer.new=' .. tostring(cc.Layer ~= nil and cc.Layer.new ~= nil) .. ' Node.create=' .. tostring(cc.Node.create ~= nil))\n"
-            "    local nd = cc.Node:create()\n"
-            "    __wjjhlog('WJJH_TOLUA ndtype=' .. tostring(tolua.type(nd)) .. ' getChildren=' .. tostring(nd.getChildren ~= nil) .. ' children=' .. tostring(#nd:getChildren()))\n"
-            "  end)\n"
-            "end\n"
-            "local __req = require\n"
-            "local __req_hooked = {}\n"
-            "require = function(name)\n"
-            "  local m = __req(name)\n"
-            "  if name == 'Layer/PrintUI.lua' and type(m) == 'table' and type(m.create) == 'function' and not __req_hooked[name] then\n"
-            "    __req_hooked[name] = true\n"
-            "    local onw = m.new\n"
-            "    m.new = function(...)\n"
-            "      local ok, p = pcall(onw, ...)\n"
-            "      if not ok then\n"
-            "        __wjjhlog('WJJH_PNEW ERRORED: ' .. tostring(p))\n"
-            "        error(p, 0)\n"
-            "      end\n"
-            "      local pt = '?'\n"
-            "      pcall(function() pt = tolua.type(p) end)\n"
-            "      __wjjhlog('WJJH_PNEW type=' .. type(p) .. ' tolua=' .. tostring(pt))\n"
-            "      pcall(function()\n"
-            "        local oi = p.init\n"
-            "        if type(oi) == 'function' then\n"
-            "          p.init = function(s, ...)\n"
-            "            local rok, rerr = pcall(oi, s, ...)\n"
-            "            local pp, kids, rd = '?', '?', '?'\n"
-            "            pcall(function() pp = tostring(s.Panel_print) end)\n"
-            "            pcall(function() kids = tostring(#s:getChildren()) end)\n"
-            "            pcall(function() rd = tostring(s._round) end)\n"
-            "            __wjjhlog('WJJH_PINIT ok=' .. tostring(rok) .. ' err=' .. tostring(rerr) .. ' kids=' .. kids .. ' Panel_print=' .. pp .. ' _round=' .. rd)\n"
-            "            if not rok then error(rerr, 0) end\n"
-            "          end\n"
-            "        end\n"
-            "      end)\n"
-            "      return p\n"
-            "    end\n"
-            "    local oc = m.create\n"
-            "    m.create = function(...)\n"
-            "      local r = oc(...)\n"
-            "      local n, nm = -1, '?'\n"
-            "      if type(r) == 'table' and r.root then\n"
-            "        local kids = r.root:getChildren()\n"
-            "        n = #kids\n"
-            "        nm = {}\n"
-            "        for i, c in ipairs(kids) do nm[i] = tostring(c:getName()) end\n"
-            "        nm = table.concat(nm, ',')\n"
-            "      end\n"
-            "      __wjjhlog('WJJH_LAYOUT PrintUI root_children=' .. tostring(n) .. ' [' .. tostring(nm) .. ']')\n"
-            "      return r\n"
-            "    end\n"
-            "  end\n"
-            "  if name == 'app.views.layer.PopLayer.WaitingLayer' and type(m) == 'table' and not __req_hooked[name] then\n"
-            "    __req_hooked[name] = true\n"
-            "    __wjjhlog('WJJH_WL module loaded: __create=' .. tostring(type(rawget(m, '__create'))) .. ' new=' .. tostring(type(m.new)) .. ' isclass_now=' .. tostring(ccui.Widget['.isclass']))\n"
-            "    local onw = m.new\n"
-            "    if type(onw) == 'function' then\n"
-            "      m.new = function(...)\n"
-            "        local ok, p = pcall(onw, ...)\n"
-            "        if not ok then\n"
-            "          __wjjhlog('WJJH_WL new ERRORED: ' .. tostring(p))\n"
-            "          error(p, 0)\n"
-            "        end\n"
-            "        local pt, ix = '?', '?'\n"
-            "        pcall(function() pt = tolua.type(p) end)\n"
-            "        pcall(function() ix = tostring(rawget(p, '__index') ~= nil) end)\n"
-            "        __wjjhlog('WJJH_WL new -> type=' .. type(p) .. ' tolua=' .. tostring(pt) .. ' __indexField=' .. ix)\n"
-            "        return p\n"
-            "      end\n"
-            "    end\n"
-            "  end\n"
-            "  if name == 'app.views.ui.PrintUI' and type(m) == 'table' and type(m.create) == 'function' and not __req_hooked[name] then\n"
-            "    __req_hooked[name] = true\n"
-            // 骨骼对象工厂:菜单标题动画 addChild 需要真 tolua 节点
-            "    local __mkSkel = function(...)\n"
-            "      local sk = cc.Node:create()\n"
-            "      local events = { { name = 'Hurt', stringValue = 'chest', time = 0, floatValue = 0, intValue = 0 } }\n"
-            "      tolua.setpeer(sk, {\n"
-            "        getAnimEvents = function(self, animName) return events end,\n"
-            "        getAnimDuration = function(self, animName) return 0.1 end,\n"
-            "        setAnimation = function(self, a, n, l) end,\n"
-            "        addAnimation = function(self, ...) end,\n"
-            "        setTrackTime = function(self, t) end,\n"
-            "        setTimeScale = function(self, s) end,\n"
-            "        setCompleteListener = function(self, cb) end,\n"
-            "        setEventCallback = function(self, cb) end,\n"
-            "        registerScriptHandler = function(self, cb) end,\n"
-            "        getBoneSetupPosePosition = function(self, a, b) return {x = 0, y = 0} end,\n"
-            "        updateWorldTransform = function(self) end,\n"
-            "        setToSetupPose = function(self) end,\n"
-            "      })\n"
-            "      return sk\n"
-            "    end\n"
+        std::string chunk = R"wjjh(
+__wjjhlog('WJJH_BOOT: print redirect installed, jit=' .. tostring(jit and jit.status and jit.status() or '?'))
 
-            "    local onw = m.new\n"
-            "    if type(onw) == 'function' then\n"
-            "      m.new = function(...)\n"
-            "        local ok, p = pcall(onw, ...)\n"
-            "        if not ok then\n"
-            "          __wjjhlog('WJJH_PNEW2 ERRORED: ' .. tostring(p))\n"
-            "          error(p, 0)\n"
-            "        end\n"
-            "        local pt = '?'\n"
-            "        pcall(function() pt = tolua.type(p) end)\n"
-            "        __wjjhlog('WJJH_PNEW2 type=' .. type(p) .. ' tolua=' .. tostring(pt))\n"
-            "        pcall(function()\n"
-            "          local oi = p.init\n"
-            "          if type(oi) == 'function' then\n"
-            "            p.init = function(s, ...)\n"
-            "              local rok, rerr = pcall(oi, s, ...)\n"
-            "              local pp, kids, rd = '?', '?', '?'\n"
-            "              pcall(function() pp = tostring(s.Panel_print) end)\n"
-            "              pcall(function() kids = tostring(#s:getChildren()) end)\n"
-            "              pcall(function() rd = tostring(s._round) end)\n"
-            "              __wjjhlog('WJJH_PINIT2 ok=' .. tostring(rok) .. ' err=' .. tostring(rerr) .. ' kids=' .. kids .. ' Panel_print=' .. pp .. ' _round=' .. rd)\n"
-            "              if not rok then error(rerr, 0) end\n"
-            "            end\n"
-            "          end\n"
-            "        end)\n"
-            "        return p\n"
-            "      end\n"
-            "    end\n"
+-- ===== isclass 补章(安卓自定义 so 带 .isclass,官方 3.15.1 缺)=====
+local function __wjjh_stamp1(tbl)
+  if type(tbl) == 'table' and type(tbl.create) == 'function' and tbl['.isclass'] ~= true then
+    tbl['.isclass'] = true
+    return 1
+  end
+  return 0
+end
+local __ns, __detail = 0, ''
+local __list = { 'cc.Node', 'cc.Layer', 'cc.LayerColor', 'cc.Sprite', 'cc.Scene',
+  'ccui.Widget', 'ccui.Layout', 'ccui.Text', 'ccui.Button', 'ccui.ImageView',
+  'ccui.ScrollView', 'ccui.ListView', 'ccui.PageView', 'cc.MenuItemSprite' }
+for _i, path in ipairs(__list) do
+  local cur = _G
+  for w in string.gmatch(path, '[%a]+') do
+    if type(cur) == 'table' then cur = cur[w] end
+  end
+  if type(cur) == 'table' then
+    __ns = __ns + __wjjh_stamp1(cur)
+    __detail = __detail .. path .. '=' .. tostring(cur['.isclass'] == true) .. ' '
+  else
+    __detail = __detail .. path .. '=miss '
+  end
+end
+__wjjhlog('WJJH_BOOT: isclass stamped ' .. __ns .. ' [' .. __detail .. ']')
 
-            "    local oc = m.create\n"
-            "    m.create = function(...)\n"
-            "      local p = oc(...)\n"
-            "      local pi, pt = '?', '?'\n"
-            "      pcall(function() pi = tostring(rawget(p, '__cname')) .. '/' .. tostring(rawget(p, '__inherit') ~= nil) .. '/' .. tostring(getmetatable(p) ~= nil) end)\n"
-            "      pcall(function() pt = tolua.type(p) end)\n"
-            "      __wjjhlog('WJJH_P create -> type=' .. type(p) .. ' tolua=' .. tostring(pt) .. ' id=' .. pi)\n"
-            "      if type(p) == 'table' then\n"
-            "        local oi = p.init\n"
-            "        if oi then\n"
-            "          p.init = function(s, ...)\n"
-            "            local rok, rerr = pcall(oi, s, ...)\n"
-            "            local pp, st, kids = '?', '?', '?'\n"
-            "            pcall(function() pp = tostring(s.Panel_print) end)\n"
-            "            pcall(function() st = tostring(s._round) end)\n"
-            "            pcall(function() kids = tostring(#s:getChildren()) end)\n"
-            "            __wjjhlog('WJJH_P init ok=' .. tostring(rok) .. ' err=' .. tostring(rerr) .. ' Panel_print=' .. pp .. ' _round=' .. st .. ' kids=' .. kids)\n"
-            "            if not rok then error(rerr, 0) end\n"
-            "            return r\n"
-            "          end\n"
-            "        end\n"
-            "      end\n"
-            "      return p\n"
-            "    end\n"
-            "  end\n"
-            "  return m\n"
-            "end\n"
-            "cc.Director:getInstance():getScheduler():scheduleScriptFunc(__wjjh_tryHook, 0.5, false)\n"
-            // luaTableEncode/Decode：安卓在自定义 libcocos2dlua.so 里提供（全 Lua 树无定义），
-            // 本地存档读写（DataBase:getData/getLuaTable→User.lua:21）第一步就要用；
-            // 自洽格式：string.format(%q) + loadstring 回读，完整保留键类型/嵌套
-            "if not luaTableEncode then\n"
-            "  local __enc\n"
-            "  __enc = function(v, seen)\n"
-            "    seen = seen or {}\n"
-            "    local t = type(v)\n"
-            "    if t == 'nil' then return 'nil'\n"
-            "    elseif t == 'boolean' then return tostring(v)\n"
-            "    elseif t == 'number' then return string.format('%.17g', v)\n"
-            "    elseif t == 'string' then return string.format('%q', v)\n"
-            "    elseif t == 'table' then\n"
-            "      if seen[v] then return 'nil' end\n"
-            "      seen[v] = true\n"
-            "      local parts = {}\n"
-            "      local n = 0\n"
-            "      for _i, val in ipairs(v) do\n"
-            "        n = n + 1\n"
-            "        parts[#parts+1] = __enc(val, seen)\n"
-            "      end\n"
-            "      for k, val in pairs(v) do\n"
-            "        if not (type(k) == 'number' and math.floor(k) == k and k >= 1 and k <= n) then\n"
-            "          local ks\n"
-            "          if type(k) == 'string' and k:match('^[A-Za-z_][A-Za-z0-9_]*$') then ks = k\n"
-            "          else ks = '[' .. __enc(k, seen) .. ']' end\n"
-            "          parts[#parts+1] = ks .. '=' .. __enc(val, seen)\n"
-            "        end\n"
-            "      end\n"
-            "      seen[v] = nil\n"
-            "      return '{' .. table.concat(parts, ',') .. '}'\n"
-            "    else return 'nil' end\n"
-            "  end\n"
-            "  luaTableEncode = function(t) return 'return ' .. __enc(t, {}) end\n"
-            "  luaTableDecode = function(s)\n"
-            "    if type(s) ~= 'string' or s == '' then return nil end\n"
-            "    local f = loadstring(s)\n"
-            "    if not f then return nil end\n"
-            "    local ok, t = pcall(f)\n"
-            "    if not ok then return nil end\n"
-            "    return t\n"
-            "  end\n"
-            "  __wjjhlog('WJJH_BOOT: luaTableEncode/Decode stubs installed')\n"
-            "end\n"
-            // 原生 XMLHttpRequest（NSURLSession）：强制覆盖 cocos 自带的
-            // LuaMinXmlHttpRequest（其 tolua 绑定 Release 下空指针崩溃，b71 实证；
-            // 引擎本来就注册了 cc.XMLHttpRequest，所以不能加 not-exists 守卫）
-            "if cc then\n"
-            "  cc.XMLHttpRequest = __wjjh_xhr_class()\n"
-            "  cc.XMLHTTPREQUEST_RESPONSE_STRING = 0\n"
-            "  cc.XMLHTTPREQUEST_RESPONSE_JSON = 1\n"
-            "  cc.XMLHTTPREQUEST_RESPONSE_ARRAY_BUFFER = 2\n"
-            "  __wjjhlog('WJJH_BOOT: native XMLHttpRequest (NSURLSession) installed')\n"
-            "end\n"
-            // B 类：JM 字符串加密（真实现=私服同款算法，接入内嵌服务端时再做；先原样透传）
-            "if not JM then\n"
-            "  local jm = {}\n"
-            "  jm.stringDecrypt = function(self, s) return s end\n"
-            "  jm.stringEncrypt = function(self, s, v) return s end\n"
-            "  jm.getKey = function(self) return '' end\n"
-            "  jm.isEncrypted = function(self, s) return false end\n"
-            "  setmetatable(jm, {__index = function(t, k) local f = function() return false end; rawset(t, k, f); return f end})\n"
-            "  JM = jm\n"
-            "  __wjjhlog('WJJH_BOOT: JM stub installed')\n"
-            "end\n"
-            "local _origprint = print\n"
-            "print = function(...)\n"
-            "  local n = select('#', ...)\n"
-            "  local parts = {}\n"
-            "  for i = 1, n do parts[i] = tostring(select(i, ...)) end\n"
-            "  __wjjhlog(table.concat(parts, '\\t'))\n"
-            "  _origprint(...)\n"
-            "end\n"
-            "local f, err = loadfile('" + path + "')\n"
-            "if not f then __wjjhlog('WJJH_BOOTERR loadfile: ' .. tostring(err))\n"
-            "else\n"
-            "  local ok, e = pcall(f)\n"
-            "  if ok then __wjjhlog('WJJH_BOOT: main.lua finished OK')\n"
-            "  else __wjjhlog('WJJH_BOOTERR runtime: ' .. tostring(e)) end\n"
-            "end\n";
+-- ===== addChild 兼容包装(ccui 系 tolua 绑定固定三参,游戏大量 1/2 参调用)=====
+if cc and cc.Node and type(cc.Node.addChild) == 'function' then
+  local __origAddChild = cc.Node.addChild
+  cc.Node.addChild = function(self, child, z, tag)
+    if child == nil then return end
+    if z == nil then return __origAddChild(self, child, 0, 0) end
+    if tag == nil then return __origAddChild(self, child, z, 0) end
+    return __origAddChild(self, child, z, tag)
+  end
+end
+
+-- ===== A 类桩 =====
+if not UpdateManager then
+  local um = {}
+  um.getDomain = function() return 'http://127.0.0.1:7900/' end
+  um.getSocketDomain = function() return '' end
+  um.getVersion = function() return '0' end
+  um.getStringVersion = function() return '0' end
+  um.getUpdatePath = function() return '' end
+  setmetatable(um, {__index = function(t, k) local f = function() return false end; rawset(t, k, f); return f end})
+  UpdateManager = um
+  __wjjhlog('WJJH_BOOT: UpdateManager stub installed')
+end
+if not SdkMethod then
+  local sm = {}
+  setmetatable(sm, {__index = function(t, k) local f = function() return false end; rawset(t, k, f); return f end})
+  SdkMethod = sm
+  __wjjhlog('WJJH_BOOT: SdkMethod stub installed')
+end
+
+-- ===== C/D 桩工厂(普通类=函数 no-op;骨骼族=链式)=====
+local __noop = function() return nil end
+local __chain = setmetatable({}, {__index = function() return __chain end, __call = function() return __chain end})
+local __stubClass = function(name)
+  if _G[name] then return _G[name] end
+  local t = {}
+  t.create = function(...)
+    local node = cc.Node:create()
+    if tolua and tolua.setpeer then
+      local peer = {}
+      setmetatable(peer, {__index = function(tt, k) local f = function() return nil end; rawset(tt, k, f); return f end})
+      tolua.setpeer(node, peer)
+      for k, v in pairs(t) do if k ~= 'create' then peer[k] = v end end
+    end
+    return node
+  end
+  setmetatable(t, {__index = function(tt, k) local f = __noop; rawset(tt, k, f); return f end})
+  _G[name] = t
+  return t
+end
+for _, n in ipairs({'ExtRichText','ExtPageView','YXShaderSprite','YXMotionStreak','YXEaseAction','YXHelper','encrypt','LogManager'}) do
+  __stubClass(n)
+end
+local __stubClassChain = function(name)
+  if _G[name] then return _G[name] end
+  local t = {}
+  t.create = function(...)
+    local node = cc.Node:create()
+    if tolua and tolua.setpeer then
+      local peer = {}
+      setmetatable(peer, {__index = function(tt, k) local f = function() return __chain end; rawset(tt, k, f); return f end})
+      tolua.setpeer(node, peer)
+      for k, v in pairs(t) do if k ~= 'create' then peer[k] = v end end
+    end
+    return node
+  end
+  setmetatable(t, {__index = function(tt, k) local f = function() return __chain end; rawset(tt, k, f); return f end})
+  _G[name] = t
+  return t
+end
+for _, n in ipairs({'YXSkeletonAnimation','YXSkeletonAnimationCache'}) do
+  __stubClassChain(n)
+end
+
+-- ===== 骨骼对象工厂:真 cc.Node+peer(菜单标题动画 addChild 需要真节点)=====
+local __mkSkel = function(...)
+  local sk = cc.Node:create()
+  local events = { { name = 'Hurt', stringValue = 'chest', time = 0, floatValue = 0, intValue = 0 } }
+  tolua.setpeer(sk, {
+    getAnimEvents = function(self, animName) return events end,
+    getAnimDuration = function(self, animName) return 0.1 end,
+    setAnimation = function(self, a, n, l) end,
+    addAnimation = function(self, ...) end,
+    setTrackTime = function(self, t) end,
+    setTimeScale = function(self, s) end,
+    setCompleteListener = function(self, cb) end,
+    setEventCallback = function(self, cb) end,
+    registerScriptHandler = function(self, cb) end,
+    getBoneSetupPosePosition = function(self, a, b) return {x = 0, y = 0} end,
+    updateWorldTransform = function(self) end,
+    setToSetupPose = function(self) end,
+  })
+  return sk
+end
+spine38 = setmetatable({}, {__index = function(t, k)
+  if k == 'NewSkeletonAnimation' then
+    return { createWithBinaryFile = __mkSkel, createWithFile = __mkSkel, create = __mkSkel }
+  end
+  return nil
+end})
+__wjjhlog('WJJH_BOOT: C/D stubs + skeleton factory installed')
+
+-- ===== cpp.Game 桩 =====
+if not cpp then
+  cpp = {}
+  local g = { _uid = 0, _time = os.time(), _channel = 'guanfang' }
+  g.getInstance = function() return g end
+  g.getTime = function() return g._time end
+  g.setTime = function(t) g._time = t end
+  g.getUserId = function() return g._uid end
+  g.setUserId = function(id) g._uid = id end
+  g.getChannelId = function() return g._channel end
+  g.setChannelId = function(c) g._channel = c end
+  g.getPackageId = function() return g._channel end
+  g.connectServer = function(cb)
+    if type(cb) == 'function' then cb('TRUE') end
+    return 'TRUE'
+  end
+  setmetatable(g, {__index = function(t, k) local f = function() return 0 end; rawset(t, k, f); return f end})
+  cpp.Game = g
+  __wjjhlog('WJJH_BOOT: cpp.Game stub installed')
+end
+
+-- ===== luaTableEncode/Decode 桩 =====
+if not luaTableEncode then
+  local __enc
+  __enc = function(v, seen)
+    seen = seen or {}
+    local t = type(v)
+    if t == 'nil' then return 'nil'
+    elseif t == 'boolean' then return tostring(v)
+    elseif t == 'number' then return string.format('%.17g', v)
+    elseif t == 'string' then return string.format('%q', v)
+    elseif t == 'table' then
+      if seen[v] then return 'nil' end
+      seen[v] = true
+      local parts = {}
+      local n = 0
+      for _i, val in ipairs(v) do
+        n = n + 1
+        parts[#parts+1] = __enc(val, seen)
+      end
+      for k, val in pairs(v) do
+        if not (type(k) == 'number' and math.floor(k) == k and k >= 1 and k <= n) then
+          local ks
+          if type(k) == 'string' and k:match('^[A-Za-z_][A-Za-z0-9_]*$') then ks = k
+          else ks = '[' .. __enc(k, seen) .. ']' end
+          parts[#parts+1] = ks .. '=' .. __enc(val, seen)
+        end
+      end
+      seen[v] = nil
+      return '{' .. table.concat(parts, ',') .. '}'
+    else return 'nil' end
+  end
+  luaTableEncode = function(t) return 'return ' .. __enc(t, {}) end
+  luaTableDecode = function(s)
+    if type(s) ~= 'string' or s == '' then return nil end
+    local f = loadstring(s)
+    if not f then return nil end
+    local ok, t = pcall(f)
+    if not ok then return nil end
+    return t
+  end
+  __wjjhlog('WJJH_BOOT: luaTableEncode/Decode stubs installed')
+end
+
+-- ===== ExtRichTextScroll 真实现(真节点+peer,getRichText 返回哑富文本)=====
+if ExtRichTextScroll and rawget(ExtRichTextScroll, '__wjjh_real') ~= true then
+  local __inner = { setVerticalSpace = function() end,
+    getNewContentSizeHeight = function() return 0 end,
+    pushBackText = function() end, pushBackNewLine = function() end, removeAllChildren = function() end }
+  setmetatable(__inner, {__index = function() return function() return __inner end end})
+  local __peer = {
+    getRichText = function() return __inner end,
+    setBounceEnabled = function() end, setDirection = function() end,
+    setSize = function() end, pushBackText = function() end,
+    pushBackNewLine = function() end, setDirectionEnabled = function() end }
+  local __node = cc.Node:create()
+  tolua.setpeer(__node, __peer)
+  ExtRichTextScroll.create = function(...)
+    local n = cc.Node:create()
+    tolua.setpeer(n, __peer)
+    return n
+  end
+  rawset(ExtRichTextScroll, '__wjjh_real', true)
+  __wjjhlog('WJJH_BOOT: ExtRichTextScroll real impl installed')
+end
+
+-- ===== LoadingLayer.update 守卫(setTotalCount 之前不执行)=====
+local __wjjh_llTried = false
+local function __wjjh_tryHook()
+  if __wjjh_llTried then return end
+  local LL = package.loaded['app.views.layer.LoadingLayer']
+  if type(LL) ~= 'table' or LL.__wjjh_wrap then return end
+  LL.__wjjh_wrap = true
+  __wjjh_llTried = true
+  local oup = LL.update
+  LL.update = function(self, ft)
+    if self._loadingIndex == nil or self._totalCount == nil then return end
+    return oup(self, ft)
+  end
+  __wjjhlog('WJJH_BOOT: LoadingLayer.update guarded')
+end
+cc.Director:getInstance():getScheduler():scheduleScriptFunc(__wjjh_tryHook, 0.5, false)
+
+-- ===== main.lua =====
+local f, err = loadfile(__WJJH_MAINLUA)
+if not f then
+  __wjjhlog('WJJH_BOOTERR loadfile: ' .. tostring(err))
+else
+  local ok, e = pcall(f)
+  if ok then __wjjhlog('WJJH_BOOT: main.lua finished OK')
+  else __wjjhlog('WJJH_BOOTERR runtime: ' .. tostring(e)) end
+end
+)wjjh";
+
         // executeString 会静默吞掉语法/运行错误；显式 load+pcall 把错误打进 launch.log
         lua_pushlstring(L, chunk.c_str(), chunk.size());
         lua_setglobal(L, "__WJJH_CHUNK");
