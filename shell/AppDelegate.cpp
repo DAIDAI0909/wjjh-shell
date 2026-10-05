@@ -195,7 +195,7 @@ bool AppDelegate::applicationDidFinishLaunching()
             // ExtRichTextScroll 真实现(打印/战斗日志滚动区,PrintUI 全套要用):
             // 真 cc.Node(可 addChild/move)+ peer 提供 getRichText 等方法,
             // 富文本本体=哑对象(数字返回 0,其他 no-op),后续要真排版再接 ccui.RichText
-            "if ExtRichTextScroll and not ExtRichTextScroll.__wjjh_real then\n"
+            "if ExtRichTextScroll and rawget(ExtRichTextScroll, '__wjjh_real') ~= true then\n"
             "  local __inner = { setVerticalSpace = function() end,\n"
             "    getNewContentSizeHeight = function() return 0 end,\n"
             "    pushBackText = function() end, pushBackNewLine = function() end, removeAllChildren = function() end }\n"
