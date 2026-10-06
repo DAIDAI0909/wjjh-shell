@@ -368,8 +368,8 @@ def rebuild_member_clean(body, lc_off):
         struct.pack_into('<I', lc_blob, so + 48, sect_new_offs[si])
         if si < len(reloc_new_offs):
             struct.pack_into('<I', lc_blob, so + 56, reloc_new_offs[si])
-    # 回填 SYMTAB 偏移
-    symtab_at = 32 + 72 + 80 * len(sections)
+    # 回填 SYMTAB 偏移(lc_blob 内: SEG 72 + sections*80 = SYMTAB 命令起点)
+    symtab_at = 72 + 80 * len(sections)
     struct.pack_into('<II', lc_blob, symtab_at + 8, sym_new_off)
     struct.pack_into('<II', lc_blob, symtab_at + 16, str_new_off)
 
