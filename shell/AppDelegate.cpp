@@ -213,30 +213,7 @@ __wjjhlog('WJJH_GC: step guard installed')
 --      改 no-op,内存暂由模拟器扛) =====
 local __wjjh_purges = 0
 
--- ===== 协程压力测试(gh68:判别 Rosetta 下 LuaJIT 高频协程切换是否为 SIGSEGV 根因) =====
-do
-  local __co = coroutine.create(function()
-    for __i = 1, 100000 do coroutine.yield(__i) end
-  end)
-  local __ok, __n = true, 0
-  for __i = 1, 100000 do
-    __ok, __n = coroutine.resume(__co)
-    if not __ok then break end
-  end
-  __wjjhlog('WJJH_STRESS: boot 100k switches ok=' .. tostring(__ok) .. ' last=' .. tostring(__n))
-end
-local __frameCo = coroutine.create(function()
-  while true do coroutine.yield() end
-end)
-local __frameN = 0
-cc.Director:getInstance():getScheduler():scheduleScriptFunc(function()
-  __frameN = __frameN + 1
-  for __i = 1, 200 do coroutine.resume(__frameCo) end
-  if __frameN % 60 == 1 then
-    __wjjhlog('WJJH_STRESS: frame ' .. __frameN .. ' x200 ok mem=' .. tostring(math.floor(collectgarbage('count'))))
-  end
-end, 0, false)
-__wjjhlog('WJJH_STRESS: frame stress scheduled')
+-- ===== 协程压力探针已撤(gh68-70 完成判别使命;其大量分配可能加剧堆损坏) =====
 
 -- ===== A 类桩 =====
 if not UpdateManager then

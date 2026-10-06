@@ -79,9 +79,10 @@ if(NOT EXISTS ${ENGINE}/external/luajit/include/lua.h)
         execute_process(COMMAND ${MAKE_EXE} TARGET=x86_64 TARGET_OS=iOS
                         "TARGET_FLAGS=${LJ_TFLAGS}"
                         "TARGET_LDFLAGS=${LJ_TFLAGS}"
-                        # gh69 实锤:非 GC64 下 Lua 堆对象标签损坏(lj_BC_JFUNCV 调 0xffffffff00000002,
-                        # 崩点漂移、各行为假设全灭) -> 开 GC64(64 位引用)根修这类堆损坏
-                        "TARGET_CFLAGS=-DLUAJIT_ENABLE_GC64"
+                        # gh69 实锤:Lua 堆对象被写坏(lj_BC_JFUNCV 调垃圾地址,gh70 GC64 下变成
+                        # 字符串字节=悬空指针指向被字符串复用的内存,UAF 类损坏) ->
+                        # GC64 + 系统分配器双管齐下改分配布局
+                        "TARGET_CFLAGS=-DLUAJIT_ENABLE_GC64 -DLUAJIT_USE_SYSMALLOC"
                         # 两侧都要 LJ_HASJIT=0：目标侧靠上面的 -D，buildvm（主机编译）靠 HOST_CC 的 -D，
                         # 否则 lj_libdef.h 与源码不一致（x86_64 时代踩过的坑）；GC64 同步镜像保 lj_obj.h 一致
                         "HOST_CC=clang -DLUAJIT_DISABLE_JIT -DLUAJIT_ENABLE_GC64"
