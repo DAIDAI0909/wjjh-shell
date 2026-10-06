@@ -222,143 +222,98 @@ def rebuild_member(body, lc_off):
 
 
 def process_archive(path):
-    with open(path, 'rb') as f:
-        data = f.read()
-    arm64 = None
-    if data[:4] == FAT:
-        n, = struct.unpack_from('>I', data, 4)
-        for i in range(n):
-            cpu, sub, off, size, al = struct.unpack_from('>IIIII', data, 8+i*20)
-            if cpu == 0x0100000C:
-                arm64 = data[off:off+size]
-                break
-        if arm64 is None:
-            logp('[prebuilt-fix] %s: no arm64 slice, skip' % os.path.basename(path))
-            return 1
-    elif data[:8] == b'!<arch>\n':
-        arm64 = data
-    else:
-        return 1
+    """v7: 原地改写平台声明，不做任何重打包。
 
-    import tempfile
-    tmp = tempfile.mkdtemp()
-    try:
+    2017 预编译 arm64 切片的问题只有一个：平台标签（真机/错平台/缺失）。
+    LC_VERSION_MIN_IPHONEOS/MACOSX 与 LC_BUILD_VERSION 同为 24 字节——原地改写
+    （cmd 0x24/0x23→0x25，platform=7 iOS-sim，minos=13.0，sdk=17.5）即可，
+    文件尺寸零变化、零偏移重排、libtool 完全不参与。
+    好处：2017 成员普遍存在的符号表/重定位表重叠等畸形原样保留——
+    ld -ld_classic 对这些完全宽容（x86_64 线二十轮验证），只有 libtool 的
+    严格校验会拒收。原先重打包路线反而把宽容的 ld 挡在 libtool 门外。"""
+    with open(path, 'rb') as f:
+        data = bytearray(f.read())
+    n_patched = 0
+    n_noplat = 0
+
+    def patch_slice(buf):
+        nonlocal n_patched, n_noplat
         p = 8
-        members = []
-        while p + 60 <= len(arm64):
-            hdr = arm64[p:p+60]
+        while p + 60 <= len(buf):
+            hdr = buf[p:p + 60]
             name_field = hdr[:16].decode('ascii', 'replace')
-            size = int(hdr[48:58].decode('ascii', 'replace').strip() or 0)
-            content = arm64[p+60:p+60+size]
+            try:
+                size = int(hdr[48:58].decode('ascii', 'replace').strip() or 0)
+            except ValueError:
+                break
+            content = buf[p + 60:p + 60 + size]
             bo = 0
             if name_field.startswith('#1/'):
                 bo = int(name_field[3:].strip())
-            real_name = content[:bo].rstrip(b'\x00').decode('ascii', 'replace')
-            # 符号索引表：内容是旧归档布局的偏移，留着会让 ld 按失效偏移乱读；
-            # libtool 重新打包时会自动重建符号索引 —— 直接丢弃
-            if real_name.startswith('__.SYMDEF') or real_name == '__.SYMDEF SORTED':
+            real_name = content[:bo].rstrip(bytes(1)).decode('ascii', 'replace')
+            if real_name.startswith('__.SYMDEF'):
                 p += 60 + size + (size & 1)
                 continue
             body = content[bo:]
-            members.append((real_name, body))
+            lc_off = find_lc_offset(body)
+            if lc_off is not None:
+                member_patched = False
+                member_noplat = True
+                ncmds, sizeofcmds = struct.unpack_from('<II', body, 16)
+                pp = lc_off
+                end = lc_off + sizeofcmds
+                while pp + 8 <= end:
+                    cmd, cs = struct.unpack_from('<II', body, pp)
+                    if cs < 8 or pp + cs > end:
+                        break
+                    if cmd == LC_VERSION_MIN_IPHONEOS or cmd == LC_VERSION_MIN_MACOSX:
+                        # 原地转 LC_BUILD_VERSION(platform=7, minos=13.0, sdk=17.5)
+                        struct.pack_into('<IIIIII', body, pp,
+                                         LC_BUILD_VERSION, 24,
+                                         PLATFORM_IOS_SIMULATOR,
+                                         0x000D0000, 0x00110500, 0)
+                        member_patched = True
+                        member_noplat = False
+                    elif cmd == LC_BUILD_VERSION:
+                        plat = struct.unpack_from('<I', body, pp + 8)[0]
+                        if plat != PLATFORM_IOS_SIMULATOR:
+                            struct.pack_into('<I', body, pp + 8,
+                                             PLATFORM_IOS_SIMULATOR)
+                            member_patched = True
+                        member_noplat = False
+                    pp += cs
+                if member_patched:
+                    n_patched += 1
+                    buf[p + 60 + bo:p + 60 + size] = body
+                elif member_noplat:
+                    n_noplat += 1
             p += 60 + size + (size & 1)
 
-        rebuilt = 0
-        skipped = 0
-        for i, (real_name, body) in enumerate(members):
-            lc_off = find_lc_offset(body)
-            if lc_off is None:
-                skipped += 1
-                logp('[prebuilt-fix] keep (no LC area) ' + real_name)
-                continue
-            new_body = rebuild_member(body, lc_off)
-            if new_body is None:
-                skipped += 1
-                logp('[prebuilt-fix] keep (rebuild failed) ' + real_name)
-                continue
-            members[i] = (real_name, new_body)
-            rebuilt += 1
-        logp('[prebuilt-fix] %s: %d members, rebuilt=%d skip=%d'
-             % (os.path.basename(path), len(members), rebuilt, skipped))
-
-        orig_bodies = {i: body for i, (real_name, body) in enumerate(members)}
-        for i, (real_name, body) in enumerate(members):
-            with open(os.path.join(tmp, 'm%d.o' % i), 'wb') as f:
-                f.write(body)
-        out_a = os.path.join(tmp, 'fixed.a')
-        obj_paths = [os.path.join(tmp, 'm%d.o' % i) for i in range(len(members))]
-        normalized = set()
-        for attempt in range(6):
-            r = subprocess.run(['libtool', '-static', '-o', out_a] + obj_paths,
-                               capture_output=True, text=True)
-            if r.returncode == 0:
+    if data[:4] == FAT:
+        n, = struct.unpack_from('>I', data, 4)
+        arm64_idx = None
+        for i in range(n):
+            cpu, sub, off, size, al = struct.unpack_from('>IIIII', data, 8 + i * 20)
+            if cpu == 0x0100000C:
+                arm64_idx = i
                 break
-            err = (r.stderr or '') + (r.stdout or '')
-            logp('[prebuilt-fix] libtool attempt %d failed: %s' % (attempt, err[-300:]))
-            # 从报错里找失败成员号（mNN.o）
-            all_m = re.findall(r'm(\d+)\.o\s+malformed', err) or re.findall(r'm(\d+)\.o', err)
-            if not all_m:
-                logp('[prebuilt-fix] no member id in libtool error, abort retries')
-                break
-            idx = int(all_m[-1])   # libtool 每次报一个 offender，取最后一次提及
-            if idx >= len(obj_paths) or idx in normalized:
-                break
-            normalized.add(idx)
-            # 用【原始成员】跑经典 ld -r 归一化（它对畸形头极其宽容），
-            # 归一化产物再做一次 LC 平台重建，替换成员文件后重试 libtool
-            orig = os.path.join(tmp, 'orig%d.o' % idx)
-            with open(orig, 'wb') as f:
-                f.write(orig_bodies[idx])
-            norm = os.path.join(tmp, 'norm%d.o' % idx)
-            r2 = subprocess.run(['ld', '-r', '-ld_classic', '-o', norm, orig],
-                                capture_output=True, text=True)
-            if r2.returncode != 0 or not os.path.exists(norm) or os.path.getsize(norm) == 0:
-                logp('[prebuilt-fix] ld -r failed for m%d.o: %s'
-                     % (idx, (r2.stderr or '')[-220:]))
-                break
-            with open(norm, 'rb') as f:
-                nb = f.read()
-            lc2 = find_lc_offset(nb)
-            if lc2 is None:
-                logp('[prebuilt-fix] normalized m%d.o has no LC area, use as-is' % idx)
-            else:
-                fixed2 = rebuild_member(nb, lc2)
-                if fixed2 is not None:
-                    nb = fixed2
-            with open(obj_paths[idx], 'wb') as f:
-                f.write(nb)
-            logp('[prebuilt-fix] normalized+retagged m%d.o via ld -r, retrying' % idx)
-        if r.returncode != 0:
-            logp('[prebuilt-fix] FATAL libtool failed after retries: '
-                 + ((r.stderr or '')[-300:]))
-            # 诊断:失败成员(重建产物)与原始成员的 LC 布局对照
-            all_m2 = re.findall(r'm(\d+)\.o', (r.stderr or '') + (r.stdout or ''))
-            if all_m2:
-                di = int(all_m2[-1])
-                for tag, f in (('rebuilt', obj_paths[di]), ('original', None)):
-                    src_f = f
-                    if src_f is None:
-                        src_f = os.path.join(tmp, 'orig%d.o' % di)
-                        if not os.path.exists(src_f):
-                            with open(src_f, 'wb') as f:
-                                f.write(orig_bodies[di])
-                    rr = subprocess.run(['otool', '-l', src_f],
-                                        capture_output=True, text=True)
-                    logp('[prebuilt-fix] %s m%d.o otool -l (trimmed):' % (tag, di))
-                    for ln in rr.stdout.split(chr(10)):
-                        if any(k in ln for k in ('cmd ', 'cmdsize', 'offset', 'symoff',
-                                                 'stroff', 'nsects', 'size', 'ncmds')):
-                            logp('  ' + ln.strip())
+        if arm64_idx is None:
+            logp('[prebuilt-fix] %s: no arm64 slice, skip' % os.path.basename(path))
             return 1
-        with open(out_a, 'rb') as f:
-            fixed = f.read()
-        with open(path, 'wb') as f:
-            f.write(fixed)
-        logp('[prebuilt-fix] replaced %s (%d bytes)' % (os.path.basename(path), len(fixed)))
-        return 0
-    finally:
-        import shutil
-        shutil.rmtree(tmp, ignore_errors=True)
+        off, size = struct.unpack_from('>II', data, 8 + arm64_idx * 20 + 8)
+        slice_buf = bytearray(data[off:off + size])
+        patch_slice(slice_buf)
+        data[off:off + size] = slice_buf
+    elif data[:8] == b'!<arch>\n':
+        patch_slice(data)
+    else:
+        return 1
+
+    with open(path, 'wb') as f:
+        f.write(data)
+    logp('[prebuilt-fix] %s: in-place patched=%d no-platform=%d'
+         % (os.path.basename(path), n_patched, n_noplat))
+    return 0
 
 
 def main():
