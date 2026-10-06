@@ -307,6 +307,24 @@ def process_archive(path):
         if r.returncode != 0:
             logp('[prebuilt-fix] FATAL libtool failed after retries: '
                  + ((r.stderr or '')[-300:]))
+            # 诊断:失败成员(重建产物)与原始成员的 LC 布局对照
+            all_m2 = re.findall(r'm(\d+)\.o', (r.stderr or '') + (r.stdout or ''))
+            if all_m2:
+                di = int(all_m2[-1])
+                for tag, f in (('rebuilt', obj_paths[di]), ('original', None)):
+                    src_f = f
+                    if src_f is None:
+                        src_f = os.path.join(tmp, 'orig%d.o' % di)
+                        if not os.path.exists(src_f):
+                            with open(src_f, 'wb') as f:
+                                f.write(orig_bodies[di])
+                    rr = subprocess.run(['otool', '-l', src_f],
+                                        capture_output=True, text=True)
+                    logp('[prebuilt-fix] %s m%d.o otool -l (trimmed):' % (tag, di))
+                    for ln in rr.stdout.split(chr(10)):
+                        if any(k in ln for k in ('cmd ', 'cmdsize', 'offset', 'symoff',
+                                                 'stroff', 'nsects', 'size', 'ncmds')):
+                            logp('  ' + ln.strip())
             return 1
         with open(out_a, 'rb') as f:
             fixed = f.read()
