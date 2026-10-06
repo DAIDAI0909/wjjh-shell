@@ -335,6 +335,55 @@ def process_archive(path):
         f.write(data)
     logp('[prebuilt-fix] %s: in-place patched=%d no-platform=%d'
          % (os.path.basename(path), n_patched, n_noplat))
+    # 自验:重读文件,抽查第一个非 SYMDEF 成员的全部 LC (cmd/platform)
+    with open(path, 'rb') as f:
+        chk = f.read()
+    def dump_lcs(buf, tag):
+        p2 = 8
+        while p2 + 60 <= len(buf):
+            hdr = buf[p2:p2 + 60]
+            try:
+                size2 = int(hdr[48:58].decode('ascii', 'replace').strip() or 0)
+            except ValueError:
+                break
+            content = buf[p2 + 60:p2 + 60 + size2]
+            bo2 = 0
+            nf = hdr[:16].decode('ascii', 'replace')
+            if nf.startswith('#1/'):
+                bo2 = int(nf[3:].strip())
+            rn = content[:bo2].rstrip(bytes(1)).decode('ascii', 'replace')
+            if not rn.startswith('__.SYMDEF'):
+                body2 = content[bo2:]
+                lo2 = find_lc_offset(body2)
+                if lo2 is not None:
+                    sc2 = struct.unpack_from('<I', body2, 20)[0]
+                    pp2 = lo2
+                    out2 = []
+                    while pp2 + 8 <= lo2 + sc2:
+                        cmd2, cs2 = struct.unpack_from('<II', body2, pp2)
+                        if cs2 < 8 or pp2 + cs2 > lo2 + sc2:
+                            out2.append('BREAK@%d' % pp2)
+                            break
+                        if cmd2 in (LC_VERSION_MIN_IPHONEOS, LC_VERSION_MIN_MACOSX):
+                            out2.append('%#x/VER(%d)' % (cmd2, cs2))
+                        elif cmd2 == LC_BUILD_VERSION:
+                            out2.append('BUILD(plat=%d)' % struct.unpack_from('<I', body2, pp2 + 8)[0])
+                        else:
+                            out2.append('%#x' % cmd2)
+                        pp2 += cs2
+                    logp('[prebuilt-fix] VERIFY %s %s: hdr=%d %s'
+                         % (os.path.basename(path), rn, lo2, ' '.join(out2)))
+                return
+            p2 += 60 + size2 + (size2 & 1)
+    if chk[:4] == FAT:
+        n2, = struct.unpack_from('>I', chk, 4)
+        for i in range(n2):
+            cpu2, sub2, off2, size2, al2 = struct.unpack_from('>IIIII', chk, 8 + i * 20)
+            if cpu2 == 0x0100000C:
+                dump_lcs(chk[off2:off2 + size2], 'arm64')
+                break
+    elif chk[:8] == b'!<arch>\n':
+        dump_lcs(chk, 'thin')
     return 0
 
 
