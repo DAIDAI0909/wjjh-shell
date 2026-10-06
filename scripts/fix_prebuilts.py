@@ -54,6 +54,8 @@ def find_lc_offset(body):
     ncmds, sizeofcmds = struct.unpack_from('<II', body, 16)
     best = None
     best_score = -1
+    # gh87 铁律:ld/otool 一律按 28 走链(2017 非标准头);32 视角的合法链 ld 看不见。
+    # 28 验证通过必须无条件优先——否则补丁落在 ld 的链之外,改了等于没改。
     for off in (28, 32):
         end = off + sizeofcmds
         if end > len(body) or end + 8 > len(body):
@@ -73,9 +75,15 @@ def find_lc_offset(body):
                 score += 1
             pp += cmdsize
             count += 1
-        if ok and count == ncmds and score > best_score:
-            best_score = score
-            best = off
+        if ok and count == ncmds:
+            if off == 28:
+                return 28  # 28 视角合法即定案(ld 的一致视角)
+            if score > best_score:
+                best_score = score
+                best = off
+    # 平分时强制 28(链走向与 ld 一致)
+    if 28 in (28, 32):
+        pass
     return best
 
 
@@ -221,8 +229,16 @@ def rebuild_member(body, lc_off):
     return bytes(new)
 
 
+LC_LINKER_OPTIMIZATION_HINT = 0x2E
+
 def patch_macho_lcs(body, lc_off):
-    """原地改写单个 Mach-O 的平台声明。返回是否改动。"""
+    """原地改写单个 Mach-O 的平台声明。返回是否改动。
+
+    gh87 实锤:2017 成员是非标准 28 字节头,ld/otool 从 28 走链;而 find_lc_offset
+    曾按 32 走(数据恰好也组成合法链)——改的 BUILD 根本不在 ld 的链上。
+    本函数以 28 头为唯一视角。典型 ld 视角链:SEG + VERSION_MIN_IPHONEOS(cmdsize=16,
+    畸形) + LINKER_OPTIMIZATION_HINT(16) + SYMTAB + DYSYMTAB。
+    处理:VERSION(16)+HINT(16)=32B 原地合并为 BUILD(24)+pad(8)——hint 纯优化提示可弃。"""
     patched = False
     sizeofcmds = struct.unpack_from('<I', body, 20)[0]
     pp = lc_off
@@ -232,11 +248,41 @@ def patch_macho_lcs(body, lc_off):
         if cs < 8 or pp + cs > end:
             break
         if cmd in (LC_VERSION_MIN_IPHONEOS, LC_VERSION_MIN_MACOSX):
-            struct.pack_into('<IIIIII', body, pp,
-                             LC_BUILD_VERSION, 24,
-                             PLATFORM_IOS_SIMULATOR,
-                             0x000D0000, 0x00110500, 0)
-            patched = True
+            if cs == 24:
+                struct.pack_into('<IIIIII', body, pp,
+                                 LC_BUILD_VERSION, 24,
+                                 PLATFORM_IOS_SIMULATOR,
+                                 0x000D0000, 0x00110500, 0)
+                patched = True
+            else:
+                # 畸形短 VERSION:需 24B。与紧随的 LINKER_OPTIMIZATION_HINT(16B,可弃)
+                # 合并;若紧随的不是 HINT,则把 VERSION 起的 24B 直接改写(邻居是数据时
+                # 由调用方保证 sizeofcmds 覆盖内皆为命令)
+                cs2 = 0
+                if pp + cs + 8 <= end:
+                    cmd2, cs2 = struct.unpack_from('<II', body, pp + cs)
+                if cs == 16 and cmd2 == LC_LINKER_OPTIMIZATION_HINT and cs2 == 16:
+                    struct.pack_into('<IIIIII', body, pp,
+                                     LC_BUILD_VERSION, 24,
+                                     PLATFORM_IOS_SIMULATOR,
+                                     0x000D0000, 0x00110500, 0)
+                    # HINT(16,纯优化提示可弃)被 BUILD 吃掉 8B:后继命令整体左移 8B,
+                    # sizeofcmds-8、ncmds-1(SYMTAB 数据在 LC 区外,偏移字段不受影响)
+                    tail = bytes(body[pp + 32:end])
+                    body[pp + 24:pp + 24 + len(tail)] = tail
+                    struct.pack_into('<I', body, 20, sizeofcmds - 8)
+                    struct.pack_into('<I', body, 16,
+                                     struct.unpack_from('<I', body, 16)[0] - 1)
+                    end -= 8
+                    patched = True
+                    pp += 24
+                    continue
+                else:
+                    struct.pack_into('<IIIIII', body, pp,
+                                     LC_BUILD_VERSION, 24,
+                                     PLATFORM_IOS_SIMULATOR,
+                                     0x000D0000, 0x00110500, 0)
+                    patched = True
         elif cmd == LC_BUILD_VERSION:
             plat = struct.unpack_from('<I', body, pp + 8)[0]
             if plat != PLATFORM_IOS_SIMULATOR:
