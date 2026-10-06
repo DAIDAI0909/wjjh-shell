@@ -172,6 +172,23 @@ if cc and cc.SimpleAudioEngine then
   end
 end
 
+-- ===== GC step 守卫(gh65 定案:ControllLayer:collectGarbageStep 只在 iOS 每帧
+--      collectgarbage("step",安卓官方注释明说关闭及时内存清理;崩溃窗口=循环安装后
+--      ~2 秒内且崩溃点漂移=GC 不确定性。iOS 与安卓口径一致:step 改 no-op) =====
+local __wjjh_gcSteps = 0
+local __wjjh_origCG = collectgarbage
+collectgarbage = function(opt, arg)
+  if opt == 'step' then
+    __wjjh_gcSteps = __wjjh_gcSteps + 1
+    if __wjjh_gcSteps % 300 == 1 then
+      __wjjhlog('WJJH_GC: step suppressed #' .. __wjjh_gcSteps)
+    end
+    return 0
+  end
+  return __wjjh_origCG(opt, arg)
+end
+__wjjhlog('WJJH_GC: step guard installed')
+
 -- ===== A 类桩 =====
 if not UpdateManager then
   local um = {}
@@ -385,7 +402,7 @@ local __modSeen = {}
 -- token 之后的流程里程碑(get_token 应答 -> ControllLayer -> User/BiWu/Task -> MenuLayer -> TitleUI -> StartGame)
 -- TitleUI.update 热路径只计数;SIGSEGV 前最后一条 WJJH_FLOW 日志=崩溃点
 local __wjjh_flowSpecs = {
-  ['app.views.layer.ControllLayer'] = { { 'getLayer' }, { 'pushLayer' }, { 'showLayer' }, { 'popLayer' }, { 'replaceLayer' } },
+  ['app.views.layer.ControllLayer'] = { { 'getLayer' }, { 'pushLayer' }, { 'showLayer' }, { 'popLayer' }, { 'replaceLayer' }, { 'collectGarbageStep' }, { '__updateRoleAttr', 'hot' } },
   ['app.models.user.User'] = { { 'init' } },
   ['app.models.task.Task'] = { { 'init' } },
   ['app.models.BiWu.BiWu'] = { { 'initfightAllData' }, { 'initfightWeekAllData' } },
@@ -541,14 +558,32 @@ local function __wjjh_instrument(name, M)
     if type(osll) == 'function' then
       M.setLogicLoop = function(self, func)
         __wjjhlog('WJJH_MOD: Game.setLogicLoop installed')
-        return osll(self, func)
+        local __n = 0
+        local __orig = func
+        local __wrapped = function(ft)
+          __n = __n + 1
+          if __n % 120 == 1 then
+            __wjjhlog('WJJH_LOOP: logic #' .. __n)
+          end
+          return __orig(ft)
+        end
+        return osll(self, __wrapped)
       end
     end
     local osrl = M.setRenderLoop
     if type(osrl) == 'function' then
       M.setRenderLoop = function(self, func)
         __wjjhlog('WJJH_MOD: Game.setRenderLoop installed')
-        return osrl(self, func)
+        local __n = 0
+        local __orig = func
+        local __wrapped = function(ft)
+          __n = __n + 1
+          if __n % 120 == 1 then
+            __wjjhlog('WJJH_LOOP: render #' .. __n)
+          end
+          return __orig(ft)
+        end
+        return osrl(self, __wrapped)
       end
     end
   elseif name == 'app.extends.Http.HttpManager' then
