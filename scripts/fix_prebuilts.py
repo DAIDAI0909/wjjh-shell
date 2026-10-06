@@ -96,74 +96,79 @@ def parse_lcs(body, lc_off):
 
 def rebuild_member(body, lc_off):
     """重建 LC 区：剔除平台声明，追加标准 LC_BUILD_VERSION(platform=7)。
-    返回新 body；LC 区无法定位/重建失败返回 None（调用方保留原件）。
-    特例：部分 2017 成员的符号表数据长在 LC 区内部（libtool 报 "symbol table ...
-    overlaps Mach-O headers"）——先把 [lo,hi) 整段搬迁到文件尾，再做常规 LC 重建；
-    LC 区变长拼接后所有区内指针 +delta、搬迁段的指针 +delta，两段分开结算。"""
+    返回新 body；LC 区无法定位返回 None。
+
+    2017 畸形成员通病：sizeofcmds 虚胖——真命令后面跟的是 section contents /
+    符号表等数据（伪 LC），libtool 报 "overlaps Mach-O headers"。
+    解法：数据起点 = 真正的 LC 区终点。把 LC 区收缩到数据起点（真命令保留、
+    伪 LC 剔除），原地拼接新 LC 区，其后所有数据偏移统一 +delta。数据零搬迁。"""
     lcs, old_sc, truncated = parse_lcs(body, lc_off)
     if truncated:
         return None
+    old_end = lc_off + old_sc
 
-    symtab_span = None
-    for cmd, cs, pp in lcs:
-        if cmd == LC_SYMTAB:
-            symoff, nsyms, stroff, strsize = struct.unpack_from('<IIII', body, pp + 8)
-            lo = min(symoff, stroff)
-            hi = max(symoff + nsyms * 16, stroff + strsize)
-            if nsyms > 0 and strsize > 0 and lo != 0 and lo < lc_off + old_sc:
-                symtab_span = (symoff, nsyms, stroff, strsize, lo, hi)
-                break
-
-    span_pad = 0
-    span_len = 0
-    new_lo_end = 0
-    if symtab_span is not None:
-        symoff, nsyms, stroff, strsize, lo, hi = symtab_span
-        span = body[lo:hi]
-        span_pad = (-len(span)) % 8
-        span_len = len(span) + span_pad
-        new = bytearray(body[:lo]) + bytearray(body[hi:])
-        new_lo_end = len(new)
-        new += span + bytes(span_pad)
-        new_symoff = symoff - lo + new_lo_end if symoff >= lo else symoff
-        new_stroff = stroff - lo + new_lo_end if stroff >= lo else stroff
-        for cmd, cs, pp in lcs:
-            if cmd == LC_SYMTAB:
-                struct.pack_into('<IIII', new, pp + 8,
-                                 new_symoff, nsyms, new_stroff, strsize)
-            elif cmd == LC_DYSYMTAB:
-                for idx in range(2, 18):
-                    fo = pp + 16 + idx * 4
-                    if fo + 4 <= pp + cs:
-                        v, = struct.unpack_from('<I', body, fo)
-                        if lo <= v < hi:
-                            struct.pack_into('<I', new, fo, v - lo + new_lo_end)
-        body = bytes(new)
-
-    # 第一遍：收集 LC 区内所有文件偏移字段（数据段 section/reloff、symtab、dysymtab、data-in-code）
-    offset_fields = []
+    # ---- 收集所有 LC 引用的数据区间与偏移字段 ----
+    ranges = []
+    refs = []
     for cmd, cs, pp in lcs:
         if cmd == LC_SEGMENT_64:
             nsects, = struct.unpack_from('<I', body, pp + 64)
             sec_base = pp + 72
             for s in range(nsects):
-                offset_fields.append(sec_base + s * 80 + 48)
-                offset_fields.append(sec_base + s * 80 + 60)
+                so = sec_base + s * 80
+                offset, size = struct.unpack_from('<II', body, so + 48)
+                if size > 0 and offset > 0:
+                    ranges.append((offset, min(offset + size, len(body))))
+                refs.append(so + 48)
+                refs.append(so + 60)
         elif cmd == LC_SYMTAB:
-            offset_fields.append(pp + 16)
-            offset_fields.append(pp + 24)
+            symoff, nsyms, stroff, strsize = struct.unpack_from('<IIII', body, pp + 8)
+            if nsyms > 0 and symoff > 0:
+                ranges.append((symoff, min(symoff + nsyms * 16, len(body))))
+            if strsize > 0 and stroff > 0:
+                ranges.append((stroff, min(stroff + strsize, len(body))))
+            refs.append(pp + 16)
+            refs.append(pp + 24)
         elif cmd == LC_DYSYMTAB:
             for idx in range(2, 18):
                 fo = pp + 16 + idx * 4
                 if fo + 4 <= pp + cs:
-                    offset_fields.append(fo)
+                    refs.append(fo)
+            ioff, nind = struct.unpack_from('<II', body, pp + 16 + 8 * 8)
+            if nind > 0 and ioff > 0:
+                ranges.append((ioff, min(ioff + nind * 4, len(body))))
         elif cmd == LC_DATA_IN_CODE:
-            offset_fields.append(pp + 8)
+            doff, dsz = struct.unpack_from('<II', body, pp + 8)
+            if dsz > 0 and doff > 0:
+                ranges.append((doff, min(doff + dsz, len(body))))
+            refs.append(pp + 8)
 
-    kept = [(cmd, cs, pp) for cmd, cs, pp in lcs
-            if cmd not in (LC_BUILD_VERSION, LC_VERSION_MIN_MACOSX, LC_VERSION_MIN_IPHONEOS)]
+    # ---- 数据起点：落在名义 LC 区内部的最早数据 ----
+    inside = [s for (s, e) in ranges if lc_off < s < old_end]
+    if inside:
+        true_end = min(inside)
+        # 真命令 = 完整落在 [lc_off, true_end) 内的；跨界命令视为数据（丢弃其头部）
+        kept = []
+        pp = lc_off
+        while pp + 8 <= true_end:
+            cmd, cs = struct.unpack_from('<II', body, pp)
+            if cs < 8:
+                return None
+            if pp + cs > true_end:
+                break
+            if cmd not in (LC_BUILD_VERSION, LC_VERSION_MIN_MACOSX, LC_VERSION_MIN_IPHONEOS):
+                kept.append((cmd, cs, pp))
+            pp += cs
+        old_true_sc = pp - lc_off
+    else:
+        true_end = old_end
+        kept = [(cmd, cs, pp) for cmd, cs, pp in lcs
+                if cmd not in (LC_BUILD_VERSION, LC_VERSION_MIN_MACOSX,
+                               LC_VERSION_MIN_IPHONEOS)]
+        old_true_sc = old_sc
+
     new_sc = sum(cs for _, cs, _ in kept) + 24
-    delta = new_sc - old_sc
+    delta = new_sc - old_true_sc
 
     new_lc = bytearray()
     for cmd, cs, pp in kept:
@@ -175,42 +180,14 @@ def rebuild_member(body, lc_off):
         0)
 
     new = bytearray(body)
-    for fo in offset_fields:
+    for fo in refs:
         v, = struct.unpack_from('<I', body, fo)
-        if v != 0 and v >= lc_off + old_sc:
+        if v != 0 and v >= true_end:
             struct.pack_into('<I', new, fo, v + delta)
-    new[lc_off:lc_off+old_sc] = new_lc
+    new[lc_off:true_end] = new_lc
     struct.pack_into('<I', new, 16, len(kept) + 1)
     struct.pack_into('<I', new, 20, new_sc)
-
-    # LC 区 +delta 拼接后：搬迁段的指针补上 delta（搬迁时写的是拼接前的位置）
-    if symtab_span is not None:
-        pp = lc_off
-        end = lc_off + new_sc
-        while pp + 8 <= end:
-            cmd, cs = struct.unpack_from('<II', new, pp)
-            if cmd == LC_SYMTAB:
-                so, ns, to, ss = struct.unpack_from('<IIII', new, pp + 8)
-                if so >= new_lo_end:
-                    struct.pack_into('<IIII', new, pp + 8,
-                                     so + delta, ns, to + delta, ss)
-                break
-            pp += cs
-        span_base = new_lo_end + delta
-        span_top = span_base + span_len
-        pp = lc_off
-        while pp + 8 <= end:
-            cmd, cs = struct.unpack_from('<II', new, pp)
-            if cmd == LC_DYSYMTAB:
-                for idx in range(2, 18):
-                    fo = pp + 16 + idx * 4
-                    if fo + 4 <= pp + cs:
-                        v, = struct.unpack_from('<I', new, fo)
-                        if new_lo_end <= v < new_lo_end + span_len:
-                            struct.pack_into('<I', new, fo, v + delta)
-            pp += cs
     return bytes(new)
-
 
 
 def process_archive(path):
@@ -288,12 +265,11 @@ def process_archive(path):
             err = (r.stderr or '') + (r.stdout or '')
             logp('[prebuilt-fix] libtool attempt %d failed: %s' % (attempt, err[-300:]))
             # 从报错里找失败成员号（mNN.o）
-            m = re.search(r'(?:object:.*?|/)(m(\d+)\.o)\s+malformed', err)
-            if not m:
-                m = re.search(r'(m(\d+)\.o)\s*[^\n]*?(?:malformed|is not an object|unknown)', err)
-            if not m:
+            all_m = re.findall(r'm(\d+)\.o\s+malformed', err) or re.findall(r'm(\d+)\.o', err)
+            if not all_m:
+                logp('[prebuilt-fix] no member id in libtool error, abort retries')
                 break
-            idx = int(m.group(2))
+            idx = int(all_m[-1])   # libtool 每次报一个 offender，取最后一次提及
             if idx >= len(obj_paths) or idx in normalized:
                 break
             normalized.add(idx)
