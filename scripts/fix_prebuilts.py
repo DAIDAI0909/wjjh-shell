@@ -231,65 +231,164 @@ def rebuild_member(body, lc_off):
 
 LC_LINKER_OPTIMIZATION_HINT = 0x2E
 
-def patch_macho_lcs(body, lc_off):
-    """原地改写单个 Mach-O 的平台声明。返回是否改动。
+def rebuild_member_clean(body, lc_off):
+    """完整重建成员:按干净布局重新组装标准 Mach-O。
 
-    gh87 实锤:2017 成员是非标准 28 字节头,ld/otool 从 28 走链;而 find_lc_offset
-    曾按 32 走(数据恰好也组成合法链)——改的 BUILD 根本不在 ld 的链上。
-    本函数以 28 头为唯一视角。典型 ld 视角链:SEG + VERSION_MIN_IPHONEOS(cmdsize=16,
-    畸形) + LINKER_OPTIMIZATION_HINT(16) + SYMTAB + DYSYMTAB。
-    处理:VERSION(16)+HINT(16)=32B 原地合并为 BUILD(24)+pad(8)——hint 纯优化提示可弃。"""
-    patched = False
-    sizeofcmds = struct.unpack_from('<I', body, 20)[0]
+    原地修补路线在 2017 畸形成员上与 otool/ld 的视角纠缠不清(gh83-90 十轮)。
+    本函数不再修补:直接提取数据区(sections/symtab/strtab/relocs),按标准布局
+    重新生成整个文件——所有字节由我们写出,零解读歧义。
+
+    新布局(全部对齐 8):
+      32B 头(ncmds/sizeofcmds 重算)
+      LC_SEGMENT_64(含全部 sections,fileoff 重排)
+      LC_BUILD_VERSION(24, platform=7 ios-sim, minos=13.0, sdk=17.5)
+      LC_SYMTAB(24)
+      [LC_DYSYMTAB(80) 仅当原成员有非零 dysymtab 偏移]
+      数据区: sections 内容(按原相对顺序) + 重定位表 + 符号表 + 字符串表
+    返回新 bytes;无法解析返回 None。"""
+    if body[:4] != b'\xcf\xfa\xed\xfe':
+        return None
+    ncmds, sizeofcmds = struct.unpack_from('<II', body, 16)
+    flags = struct.unpack_from('<I', body, 24)[0]
+
+    # ---- 收集原成员的命令信息(只信字段,不信链) ----
+    sections = []   # (sectname, segname, addr, size, align, reloff, nreloc, flags, res1, res2, old_off)
+    symtab = None   # (symoff, nsyms, stroff, strsize)
+    dysyms = []     # 非 dysymtab 的其他命令原样保留: (cmd, cs, raw bytes)
+    dys_nonzero = False
+    dys_raw = None
     pp = lc_off
-    end = lc_off + sizeofcmds
-    while pp + 8 <= end:
+    lc_end = lc_off + sizeofcmds
+    while pp + 8 <= lc_end:
         cmd, cs = struct.unpack_from('<II', body, pp)
-        if cs < 8 or pp + cs > end:
-            break
-        if cmd in (LC_VERSION_MIN_IPHONEOS, LC_VERSION_MIN_MACOSX):
-            if cs == 24:
-                struct.pack_into('<IIIIII', body, pp,
-                                 LC_BUILD_VERSION, 24,
-                                 PLATFORM_IOS_SIMULATOR,
-                                 0x000D0000, 0x00110500, 0)
-                patched = True
-            else:
-                # 畸形短 VERSION:需 24B。与紧随的 LINKER_OPTIMIZATION_HINT(16B,可弃)
-                # 合并;若紧随的不是 HINT,则把 VERSION 起的 24B 直接改写(邻居是数据时
-                # 由调用方保证 sizeofcmds 覆盖内皆为命令)
-                cs2 = 0
-                if pp + cs + 8 <= end:
-                    cmd2, cs2 = struct.unpack_from('<II', body, pp + cs)
-                if cs == 16 and cmd2 == LC_LINKER_OPTIMIZATION_HINT and cs2 == 16:
-                    struct.pack_into('<IIIIII', body, pp,
-                                     LC_BUILD_VERSION, 24,
-                                     PLATFORM_IOS_SIMULATOR,
-                                     0x000D0000, 0x00110500, 0)
-                    # HINT(16,纯优化提示可弃)被 BUILD 吃掉 8B:后继命令整体左移 8B,
-                    # sizeofcmds-8、ncmds-1(SYMTAB 数据在 LC 区外,偏移字段不受影响)
-                    tail = bytes(body[pp + 32:end])
-                    body[pp + 24:pp + 24 + len(tail)] = tail
-                    struct.pack_into('<I', body, 20, sizeofcmds - 8)
-                    struct.pack_into('<I', body, 16,
-                                     struct.unpack_from('<I', body, 16)[0] - 1)
-                    end -= 8
-                    patched = True
-                    pp += 24
-                    continue
-                else:
-                    struct.pack_into('<IIIIII', body, pp,
-                                     LC_BUILD_VERSION, 24,
-                                     PLATFORM_IOS_SIMULATOR,
-                                     0x000D0000, 0x00110500, 0)
-                    patched = True
-        elif cmd == LC_BUILD_VERSION:
-            plat = struct.unpack_from('<I', body, pp + 8)[0]
-            if plat != PLATFORM_IOS_SIMULATOR:
-                struct.pack_into('<I', body, pp + 8, PLATFORM_IOS_SIMULATOR)
-                patched = True
+        if cs < 8 or pp + cs > min(lc_end + 64, len(body)):
+            break  # 跨界=数据,弃
+        if cmd == 0x19:  # LC_SEGMENT_64
+            nsects = struct.unpack_from('<I', body, pp + 64)[0]
+            for si in range(nsects):
+                so = pp + 72 + si * 80
+                if so + 80 > len(body):
+                    break
+                sectname = bytes(body[so:so + 16])
+                segname = bytes(body[so + 16:so + 32])
+                addr, size = struct.unpack_from('<QQ', body, so + 32)
+                offset, align, reloff, nreloc = struct.unpack_from('<IIII', body, so + 48)
+                sflags, res1, res2 = struct.unpack_from('<III', body, so + 64)
+                if size > 0 and 0 < offset < len(body):
+                    sections.append((sectname, segname, addr, size, align,
+                                     reloff, nreloc, sflags, res1, res2, offset))
+        elif cmd == 0x2:  # LC_SYMTAB
+            symoff, nsyms, stroff, strsize = struct.unpack_from('<IIII', body, pp + 8)
+            if 0 < symoff < len(body) and nsyms > 0:
+                symtab = (symoff, nsyms, stroff, strsize)
+        elif cmd == 0xB:  # LC_DYSYMTAB
+            dys_raw = bytes(body[pp:pp + cs])
+            vals = [struct.unpack_from('<I', body, pp + 8 + i * 4)[0] for i in range(18)]
+            dys_nonzero = any(v != 0 for v in vals[2:])
+        elif cmd in (0x24, 0x23, 0x25):
+            pass  # 平台命令:重建时统一替换
+        elif cmd == 0x2E:
+            pass  # LC_LINKER_OPTIMIZATION_HINT: 非必需,弃
+        else:
+            dysyms.append((cmd, cs, bytes(body[pp:pp + cs])))
         pp += cs
-    return patched
+
+    if not sections or symtab is None:
+        return None
+
+    # ---- 组装新文件 ----
+    out = bytearray()
+    head = bytearray(32)
+    struct.pack_into('<IIII', head, 0, 0x0C, 0x0100000C, 0, 1)  # magic,cputype,subtype,filetype
+    # ncmds/sizeofcmds 后填
+    struct.pack_into('<I', head, 24, flags)
+    out += head
+
+    lc_blob = bytearray()
+    # SEG
+    seg = bytearray(72)
+    struct.pack_into('<II', seg, 0, 0x19, 72 + 80 * len(sections))
+    seg[8:24] = b'__DATA'.ljust(16, bytes(1))[:16]  # segname 占位,以第一个 section 的 segname 为准? 用 __DATA 统一
+    total_size = sum(s[3] for s in sections)
+    struct.pack_into('<QQQQ', seg, 24, 0, total_size, 0, total_size)
+    struct.pack_into('<IIII', seg, 56, 7, 7, len(sections), 0)
+    lc_blob += seg
+    for si, (sectname, segname, addr, size, align, reloff, nreloc, sflags, res1, res2, old_off) in enumerate(sections):
+        sec = bytearray(80)
+        sec[0:16] = sectname
+        sec[16:32] = segname
+        struct.pack_into('<QQ', sec, 32, addr, size)
+        # offset 稍后回填(需要先算命令区大小)
+        struct.pack_into('<IIII', sec, 48, 0, align, 0, nreloc)
+        struct.pack_into('<III', sec, 64, sflags, res1, res2)
+        lc_blob += sec
+    # BUILD
+    lc_blob += struct.pack('<IIIIII', 0x25, 24, 7, 0x000D0000, 0x00110500, 0)
+    # SYMTAB
+    symoff_n, nsyms, stroff_n, strsize = symtab
+    lc_blob += struct.pack('<IIIIII', 0x2, 24, 0, nsyms, 0, strsize)
+    ncmds_new = 3
+    if dys_raw is not None and dys_nonzero:
+        lc_blob += dys_raw
+        ncmds_new += 1
+    for cmd, cs, raw in dysyms:
+        lc_blob += raw
+        ncmds_new += 1
+
+    # 数据区布局(8 对齐)
+    data_off = 32 + len(lc_blob)
+    cur = data_off
+    sect_new_offs = []
+    for (sectname, segname, addr, size, align, reloff, nreloc, sflags, res1, res2, old_off) in sections:
+        cur = (cur + 7) // 8 * 8
+        sect_new_offs.append(cur)
+        cur += size
+    # 重定位表(各 section 的 reloff/nreloc 区间)
+    relocs = []
+    for (sectname, segname, addr, size, align, reloff, nreloc, sflags, res1, res2, old_off) in sections:
+        if nreloc > 0 and 0 < reloff < len(body):
+            raw = bytes(body[reloff:reloff + nreloc * 8])
+            relocs.append((nreloc, raw))
+    cur = (cur + 7) // 8 * 8
+    reloc_new_offs = []
+    for nreloc, raw in relocs:
+        reloc_new_offs.append(cur)
+        cur += len(raw)
+    # 符号表 + 字符串表
+    sym_new_off = cur
+    sym_bytes = bytes(body[symoff_n:symoff_n + nsyms * 16])
+    cur += len(sym_bytes)
+    str_new_off = cur
+    str_bytes = bytes(body[stroff_n:stroff_n + strsize])
+    cur += len(str_bytes)
+
+    # 回填 section offset/reloff
+    for si in range(len(sections)):
+        so = 72 + 32 + si * 80  # lc_blob 内: head 32 + SEG 72
+        struct.pack_into('<I', lc_blob, so + 48, sect_new_offs[si])
+        if si < len(reloc_new_offs):
+            struct.pack_into('<I', lc_blob, so + 56, reloc_new_offs[si])
+    # 回填 SYMTAB 偏移
+    symtab_at = 32 + 72 + 80 * len(sections)
+    struct.pack_into('<II', lc_blob, symtab_at + 8, sym_new_off)
+    struct.pack_into('<II', lc_blob, symtab_at + 16, str_new_off)
+
+    struct.pack_into('<I', head, 16, ncmds_new)
+    struct.pack_into('<I', head, 20, len(lc_blob))
+
+    out = bytearray(head) + lc_blob
+    # 数据区
+    blob = bytearray(cur)
+    blob[0:32] = head
+    blob[32:32 + len(lc_blob)] = lc_blob
+    for si, (sectname, segname, addr, size, align, reloff, nreloc, sflags, res1, res2, old_off) in enumerate(sections):
+        end_off = min(old_off + size, len(body))
+        blob[sect_new_offs[si]:sect_new_offs[si] + (end_off - old_off)] = body[old_off:end_off]
+    for (nreloc, raw), new_off in zip(relocs, reloc_new_offs):
+        blob[new_off:new_off + len(raw)] = raw
+    blob[sym_new_off:sym_new_off + len(sym_bytes)] = sym_bytes
+    blob[str_new_off:str_new_off + len(str_bytes)] = str_bytes
+    return bytes(blob)
 
 
 def process_archive(path):
@@ -352,9 +451,12 @@ def process_archive(path):
                 logp('[prebuilt-fix] SKIP member %s: magic=%s len=%d'
                      % (real_name or '?', body[:4].hex(), len(body)))
             if lc_off is not None:
-                if patch_macho_lcs(body, lc_off):
+                new_body = rebuild_member_clean(body, lc_off)
+                if new_body is not None:
+                    buf[p + 60:p + 60 + size] = bytes(body[:bo]) + new_body
                     n_patched += 1
-                    buf[p + 60 + bo:p + 60 + size] = body
+                else:
+                    logp('[prebuilt-fix] rebuild failed %s, keep original' % (real_name or '?'))
             p += 60 + size + (size & 1)
 
     if data[:4] == FAT:
