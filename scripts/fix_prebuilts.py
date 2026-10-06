@@ -478,6 +478,14 @@ def process_archive(path):
                                     capture_output=True, text=True)
                 logp('[prebuilt-fix] LDTEST vtool: '
                      + (r5.stdout or r5.stderr or '').replace(chr(10), ' | ')[:400])
+                # 十六进制转储头部 96B + ncmds/sizeofcmds 字段,终结视角之争
+                with open(m3, 'rb') as f:
+                    head3 = f.read(96)
+                logp('[prebuilt-fix] HEXHEAD: ' + head3.hex())
+                nc3, sc3 = struct.unpack_from('<II', head3, 16)
+                logp('[prebuilt-fix] HEXHEAD ncmds=%d sizeofcmds=%d flags@24=%#x dword@28=%#x'
+                     % (nc3, sc3, struct.unpack_from('<I', head3, 24)[0],
+                        struct.unpack_from('<I', head3, 28)[0]))
                 break
     finally:
         _sh.rmtree(tmp3, ignore_errors=True)
