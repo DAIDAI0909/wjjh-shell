@@ -326,6 +326,7 @@ def rebuild_member_clean(body, lc_off):
     lc_blob += struct.pack('<IIIIII', 0x25, 24, 7, 0x000D0000, 0x00110500, 0)
     # SYMTAB
     symoff_n, nsyms, stroff_n, strsize = symtab
+    symtab_at = len(lc_blob)  # 记录 SYMTAB 命令在 lc_blob 内的真实位置
     lc_blob += struct.pack('<IIIIII', 0x2, 24, 0, nsyms, 0, strsize)
     ncmds_new = 3
     if dys_raw is not None and dys_nonzero:
@@ -362,16 +363,15 @@ def rebuild_member_clean(body, lc_off):
     str_bytes = bytes(body[stroff_n:stroff_n + strsize])
     cur += len(str_bytes)
 
-    # 回填 section offset/reloff
+    # 回填 section offset/reloff(lc_blob 内: SEG 命令占 [0,72), sections 从 72 起)
     for si in range(len(sections)):
-        so = 72 + 32 + si * 80  # lc_blob 内: head 32 + SEG 72
+        so = 72 + si * 80
         struct.pack_into('<I', lc_blob, so + 48, sect_new_offs[si])
         if si < len(reloc_new_offs):
             struct.pack_into('<I', lc_blob, so + 56, reloc_new_offs[si])
-    # 回填 SYMTAB 偏移(lc_blob 内: SEG 72 + sections*80 = SYMTAB 命令起点)
-    symtab_at = 72 + 80 * len(sections)
-    struct.pack_into('<II', lc_blob, symtab_at + 8, sym_new_off)
-    struct.pack_into('<II', lc_blob, symtab_at + 16, str_new_off)
+    # 回填 SYMTAB 偏移(构建时记录的位置)
+    struct.pack_into('<I', lc_blob, symtab_at + 8, sym_new_off)
+    struct.pack_into('<I', lc_blob, symtab_at + 16, str_new_off)
 
     struct.pack_into('<I', head, 16, ncmds_new)
     struct.pack_into('<I', head, 20, len(lc_blob))
