@@ -389,8 +389,9 @@ local function __wjjh_instrument(name, M)
   M.__wjjh_probe = true
   __wjjhlog('WJJH_MOD: ' .. name .. ' loaded, instrumenting')
   if __wjjh_flowSpecs[name] then
-    -- 流程里程碑探针:enter/exit 日志,SIGSEGV/报错前最后一条即崩溃点
-    -- 注意:不用 pcall(5.1 不能跨 C 调用 yield,层切换方法可能内部 yield,包了会引入新 bug)
+    -- 流程里程碑探针:enter 日志,SIGSEGV 前最后一条即崩溃点
+    -- ★yield-safe 铁律:被包装函数可能内部 coroutine.yield(CoroutineStack:push 就会),
+    --   禁止 pcall/表构造器/unpack 捕获(LuaJIT 跨 C 边界 yield=帧损坏->SIGSEGV,gh63 实测)
     local hotCounters = {}
     for i = 1, #__wjjh_flowSpecs[name] do
       local spec = __wjjh_flowSpecs[name][i]
@@ -407,9 +408,7 @@ local function __wjjh_instrument(name, M)
             return of(self, ...)
           end
           __wjjhlog('WJJH_FLOW: ' .. name .. '.' .. mn .. ' enter')
-          local rs = { of(self, ...) }
-          __wjjhlog('WJJH_FLOW: ' .. name .. '.' .. mn .. ' exit')
-          return unpack(rs)
+          return of(self, ...)
         end
       end
     end
@@ -465,9 +464,7 @@ local function __wjjh_instrument(name, M)
         local n1 = '?'
         if type(funcTab) == 'table' then n1 = tostring(#funcTab) end
         __wjjhlog('WJJH_LL: show enter self=' .. tostring(self) .. ' funcTab=' .. type(funcTab) .. ' n=' .. n1 .. ' pct=' .. type(precentList))
-        local ok, e = pcall(oshow, self, funcTab, func, precentList)
-        __wjjhlog('WJJH_LL: show exit ok=' .. tostring(ok) .. ' err=' .. __ts(e))
-        if not ok then error(e) end
+        return oshow(self, funcTab, func, precentList)
       end
     end
     local ostc = M.setTotalCount
@@ -489,9 +486,7 @@ local function __wjjh_instrument(name, M)
     if type(oinit) == 'function' then
       M.init = function(self)
         __wjjhlog('WJJH_LL: init enter self=' .. tostring(self))
-        local ok, e = pcall(oinit, self)
-        __wjjhlog('WJJH_LL: init exit ok=' .. tostring(ok) .. ' err=' .. __ts(e))
-        if not ok then error(e) end
+        return oinit(self)
       end
     end
   elseif name == 'app.models.loader.Loader' then
@@ -499,9 +494,7 @@ local function __wjjh_instrument(name, M)
     if type(olc) == 'function' then
       M.loadCustom = function(self, func)
         __wjjhlog('WJJH_MOD: loadCustom enter')
-        local ok, e = pcall(olc, self, func)
-        __wjjhlog('WJJH_MOD: loadCustom exit ok=' .. tostring(ok) .. ' err=' .. __ts(e))
-        if not ok then error(e) end
+        return olc(self, func)
       end
     end
   elseif name == 'app.models.game.Game' then
@@ -509,18 +502,14 @@ local function __wjjh_instrument(name, M)
     if type(old) == 'function' then
       M.load = function(self, func)
         __wjjhlog('WJJH_MOD: Game.load enter')
-        local ok, e = pcall(old, self, func)
-        __wjjhlog('WJJH_MOD: Game.load exit ok=' .. tostring(ok) .. ' err=' .. __ts(e))
-        if not ok then error(e) end
+        return old(self, func)
       end
     end
     local ogi = M.init
     if type(ogi) == 'function' then
       M.init = function(self, func)
         __wjjhlog('WJJH_MOD: Game.init enter')
-        local ok, e = pcall(ogi, self, func)
-        __wjjhlog('WJJH_MOD: Game.init exit ok=' .. tostring(ok) .. ' err=' .. __ts(e))
-        if not ok then error(e) end
+        return ogi(self, func)
       end
     end
     local osll = M.setLogicLoop
