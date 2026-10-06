@@ -367,6 +367,12 @@ local __wjjh_flowSpecs = {
   ['app.models.game.GameStart'] = { { 'start_game' } },
   ['app.views.ui.TitleUI'] = { { 'init' }, { 'create' }, { 'update', 'hot' } },
   ['app.controllers.Audio'] = { { 'playMusic' }, { 'playEffect' }, { 'playBackgroundMusic' }, { 'stopMusic' } },
+  ['app.views.layer.MainLayer'] = { { 'init' }, { 'create' }, { 'update', 'hot' }, { 'showLayer' }, { 'onShow' } },
+  ['app.views.layer.MenuLayer.MenuLayer'] = { { 'init' }, { 'create' }, { 'StartGame' } },
+  ['third.coroutine.CoroutinePool'] = { { 'update', 'hot' }, { 'doUpdate', 'hot' }, { 'add' }, { 'addAsync' } },
+  ['third.coroutine.Coroutine'] = { { 'resume', 'hot' }, { 'init' } },
+  ['third.async.AsyncFunction'] = { { 'create' } },
+  ['app.extends.LifeCycleSupport'] = { { 'awake' }, { 'onAwake' }, { 'register' } },
 }
 local function __ts(v)
   if v == nil then return 'nil' end
@@ -390,7 +396,7 @@ local function __wjjh_instrument(name, M)
         M[mn] = function(self, ...)
           if hot then
             hotCounters[mn] = (hotCounters[mn] or 0) + 1
-            if hotCounters[mn] % 20 == 1 then
+            if hotCounters[mn] % 5 == 1 then
               __wjjhlog('WJJH_FLOW: ' .. name .. '.' .. mn .. ' #' .. hotCounters[mn])
             end
             return of(self, ...)
@@ -512,6 +518,20 @@ local function __wjjh_instrument(name, M)
         if not ok then error(e) end
       end
     end
+    local osll = M.setLogicLoop
+    if type(osll) == 'function' then
+      M.setLogicLoop = function(self, func)
+        __wjjhlog('WJJH_MOD: Game.setLogicLoop installed')
+        return osll(self, func)
+      end
+    end
+    local osrl = M.setRenderLoop
+    if type(osrl) == 'function' then
+      M.setRenderLoop = function(self, func)
+        __wjjhlog('WJJH_MOD: Game.setRenderLoop installed')
+        return osrl(self, func)
+      end
+    end
   elseif name == 'app.extends.Http.HttpManager' then
     local names = { 'getToken', 'getTime', 'getWebConfig' }
     for i = 1, #names do
@@ -540,6 +560,12 @@ local __wjjh_targets = {
   ['app.models.game.GameStart'] = true,
   ['app.views.ui.TitleUI'] = true,
   ['app.controllers.Audio'] = true,
+  ['app.views.layer.MainLayer'] = true,
+  ['app.views.layer.MenuLayer.MenuLayer'] = true,
+  ['third.coroutine.CoroutinePool'] = true,
+  ['third.coroutine.Coroutine'] = true,
+  ['third.async.AsyncFunction'] = true,
+  ['app.extends.LifeCycleSupport'] = true,
 }
 local __origRequire = require
 require = function(name)
