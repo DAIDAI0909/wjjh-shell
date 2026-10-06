@@ -302,6 +302,9 @@ def process_archive(path):
                     buf[p + 60 + bo:p + 60 + size] = body
                 continue
             lc_off = find_lc_offset(body)
+            if lc_off is None:
+                logp('[prebuilt-fix] SKIP member %s: magic=%s len=%d'
+                     % (real_name or '?', body[:4].hex(), len(body)))
             if lc_off is not None:
                 if patch_macho_lcs(body, lc_off):
                     n_patched += 1
