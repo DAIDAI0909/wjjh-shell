@@ -96,83 +96,90 @@ def parse_lcs(body, lc_off):
 
 def rebuild_member(body, lc_off):
     """重建 LC 区：剔除平台声明，追加标准 LC_BUILD_VERSION(platform=7)。
-    返回新 body；LC 区无法定位返回 None。
 
-    2017 畸形成员通病：sizeofcmds 虚胖——真命令后面跟的是 section contents /
-    符号表等数据（伪 LC），libtool 报 "overlaps Mach-O headers"。
-    解法：数据起点 = 真正的 LC 区终点。把 LC 区收缩到数据起点（真命令保留、
-    伪 LC 剔除），原地拼接新 LC 区，其后所有数据偏移统一 +delta。数据零搬迁。"""
-    lcs, old_sc, truncated = parse_lcs(body, lc_off)
-    if truncated:
-        return None
-    old_end = lc_off + old_sc
+    2017 畸形成员通病：sizeofcmds 虚胖（真命令后面跟的是 section contents /
+    符号表等数据，伪 LC）。解法 v4：
+      1. 宽容走链（不受名义 sizeofcmds 限制，走到文件尾或不合理条目）；
+      2. 收集所有数据引用（section/symtab/strtab/indirect/data-in-code 偏移）；
+      3. 真正的 LC 区终点 = 落在走链区内的最早数据引用（数据起点）；
+      4. LC 区收缩到数据起点（数据原地不动），其后所有数据偏移统一 +delta。"""
+    file_end = len(body)
 
-    # ---- 收集所有 LC 引用的数据区间与偏移字段 ----
+    # ---- 1. 宽容走链 ----
+    cmds = []
+    pp = lc_off
+    while pp + 8 <= file_end:
+        cmd, cs = struct.unpack_from('<II', body, pp)
+        if cs < 8 or pp + cs > file_end:
+            break
+        cmds.append((cmd, cs, pp))
+        pp += cs
+    walked_end = pp
+
+    # ---- 2. 收集数据引用与数据区间 ----
     ranges = []
     refs = []
-    for cmd, cs, pp in lcs:
+    for cmd, cs, cpp in cmds:
         if cmd == LC_SEGMENT_64:
-            nsects, = struct.unpack_from('<I', body, pp + 64)
-            sec_base = pp + 72
+            nsects, = struct.unpack_from('<I', body, cpp + 64)
+            sec_base = cpp + 72
             for s in range(nsects):
                 so = sec_base + s * 80
-                offset, size = struct.unpack_from('<II', body, so + 48)
+                offset = struct.unpack_from('<I', body, so + 48)[0]
+                size = struct.unpack_from('<I', body, so + 40)[0]  # size 在 offset 前面(align 在 52)
                 if size > 0 and offset > 0:
-                    ranges.append((offset, min(offset + size, len(body))))
+                    ranges.append((offset, min(offset + size, file_end)))
                 refs.append(so + 48)
                 refs.append(so + 60)
         elif cmd == LC_SYMTAB:
-            symoff, nsyms, stroff, strsize = struct.unpack_from('<IIII', body, pp + 8)
+            symoff, nsyms, stroff, strsize = struct.unpack_from('<IIII', body, cpp + 8)
             if nsyms > 0 and symoff > 0:
-                ranges.append((symoff, min(symoff + nsyms * 16, len(body))))
+                ranges.append((symoff, min(symoff + nsyms * 16, file_end)))
             if strsize > 0 and stroff > 0:
-                ranges.append((stroff, min(stroff + strsize, len(body))))
-            refs.append(pp + 16)
-            refs.append(pp + 24)
+                ranges.append((stroff, min(stroff + strsize, file_end)))
+            refs.append(cpp + 16)
+            refs.append(cpp + 24)
         elif cmd == LC_DYSYMTAB:
             for idx in range(2, 18):
-                fo = pp + 16 + idx * 4
-                if fo + 4 <= pp + cs:
+                fo = cpp + 16 + idx * 4
+                if fo + 4 <= cpp + cs:
                     refs.append(fo)
-            ioff, nind = struct.unpack_from('<II', body, pp + 16 + 8 * 8)
+            ioff, nind = struct.unpack_from('<II', body, cpp + 16 + 8 * 8)
             if nind > 0 and ioff > 0:
-                ranges.append((ioff, min(ioff + nind * 4, len(body))))
+                ranges.append((ioff, min(ioff + nind * 4, file_end)))
         elif cmd == LC_DATA_IN_CODE:
-            doff, dsz = struct.unpack_from('<II', body, pp + 8)
+            doff, dsz = struct.unpack_from('<II', body, cpp + 8)
             if dsz > 0 and doff > 0:
-                ranges.append((doff, min(doff + dsz, len(body))))
-            refs.append(pp + 8)
+                ranges.append((doff, min(doff + dsz, file_end)))
+            refs.append(cpp + 8)
 
-    # ---- 数据起点：落在名义 LC 区内部的最早数据 ----
-    inside = [s for (s, e) in ranges if lc_off < s < old_end]
+    # ---- 3. 数据起点 = 走链区内的最早数据引用 ----
+    inside = [s for (s, e) in ranges if lc_off <= s < walked_end]
     if inside:
         true_end = min(inside)
-        # 真命令 = 完整落在 [lc_off, true_end) 内的；跨界命令视为数据（丢弃其头部）
-        kept = []
-        pp = lc_off
-        while pp + 8 <= true_end:
-            cmd, cs = struct.unpack_from('<II', body, pp)
-            if cs < 8:
-                return None
-            if pp + cs > true_end:
-                break
-            if cmd not in (LC_BUILD_VERSION, LC_VERSION_MIN_MACOSX, LC_VERSION_MIN_IPHONEOS):
-                kept.append((cmd, cs, pp))
-            pp += cs
-        old_true_sc = pp - lc_off
+        kept = [(cmd, cs, cpp) for cmd, cs, cpp in cmds
+                if cpp + cs <= true_end
+                and cmd not in (LC_BUILD_VERSION, LC_VERSION_MIN_MACOSX,
+                                LC_VERSION_MIN_IPHONEOS)]
+        old_true_sc = true_end - lc_off
     else:
-        true_end = old_end
-        kept = [(cmd, cs, pp) for cmd, cs, pp in lcs
-                if cmd not in (LC_BUILD_VERSION, LC_VERSION_MIN_MACOSX,
-                               LC_VERSION_MIN_IPHONEOS)]
-        old_true_sc = old_sc
+        nominal_sc = struct.unpack_from('<I', body, 20)[0]  # sizeofcmds 在 Mach-O 头绝对偏移 20
+        true_end = min(walked_end, lc_off + nominal_sc)
+        kept = [(cmd, cs, cpp) for cmd, cs, cpp in cmds
+                if cpp + cs <= true_end
+                and cmd not in (LC_BUILD_VERSION, LC_VERSION_MIN_MACOSX,
+                                LC_VERSION_MIN_IPHONEOS)]
+        old_true_sc = true_end - lc_off
+
+    if not kept:
+        return None
 
     new_sc = sum(cs for _, cs, _ in kept) + 24
     delta = new_sc - old_true_sc
 
     new_lc = bytearray()
-    for cmd, cs, pp in kept:
-        new_lc += body[pp:pp+cs]
+    for cmd, cs, cpp in kept:
+        new_lc += body[cpp:cpp+cs]
     new_lc += struct.pack('<IIIIII',
         LC_BUILD_VERSION, 24, PLATFORM_IOS_SIMULATOR,
         0x000D0000,
@@ -282,21 +289,21 @@ def process_archive(path):
             r2 = subprocess.run(['ld', '-r', '-ld_classic', '-o', norm, orig],
                                 capture_output=True, text=True)
             if r2.returncode != 0 or not os.path.exists(norm) or os.path.getsize(norm) == 0:
-                logp('[prebuilt-fix] ld -r failed for %s: %s'
-                     % (m.group(1), (r2.stderr or '')[-220:]))
+                logp('[prebuilt-fix] ld -r failed for m%d.o: %s'
+                     % (idx, (r2.stderr or '')[-220:]))
                 break
             with open(norm, 'rb') as f:
                 nb = f.read()
             lc2 = find_lc_offset(nb)
             if lc2 is None:
-                logp('[prebuilt-fix] normalized %s has no LC area, use as-is' % m.group(1))
+                logp('[prebuilt-fix] normalized m%d.o has no LC area, use as-is' % idx)
             else:
                 fixed2 = rebuild_member(nb, lc2)
                 if fixed2 is not None:
                     nb = fixed2
             with open(obj_paths[idx], 'wb') as f:
                 f.write(nb)
-            logp('[prebuilt-fix] normalized+retagged %s via ld -r, retrying' % m.group(1))
+            logp('[prebuilt-fix] normalized+retagged m%d.o via ld -r, retrying' % idx)
         if r.returncode != 0:
             logp('[prebuilt-fix] FATAL libtool failed after retries: '
                  + ((r.stderr or '')[-300:]))
