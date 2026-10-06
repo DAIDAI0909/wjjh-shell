@@ -207,6 +207,12 @@ collectgarbage = function(opt, arg)
 end
 __wjjhlog('WJJH_GC: step guard installed')
 
+-- ===== freeMemorySmart 禁用(gh69 定案:Game:freeMemorySmart 在层切换动画完成回调里
+--      全量 removeUnusedSpriteFrames+removeUnusedTextures,token 后首次层切换动画跑完
+--      即触发=每轮死亡时刻;tolua/quick-class 节点纹理 retain 怪癖下清除=悬空纹理。
+--      改 no-op,内存暂由模拟器扛) =====
+local __wjjh_purges = 0
+
 -- ===== 协程压力测试(gh68:判别 Rosetta 下 LuaJIT 高频协程切换是否为 SIGSEGV 根因) =====
 do
   local __co = coroutine.create(function()
@@ -631,6 +637,16 @@ local function __wjjh_instrument(name, M)
           return __orig(ft)
         end
         return osrl(self, __wrapped)
+      end
+    end
+    local ofms = M.freeMemorySmart
+    if type(ofms) == 'function' then
+      M.freeMemorySmart = function(self)
+        __wjjh_purges = __wjjh_purges + 1
+        if __wjjh_purges % 10 == 1 then
+          __wjjhlog('WJJH_PURGE: freeMemorySmart suppressed #' .. __wjjh_purges)
+        end
+        return
       end
     end
   elseif name == 'app.extends.Http.HttpManager' then

@@ -1,10 +1,15 @@
 #import <UIKit/UIKit.h>
 #import <stdio.h>
 #import <signal.h>
+#import <execinfo.h>
 
 static void wjjh_signal_handler(int sig)
 {
     fprintf(stderr, "WJJH_SIG: signal %d caught\n", sig);
+    void *bt[128];
+    int n = backtrace(bt, 128);
+    fprintf(stderr, "WJJH_BT: frames=%d\n", n);
+    backtrace_symbols_fd(bt, n, STDERR_FILENO);
     fflush(stderr);
     signal(sig, SIG_DFL);
     raise(sig);
