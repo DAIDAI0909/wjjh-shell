@@ -384,8 +384,11 @@ endif()
 
 # ---- third-party prebuilt static libs（cocos 官方包，含模拟器架构）----
 file(GLOB EXTLIBS ${ENGINE}/external/*/prebuilt/ios/*.a)
-# bullet 的 arm64 切片是真机构建（2017 库），且 3D 物理已关 —— 排除
+# bullet/Box2D 的 arm64 切片是真机构建（2017 库）：3D 物理已关、2D 物理游戏零引用
+#（physics-nodes 用 chipmunk，不链 libbox2d），arm64 切片还有符号表/重定位表互相
+# 重叠的畸形（gh80 实测，libtool/ld 都救不回）—— 一并排除
 list(FILTER EXTLIBS EXCLUDE REGEX ".*/external/bullet/.*")
+list(FILTER EXTLIBS EXCLUDE REGEX ".*/external/Box2D/.*")
 # luajit 在 external/lua/luajit/ 两层深，上面的单层 glob 扫不到；只链 luajit 不链 lua（防重名符号）
 list(APPEND EXTLIBS ${ENGINE}/external/lua/luajit/prebuilt/ios/libluajit.a)
 target_link_libraries(WJJH PRIVATE ${EXTLIBS})
