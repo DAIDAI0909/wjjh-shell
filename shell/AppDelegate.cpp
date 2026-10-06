@@ -147,6 +147,31 @@ if cc and cc.Node then
   __wjjhlog('WJJH_BOOT: getChildByTag polyfill installed')
 end
 
+-- ===== SimpleAudioEngine 音频守卫(gh64 定案:res 树只有 Image/,音频文件全缺席;
+--      首次 playEffect(DaijiBGM) 播缺失文件 -> cocos 3.15.1 AudioEngine 模拟器崩溃;
+--      缺文件一律跳过并记日志) =====
+if cc and cc.SimpleAudioEngine then
+  local __SAE = cc.SimpleAudioEngine
+  local __FU = cc.FileUtils:getInstance()
+  local __audioNames = { 'playEffect', 'playMusic', 'preloadEffect', 'preloadMusic' }
+  for __i = 1, #__audioNames do
+    local __an = __audioNames[__i]
+    local __of = __SAE[__an]
+    if type(__of) == 'function' then
+      local __ok = pcall(function()
+        rawset(__SAE, __an, function(src, name, loop)
+          if type(name) == 'string' and name ~= '' and not __FU:isFileExist(name) then
+            __wjjhlog('WJJH_AUDIO: missing ' .. __an .. ' ' .. name)
+            return 0
+          end
+          return __of(src, name, loop)
+        end)
+      end)
+      __wjjhlog('WJJH_AUDIO: guard ' .. __an .. ' ' .. tostring(__ok))
+    end
+  end
+end
+
 -- ===== A 类桩 =====
 if not UpdateManager then
   local um = {}
