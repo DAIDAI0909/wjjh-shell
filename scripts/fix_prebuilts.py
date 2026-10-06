@@ -221,6 +221,31 @@ def rebuild_member(body, lc_off):
     return bytes(new)
 
 
+def patch_macho_lcs(body, lc_off):
+    """原地改写单个 Mach-O 的平台声明。返回是否改动。"""
+    patched = False
+    sizeofcmds = struct.unpack_from('<I', body, 20)[0]
+    pp = lc_off
+    end = lc_off + sizeofcmds
+    while pp + 8 <= end:
+        cmd, cs = struct.unpack_from('<II', body, pp)
+        if cs < 8 or pp + cs > end:
+            break
+        if cmd in (LC_VERSION_MIN_IPHONEOS, LC_VERSION_MIN_MACOSX):
+            struct.pack_into('<IIIIII', body, pp,
+                             LC_BUILD_VERSION, 24,
+                             PLATFORM_IOS_SIMULATOR,
+                             0x000D0000, 0x00110500, 0)
+            patched = True
+        elif cmd == LC_BUILD_VERSION:
+            plat = struct.unpack_from('<I', body, pp + 8)[0]
+            if plat != PLATFORM_IOS_SIMULATOR:
+                struct.pack_into('<I', body, pp + 8, PLATFORM_IOS_SIMULATOR)
+                patched = True
+        pp += cs
+    return patched
+
+
 def process_archive(path):
     """v7: 原地改写平台声明，不做任何重打包。
 
@@ -255,38 +280,32 @@ def process_archive(path):
                 p += 60 + size + (size & 1)
                 continue
             body = content[bo:]
-            lc_off = find_lc_offset(body)
-            if lc_off is not None:
-                member_patched = False
-                member_noplat = True
-                ncmds, sizeofcmds = struct.unpack_from('<II', body, 16)
-                pp = lc_off
-                end = lc_off + sizeofcmds
-                while pp + 8 <= end:
-                    cmd, cs = struct.unpack_from('<II', body, pp)
-                    if cs < 8 or pp + cs > end:
-                        break
-                    if cmd == LC_VERSION_MIN_IPHONEOS or cmd == LC_VERSION_MIN_MACOSX:
-                        # 原地转 LC_BUILD_VERSION(platform=7, minos=13.0, sdk=17.5)
-                        struct.pack_into('<IIIIII', body, pp,
-                                         LC_BUILD_VERSION, 24,
-                                         PLATFORM_IOS_SIMULATOR,
-                                         0x000D0000, 0x00110500, 0)
-                        member_patched = True
-                        member_noplat = False
-                    elif cmd == LC_BUILD_VERSION:
-                        plat = struct.unpack_from('<I', body, pp + 8)[0]
-                        if plat != PLATFORM_IOS_SIMULATOR:
-                            struct.pack_into('<I', body, pp + 8,
-                                             PLATFORM_IOS_SIMULATOR)
-                            member_patched = True
-                        member_noplat = False
-                    pp += cs
-                if member_patched:
+            if body[:4] == FAT:
+                # 成员本身是 FAT(armv7+arm64 合体,2017 库常见):钻进去改 arm64 切片
+                n_in, = struct.unpack_from('>I', body, 4)
+                any_patched = False
+                for i in range(n_in):
+                    cpu_in, sub_in, off_in, size_in, al_in = struct.unpack_from(
+                        '>IIIII', body, 8 + i * 20)
+                    if cpu_in != 0x0100000C:
+                        continue
+                    inner = bytearray(body[off_in:off_in + size_in])
+                    lc_off2 = find_lc_offset(inner)
+                    if lc_off2 is None:
+                        continue
+                    got = patch_macho_lcs(inner, lc_off2)
+                    if got:
+                        body[off_in:off_in + size_in] = inner
+                        any_patched = True
+                if any_patched:
                     n_patched += 1
                     buf[p + 60 + bo:p + 60 + size] = body
-                elif member_noplat:
-                    n_noplat += 1
+                continue
+            lc_off = find_lc_offset(body)
+            if lc_off is not None:
+                if patch_macho_lcs(body, lc_off):
+                    n_patched += 1
+                    buf[p + 60 + bo:p + 60 + size] = body
             p += 60 + size + (size & 1)
 
     if data[:4] == FAT:
