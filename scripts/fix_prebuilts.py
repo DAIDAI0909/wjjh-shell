@@ -410,7 +410,7 @@ def serialize_archive(members):
         hdr[34:40] = '0'.ljust(6).encode()           # gid
         hdr[40:48] = '100644'.ljust(8).encode()      # mode
         hdr[48:58] = ('%d' % len(data)).ljust(10).encode() if len(nb) <= 16 else hdr[48:58]
-        hdr[58:60] = '`\n'
+        hdr[58:60] = b'`\n'
         out += hdr + data
         if len(data) & 1:
             out += bytes(1)
