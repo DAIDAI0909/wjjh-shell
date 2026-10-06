@@ -337,20 +337,193 @@ print = function(...)
   _origprint(...)
 end
 
--- ===== LoadingLayer.update 守卫(setTotalCount 之前不执行)=====
-local __wjjh_llTried = false
-local function __wjjh_tryHook()
-  if __wjjh_llTried then return end
-  local LL = package.loaded['app.views.layer.LoadingLayer']
-  if type(LL) ~= 'table' or LL.__wjjh_wrap then return end
-  LL.__wjjh_wrap = true
-  __wjjh_llTried = true
-  local oup = LL.update
-  LL.update = function(self, ft)
-    if self._loadingIndex == nil or self._totalCount == nil then return end
-    return oup(self, ft)
+-- ===== LoadingLayer.update 守卫 + 84% 卡死探针(03 会话) =====
+local __llSelf, __llUpdates, __llBlocked, __llPass = nil, 0, 0, 0
+local __modSeen = {}
+local function __ts(v)
+  if v == nil then return 'nil' end
+  return tostring(v)
+end
+
+local function __wjjh_instrument(name, M)
+  if M.__wjjh_probe then return end
+  M.__wjjh_probe = true
+  __wjjhlog('WJJH_MOD: ' .. name .. ' loaded, instrumenting')
+  if name == 'app.views.layer.LoadingLayer' then
+    local oup = M.update
+    if type(oup) == 'function' then
+      M.update = function(self, ft)
+        __llUpdates = __llUpdates + 1
+        if __llSelf == nil then __llSelf = self end
+        if self._loadingIndex == nil or self._totalCount == nil then
+          __llBlocked = __llBlocked + 1
+          return
+        end
+        __llPass = __llPass + 1
+        return oup(self, ft)
+      end
+    end
+    local oshow = M.show
+    if type(oshow) == 'function' then
+      M.show = function(self, funcTab, func, precentList)
+        local n1 = '?'
+        if type(funcTab) == 'table' then n1 = tostring(#funcTab) end
+        __wjjhlog('WJJH_LL: show enter self=' .. tostring(self) .. ' funcTab=' .. type(funcTab) .. ' n=' .. n1 .. ' pct=' .. type(precentList))
+        local ok, e = pcall(oshow, self, funcTab, func, precentList)
+        __wjjhlog('WJJH_LL: show exit ok=' .. tostring(ok) .. ' err=' .. __ts(e))
+        if not ok then error(e) end
+      end
+    end
+    local ostc = M.setTotalCount
+    if type(ostc) == 'function' then
+      M.setTotalCount = function(self, count)
+        __wjjhlog('WJJH_LL: setTotalCount self=' .. tostring(self) .. ' count=' .. __ts(count))
+        return ostc(self, count)
+      end
+    end
+    local ogeti = M.getInstance
+    if type(ogeti) == 'function' then
+      M.getInstance = function(self)
+        local inst = ogeti(self)
+        __wjjhlog('WJJH_LL: getInstance -> ' .. tostring(inst))
+        return inst
+      end
+    end
+    local oinit = M.init
+    if type(oinit) == 'function' then
+      M.init = function(self)
+        __wjjhlog('WJJH_LL: init enter self=' .. tostring(self))
+        local ok, e = pcall(oinit, self)
+        __wjjhlog('WJJH_LL: init exit ok=' .. tostring(ok) .. ' err=' .. __ts(e))
+        if not ok then error(e) end
+      end
+    end
+  elseif name == 'app.models.loader.Loader' then
+    local olc = M.loadCustom
+    if type(olc) == 'function' then
+      M.loadCustom = function(self, func)
+        __wjjhlog('WJJH_MOD: loadCustom enter')
+        local ok, e = pcall(olc, self, func)
+        __wjjhlog('WJJH_MOD: loadCustom exit ok=' .. tostring(ok) .. ' err=' .. __ts(e))
+        if not ok then error(e) end
+      end
+    end
+  elseif name == 'app.models.game.Game' then
+    local old = M.load
+    if type(old) == 'function' then
+      M.load = function(self, func)
+        __wjjhlog('WJJH_MOD: Game.load enter')
+        local ok, e = pcall(old, self, func)
+        __wjjhlog('WJJH_MOD: Game.load exit ok=' .. tostring(ok) .. ' err=' .. __ts(e))
+        if not ok then error(e) end
+      end
+    end
+    local ogi = M.init
+    if type(ogi) == 'function' then
+      M.init = function(self, func)
+        __wjjhlog('WJJH_MOD: Game.init enter')
+        local ok, e = pcall(ogi, self, func)
+        __wjjhlog('WJJH_MOD: Game.init exit ok=' .. tostring(ok) .. ' err=' .. __ts(e))
+        if not ok then error(e) end
+      end
+    end
+  elseif name == 'app.extends.Http.HttpManager' then
+    local names = { 'getToken', 'getTime', 'getWebConfig' }
+    for i = 1, #names do
+      local nm = names[i]
+      local of = M[nm]
+      if type(of) == 'function' then
+        M[nm] = function(...)
+          __wjjhlog('WJJH_HTTP: ' .. nm .. ' called')
+          return of(...)
+        end
+      end
+    end
   end
-  __wjjhlog('WJJH_BOOT: LoadingLayer.update guarded')
+end
+
+local __wjjh_targets = {
+  ['app.views.layer.LoadingLayer'] = true,
+  ['app.models.loader.Loader'] = true,
+  ['app.models.game.Game'] = true,
+  ['app.extends.Http.HttpManager'] = true,
+}
+local __origRequire = require
+require = function(name)
+  local m = __origRequire(name)
+  if type(m) == 'table' and __wjjh_targets[name] then
+    __wjjh_instrument(name, m)
+  end
+  return m
+end
+
+local function __wjjh_dumpState()
+  local sc = cc.Director:getInstance():getRunningScene()
+  if sc == nil then
+    __wjjhlog('WJJH_CEN: scene=nil upd=' .. __llUpdates .. ' blk=' .. __llBlocked .. ' WEB_TIME=' .. __ts(WEB_TIME))
+    return
+  end
+  local kids = sc:getChildren()
+  local n = 0
+  local tags = {}
+  if type(kids) == 'table' then
+    for i = 1, #kids do
+      n = n + 1
+      tags[#tags + 1] = __ts(kids[i]:getTag())
+    end
+  end
+  __wjjhlog('WJJH_CEN: kids=' .. n .. ' tags=[' .. table.concat(tags, ',') .. '] upd=' .. __llUpdates .. ' blk=' .. __llBlocked .. ' pass=' .. __llPass .. ' WEB_TIME=' .. __ts(WEB_TIME))
+  if __llSelf ~= nil then
+    local s = __llSelf
+    local ftt = s.funcTab
+    local extra = ''
+    if type(ftt) == 'table' then
+      local n1 = 'nilG'
+      if type(ftt[1]) == 'table' then n1 = tostring(#ftt[1]) end
+      extra = ' n1=' .. n1 .. ' nT=' .. tostring(#ftt)
+    end
+    local barp = 'nilBar'
+    if s.LoadingBar ~= nil then barp = __ts(s.LoadingBar:getPercent()) end
+    local txt = 'nilTxt'
+    if s.Text_zaiRuZhong ~= nil then txt = __ts(s.Text_zaiRuZhong:getString()) end
+    __wjjhlog('WJJH_LLst: self=' .. tostring(s) .. ' tag=' .. __ts(s:getTag()) .. ' t=' .. __ts(s._updateTime) .. ' ci=' .. __ts(s.currIndex) .. ' cpi=' .. __ts(s.currParentIndex) .. ' li=' .. __ts(s._loadingIndex) .. ' tc=' .. __ts(s._totalCount) .. ' done=' .. __ts(s.isSuccess) .. ' ft=' .. type(ftt) .. extra .. ' bar=' .. barp .. ' txt=' .. txt)
+  end
+end
+
+local function __wjjh_onceProbes(sc)
+  if sc == nil then
+    __wjjhlog('WJJH_ENV: scene nil, skip')
+    return
+  end
+  local fu = cc.FileUtils:getInstance()
+  __wjjhlog('WJJH_ENV: font=' .. __ts(fu:isFileExist('Font/default.ttf')) .. ',' .. __ts(fu:isFileExist('res/Font/default.ttf')))
+  local txt = ccui.Text:create()
+  txt:setString('T')
+  txt:setOpacity(0)
+  __wjjhlog('WJJH_ENV: opacity=' .. __ts(txt:getOpacity()))
+  local nd = cc.Node:create()
+  nd:setTag(911001)
+  sc:addChild(nd)
+  local got = sc:getChildByTag(911001)
+  __wjjhlog('WJJH_ENV: tagTest=' .. __ts(got == nd))
+  nd:removeFromParent()
+  __wjjhlog('WJJH_ENV: Loader=' .. type(package.loaded['app.models.loader.Loader']) .. ' Game=' .. type(package.loaded['app.models.game.Game']) .. ' HttpM=' .. type(HttpManagerEx) .. ' ccexpGame=' .. type(cc.exports and cc.exports.Game or nil))
+end
+
+local function __wjjh_tryHook()
+  __wjjh_pollN = (__wjjh_pollN or 0) + 1
+  for name, _ in pairs(__wjjh_targets) do
+    local M = package.loaded[name]
+    if type(M) == 'table' then __wjjh_instrument(name, M) end
+  end
+  if __wjjh_pollN == 8 then
+    local ok, e = pcall(__wjjh_onceProbes, cc.Director:getInstance():getRunningScene())
+    if not ok then __wjjhlog('WJJH_ENV err=' .. __ts(e)) end
+  end
+  if __wjjh_pollN % 4 == 0 and __wjjh_pollN <= 240 then
+    local ok, e = pcall(__wjjh_dumpState)
+    if not ok then __wjjhlog('WJJH_CEN err=' .. __ts(e)) end
+  end
 end
 cc.Director:getInstance():getScheduler():scheduleScriptFunc(__wjjh_tryHook, 0.5, false)
 
