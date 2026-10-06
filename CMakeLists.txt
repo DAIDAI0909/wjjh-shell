@@ -1,6 +1,16 @@
 cmake_minimum_required(VERSION 3.24)
 project(WJJH CXX C OBJC OBJCXX)
 
+# ---- arm64 模拟器原生路线(gh72,老板拍板 A 线)----
+# yml 写死 -DPLATFORM=SIMULATOR64 且无 workflow scope 改不了 -> 在这里强设架构覆盖：
+# 工具链在 configure 早期已按 PLATFORM 选了 x86_64，此处 FORCE 后各 target 生成期改用 arm64。
+# 好处：甩掉 Rosetta；LuaJIT arm64 强制 GC64 布局；SIGSEGV(UAF 类堆损坏)大概率随 Rosetta 消失。
+option(WJJH_ARM64 "Force arm64 iOS-simulator slice (Rosetta-free)" ON)
+if(WJJH_ARM64)
+    set(CMAKE_OSX_ARCHITECTURES "arm64" CACHE STRING "" FORCE)
+    message(STATUS "== WJJH_ARM64=ON: forcing arm64 simulator build ==")
+endif()
+
 # CI 诊断日志路径：app 的 stderr/stdout 会 freopen 到这个文件（由各 CI 的 yaml 传入）
 set(WJJH_LAUNCH_LOG "" CACHE STRING "CI launch log path for app stderr redirect")
 
@@ -36,8 +46,9 @@ if(NOT EXISTS ${ENGINE}/external/luajit/include/lua.h)
     # 172 的新版 LuaJIT 头没有 cocos 用的 luaL_reg —— 固定 130 版头文件（lib 用我们源码现编的）
     file(COPY ${CMAKE_SOURCE_DIR}/luajit_inc_130/ DESTINATION ${ENGINE}/external/lua/luajit/include)
 
-    # ---- 预编译库平台修补：仅 arm64 模拟器路线需要（x86_64 切片是干净的 2017 sim 构建）----
-    if(PLATFORM MATCHES "SIMULATORARM64")
+    # ---- 预编译库平台修补：arm64 模拟器路线需要（切片来自 fat 库的 arm64，平台声明是
+    #      2017 真机构建——Xcode 26 链接器拒收，统一重建为 iOS-simulator LC_BUILD_VERSION）----
+    if(WJJH_ARM64)
         find_program(PY3_EXE python3)
         if(PY3_EXE)
             execute_process(COMMAND ${PY3_EXE} ${CMAKE_SOURCE_DIR}/scripts/fix_prebuilts.py ${ENGINE}
@@ -75,17 +86,24 @@ if(NOT EXISTS ${ENGINE}/external/luajit/include/lua.h)
         endif()
         execute_process(COMMAND xcrun -sdk iphonesimulator -show-sdk-path
                         OUTPUT_VARIABLE SIM_SDK OUTPUT_STRIP_TRAILING_WHITESPACE)
-        set(LJ_TFLAGS "-target x86_64-apple-ios13.0-simulator -isysroot ${SIM_SDK}")
-        execute_process(COMMAND ${MAKE_EXE} TARGET=x86_64 TARGET_OS=iOS
-                        "TARGET_FLAGS=${LJ_TFLAGS}"
+        if(WJJH_ARM64)
+            set(LJ_TARGET arm64)
+            set(LJ_TARCH "arm64-apple-ios13.0-simulator")
+            # LuaJIT arm64 强制 GC64 布局(lj_arch.h),显式声明保两侧一致
+            set(LJ_EXTRA_FLAGS "-DLUAJIT_ENABLE_GC64")
+        else()
+            set(LJ_TARGET x86_64)
+            set(LJ_TARCH "x86_64-apple-ios13.0-simulator")
+            set(LJ_EXTRA_FLAGS "-DLUAJIT_ENABLE_GC64 -DLUAJIT_USE_SYSMALLOC")
+        endif()
+        set(LJ_TFLAGS "-target ${LJ_TARCH} -isysroot ${SIM_SDK}")
+        execute_process(COMMAND ${MAKE_EXE} TARGET=${LJ_TARGET} TARGET_OS=iOS
+                        "TARGET_FLAGS=${LJ_TFLAGS} ${LJ_EXTRA_FLAGS}"
                         "TARGET_LDFLAGS=${LJ_TFLAGS}"
-                        # gh69 实锤:Lua 堆对象被写坏(lj_BC_JFUNCV 调垃圾地址,gh70 GC64 下变成
-                        # 字符串字节=悬空指针指向被字符串复用的内存,UAF 类损坏) ->
-                        # GC64 + 系统分配器双管齐下改分配布局
-                        "TARGET_CFLAGS=-DLUAJIT_ENABLE_GC64 -DLUAJIT_USE_SYSMALLOC"
-                        # 两侧都要 LJ_HASJIT=0：目标侧靠上面的 -D，buildvm（主机编译）靠 HOST_CC 的 -D，
-                        # 否则 lj_libdef.h 与源码不一致（x86_64 时代踩过的坑）；GC64 同步镜像保 lj_obj.h 一致
-                        "HOST_CC=clang -DLUAJIT_DISABLE_JIT -DLUAJIT_ENABLE_GC64"
+                        # gh69 实锤:Lua 堆对象被写坏(lj_BC_JFUNCV 调垃圾地址) -> GC64 根修;
+                        # 两侧都要一致：目标侧靠上面的 -D，buildvm（主机编译）靠 HOST_CC 的 -D，
+                        # 否则 lj_libdef.h 与源码不一致（x86_64 时代踩过的坑）
+                        "HOST_CC=clang -DLUAJIT_DISABLE_JIT ${LJ_EXTRA_FLAGS}"
                         "MACOSX_DEPLOYMENT_TARGET=13.0"
                         WORKING_DIRECTORY ${LJ_DIR}
                         RESULT_VARIABLE ljmk_r
@@ -101,7 +119,7 @@ if(NOT EXISTS ${ENGINE}/external/luajit/include/lua.h)
             message(FATAL_ERROR "luajit source build failed (r=${ljmk_r}) in ${LJ_DIR}:\n${_tail}")
         endif()
         file(COPY_FILE ${LJ_DIR}/src/libluajit.a ${LJ_A})
-        message(STATUS "built libluajit.a from source (v2.1.0-beta3, x86_64 ios-sim) -> ${LJ_A}")
+        message(STATUS "built libluajit.a from source (v2.1.0-beta3, ${LJ_TARGET} ios-sim GC64) -> ${LJ_A}")
     endif()
 endif()
 

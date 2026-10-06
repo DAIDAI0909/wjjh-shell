@@ -63,11 +63,18 @@ def setup_py_ios(xcfw):
     shutil.copytree(stdlib_src, os.path.join(OUT, 'pyhome', 'lib', 'python3.14'))
 
     # 3) lib-dynload（C 扩展 .so）→ pyhome/lib/python3.14/lib-dynload/
-    #    x86_64 变体（iphonesimulator 切片，模拟器 x86_64 用）
-    dynload = os.path.join(xcfw, 'ios-arm64_x86_64-simulator',
-                           'lib-x86_64', 'python3.14', 'lib-dynload')
-    if not os.path.isdir(dynload):
-        fail('lib-dynload not found: ' + dynload)
+    #    gh72 arm64 路线：优先 lib-arm64（arm64 模拟器原生），缺失才回退 lib-x86_64
+    dynload = None
+    for variant in ('lib-arm64', 'lib-x86_64'):
+        cand = os.path.join(xcfw, 'ios-arm64_x86_64-simulator',
+                            variant, 'python3.14', 'lib-dynload')
+        if os.path.isdir(cand):
+            dynload = cand
+            print('[py-ios] lib-dynload variant: %s (%d files)' %
+                  (variant, len(os.listdir(cand))), flush=True)
+            break
+    if dynload is None:
+        fail('lib-dynload not found in simulator leaf (lib-arm64/lib-x86_64 both missing)')
     shutil.copytree(dynload,
                     os.path.join(OUT, 'pyhome', 'lib', 'python3.14', 'lib-dynload'))
 
