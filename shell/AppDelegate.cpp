@@ -130,6 +130,22 @@ if cc and cc.Node and type(cc.Node.addChild) == 'function' then
   end
 end
 
+-- ===== getChildByTag 纯 Lua 替代(gh59 实测 tagTest=false,原生查找不可靠) =====
+if cc and cc.Node then
+  __WJJH_nativeGetChildByTag = cc.Node.getChildByTag
+  cc.Node.getChildByTag = function(self, tag)
+    local kids = self:getChildren()
+    if type(kids) == 'table' then
+      for i = 1, #kids do
+        local k = kids[i]
+        if k and type(k.getTag) == 'function' and k:getTag() == tag then return k end
+      end
+    end
+    return nil
+  end
+  __wjjhlog('WJJH_BOOT: getChildByTag polyfill installed')
+end
+
 -- ===== A 类桩 =====
 if not UpdateManager then
   local um = {}
@@ -349,7 +365,37 @@ local function __wjjh_instrument(name, M)
   if M.__wjjh_probe then return end
   M.__wjjh_probe = true
   __wjjhlog('WJJH_MOD: ' .. name .. ' loaded, instrumenting')
-  if name == 'app.views.layer.LoadingLayer' then
+  if name == 'app.Helper' then
+    -- ★核心修复(gh59 定案):getChildByTag 不可靠 -> classDefNodeGetInstance 的 tag 单例
+    --   会重复 create(LoadingLayer 双实例 84% 冻结的根因)。改成 Lua 侧真单例。
+    local ocd = M.classDefNodeGetInstance
+    if type(ocd) == 'function' then
+      M.classDefNodeGetInstance = function(self, _class)
+        ocd(self, _class)
+        local cache = nil
+        _class.getInstance = function(sl)
+          if cache ~= nil then return cache end
+          local runningScene = cc.Director:getInstance():getRunningScene()
+          if runningScene then
+            local Node = _class:create()
+            runningScene:addChild(Node)
+            pcall(function() Node:setGlobalZOrder(1) end)
+            pcall(function() Node:maxZ() end)
+            cache = Node
+            return Node
+          end
+          return nil
+        end
+        _class.destroyInstance = function(sl)
+          if cache ~= nil then
+            cache:removeFromParent()
+            cache = nil
+          end
+        end
+      end
+      __wjjhlog('WJJH_BOOT: Helper singleton patch installed')
+    end
+  elseif name == 'app.views.layer.LoadingLayer' then
     local oup = M.update
     if type(oup) == 'function' then
       M.update = function(self, ft)
@@ -443,6 +489,7 @@ local function __wjjh_instrument(name, M)
 end
 
 local __wjjh_targets = {
+  ['app.Helper'] = true,
   ['app.views.layer.LoadingLayer'] = true,
   ['app.models.loader.Loader'] = true,
   ['app.models.game.Game'] = true,
@@ -503,9 +550,22 @@ local function __wjjh_onceProbes(sc)
   __wjjhlog('WJJH_ENV: opacity=' .. __ts(txt:getOpacity()))
   local nd = cc.Node:create()
   nd:setTag(911001)
+  __wjjhlog('WJJH_ENV: tagRound=' .. __ts(nd:getTag() == 911001))
   sc:addChild(nd)
+  local kids = sc:getChildren()
+  local idHit = 0
+  if type(kids) == 'table' then
+    for i = 1, #kids do
+      if kids[i] == nd then idHit = 1 end
+    end
+  end
+  __wjjhlog('WJJH_ENV: kidIdentity=' .. idHit .. ' nativeByTagType=' .. type(__WJJH_nativeGetChildByTag))
+  local gotNative = nil
+  if type(__WJJH_nativeGetChildByTag) == 'function' then
+    gotNative = __WJJH_nativeGetChildByTag(sc, 911001)
+  end
   local got = sc:getChildByTag(911001)
-  __wjjhlog('WJJH_ENV: tagTest=' .. __ts(got == nd))
+  __wjjhlog('WJJH_ENV: tagTest native=' .. __ts(gotNative == nd) .. ' poly=' .. __ts(got == nd))
   nd:removeFromParent()
   __wjjhlog('WJJH_ENV: Loader=' .. type(package.loaded['app.models.loader.Loader']) .. ' Game=' .. type(package.loaded['app.models.game.Game']) .. ' HttpM=' .. type(HttpManagerEx) .. ' ccexpGame=' .. type(cc.exports and cc.exports.Game or nil))
 end
