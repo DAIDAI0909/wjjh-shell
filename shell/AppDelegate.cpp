@@ -172,6 +172,24 @@ if cc and cc.SimpleAudioEngine then
   end
 end
 
+-- ===== ccui.Text:setFontName 守卫(gh66 后新假设:TitleUI 刷新协程每帧
+--      setFontName("Font/HYCFS.ttf"),字体文件缺失+每帧重建图集=churn;缺文件一律跳过) =====
+if ccui and ccui.Text and type(ccui.Text.setFontName) == 'function' then
+  local __ofn = ccui.Text.setFontName
+  local __fntSeen = {}
+  rawset(ccui.Text, 'setFontName', function(self, name)
+    if type(name) == 'string' and name ~= '' and string.find(name, '%.ttf') and not __fntSeen[name] then
+      if cc and cc.FileUtils and not cc.FileUtils:getInstance():isFileExist(name) then
+        __fntSeen[name] = true
+        __wjjhlog('WJJH_FONT: missing ' .. name .. ' (skip)')
+        return
+      end
+    end
+    return __ofn(self, name)
+  end)
+  __wjjhlog('WJJH_FONT: setFontName guard installed')
+end
+
 -- ===== GC step 守卫(gh65 定案:ControllLayer:collectGarbageStep 只在 iOS 每帧
 --      collectgarbage("step",安卓官方注释明说关闭及时内存清理;崩溃窗口=循环安装后
 --      ~2 秒内且崩溃点漂移=GC 不确定性。iOS 与安卓口径一致:step 改 no-op) =====
@@ -407,7 +425,7 @@ local __wjjh_flowSpecs = {
   ['app.models.task.Task'] = { { 'init' } },
   ['app.models.BiWu.BiWu'] = { { 'initfightAllData' }, { 'initfightWeekAllData' } },
   ['app.models.game.GameStart'] = { { 'start_game' } },
-  ['app.views.ui.TitleUI'] = { { 'init' }, { 'create' }, { 'update', 'hot' } },
+  ['app.views.ui.TitleUI'] = { { 'init' }, { 'create' }, { 'update', 'hot' }, { 'setTextTitle', 'every' }, { 'setMainLayerActivityInfo', 'every' }, { 'setMailBoxHongdian', 'every' } },
   ['app.controllers.Audio'] = { { 'playMusic' }, { 'playEffect' }, { 'playBackgroundMusic' }, { 'stopMusic' } },
   ['app.views.layer.MainLayer'] = { { 'init' }, { 'create' }, { 'update', 'hot' }, { 'showLayer' }, { 'onShow' }, { 'onAwake' }, { 'initCheck' }, { 'isShow' }, { 'checkIsHaveOfficial' }, { 'checkIsFamilyPrestige' }, { 'checkCanOpenDengLuJiangLi' }, { 'checkCanOpenVisitTask' } },
   ['app.views.layer.MenuLayer.MenuLayer'] = { { 'init' }, { 'create' }, { 'StartGame' }, { 'onAwake' } },
@@ -438,19 +456,23 @@ local function __wjjh_instrument(name, M)
     for i = 1, #__wjjh_flowSpecs[name] do
       local spec = __wjjh_flowSpecs[name][i]
       local mn = spec[1]
-      local hot = spec[2] == 'hot'
+      local mode = spec[2]
       local of = M[mn]
       if type(of) == 'function' then
-        M[mn] = function(self, ...)
-          if hot then
-            hotCounters[mn] = (hotCounters[mn] or 0) + 1
-            if hotCounters[mn] % 5 == 1 then
-              __wjjhlog('WJJH_FLOW: ' .. name .. '.' .. mn .. ' #' .. hotCounters[mn])
+        if mode == 'hot' or mode == 'every' then
+          local cnt = 0
+          M[mn] = function(self, ...)
+            cnt = cnt + 1
+            if mode == 'every' or cnt % 5 == 1 then
+              __wjjhlog('WJJH_FLOW: ' .. name .. '.' .. mn .. ' #' .. cnt)
             end
             return of(self, ...)
           end
-          __wjjhlog('WJJH_FLOW: ' .. name .. '.' .. mn .. ' enter')
-          return of(self, ...)
+        else
+          M[mn] = function(self, ...)
+            __wjjhlog('WJJH_FLOW: ' .. name .. '.' .. mn .. ' enter')
+            return of(self, ...)
+          end
         end
       end
     end
