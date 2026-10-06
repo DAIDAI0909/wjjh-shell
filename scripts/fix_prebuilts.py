@@ -391,208 +391,118 @@ def rebuild_member_clean(body, lc_off):
     return bytes(blob)
 
 
+def serialize_archive(members):
+    """把 [(name, body)] 序列化为 GNU archive(无 TOC,随后 ranlib 重建)。"""
+    out = bytearray(b'!<arch>\n')
+    for name, body in members:
+        nb = name.encode('ascii', 'replace')
+        hdr = bytearray(60)
+        if len(nb) <= 16:
+            hdr[0:16] = nb + bytes(16 - len(nb))
+            data = body
+        else:
+            ext = ('#1/' + str(len(nb))).encode('ascii')
+            hdr[0:16] = ext.ljust(16, bytes(1))
+            data = nb + bytes((4 - len(nb) % 4) % 4) + body
+            hdr[48:58] = ('%d' % (len(nb) + (4 - len(nb) % 4) % 4 + len(body))).ljust(10).encode()
+        hdr[16:28] = '0'.ljust(12).encode()          # mtime
+        hdr[28:34] = '0'.ljust(6).encode()           # uid
+        hdr[34:40] = '0'.ljust(6).encode()           # gid
+        hdr[40:48] = '100644'.ljust(8).encode()      # mode
+        hdr[48:58] = ('%d' % len(data)).ljust(10).encode() if len(nb) <= 16 else hdr[48:58]
+        hdr[58:60] = '`\n'
+        out += hdr + data
+        if len(data) & 1:
+            out += bytes(1)
+    return bytes(out)
+
+
 def process_archive(path):
-    """v7: 原地改写平台声明，不做任何重打包。
+    """v9: 重建每个 arm64 成员(干净标准 Mach-O),重序列化归档,ranlib 重建目录。
 
-    2017 预编译 arm64 切片的问题只有一个：平台标签（真机/错平台/缺失）。
-    LC_VERSION_MIN_IPHONEOS/MACOSX 与 LC_BUILD_VERSION 同为 24 字节——原地改写
-    （cmd 0x24/0x23→0x25，platform=7 iOS-sim，minos=13.0，sdk=17.5）即可，
-    文件尺寸零变化、零偏移重排、libtool 完全不参与。
-    好处：2017 成员普遍存在的符号表/重定位表重叠等畸形原样保留——
-    ld -ld_classic 对这些完全宽容（x86_64 线二十轮验证），只有 libtool 的
-    严格校验会拒收。原先重打包路线反而把宽容的 ld 挡在 libtool 门外。"""
+    v8 的教训:重建后成员尺寸变化,按原槽位写回会撑破归档。v9 整体重序列化,
+    并把 fat 文件替换为 thin arm64 归档(模拟器链接只用 arm64 切片)。"""
     with open(path, 'rb') as f:
-        data = bytearray(f.read())
-    n_patched = 0
-    n_noplat = 0
+        data = f.read()
 
-    def patch_slice(buf):
-        nonlocal n_patched, n_noplat
-        p = 8
-        while p + 60 <= len(buf):
-            hdr = buf[p:p + 60]
-            name_field = hdr[:16].decode('ascii', 'replace')
-            try:
-                size = int(hdr[48:58].decode('ascii', 'replace').strip() or 0)
-            except ValueError:
-                break
-            content = buf[p + 60:p + 60 + size]
-            bo = 0
-            if name_field.startswith('#1/'):
-                bo = int(name_field[3:].strip())
-            real_name = content[:bo].rstrip(bytes(1)).decode('ascii', 'replace')
-            if real_name.startswith('__.SYMDEF'):
-                p += 60 + size + (size & 1)
-                continue
-            body = content[bo:]
-            if body[:4] == FAT:
-                # 成员本身是 FAT(armv7+arm64 合体,2017 库常见):钻进去改 arm64 切片
-                n_in, = struct.unpack_from('>I', body, 4)
-                any_patched = False
-                for i in range(n_in):
-                    cpu_in, sub_in, off_in, size_in, al_in = struct.unpack_from(
-                        '>IIIII', body, 8 + i * 20)
-                    if cpu_in != 0x0100000C:
-                        continue
-                    inner = bytearray(body[off_in:off_in + size_in])
-                    lc_off2 = find_lc_offset(inner)
-                    if lc_off2 is None:
-                        continue
-                    got = patch_macho_lcs(inner, lc_off2)
-                    if got:
-                        body[off_in:off_in + size_in] = inner
-                        any_patched = True
-                if any_patched:
-                    n_patched += 1
-                    buf[p + 60 + bo:p + 60 + size] = body
-                continue
-            lc_off = find_lc_offset(body)
-            if lc_off is None:
-                logp('[prebuilt-fix] SKIP member %s: magic=%s len=%d'
-                     % (real_name or '?', body[:4].hex(), len(body)))
-            if lc_off is not None:
-                new_body = rebuild_member_clean(body, lc_off)
-                if new_body is not None:
-                    buf[p + 60:p + 60 + size] = bytes(body[:bo]) + new_body
-                    n_patched += 1
-                else:
-                    logp('[prebuilt-fix] rebuild failed %s, keep original' % (real_name or '?'))
-            p += 60 + size + (size & 1)
-
-    if data[:4] == FAT:
+    members = []  # [(name, body)] — arm64 切片内的非 SYMDEF 成员
+    if data[:4] == b'\xca\xfe\xba\xbe':
         n, = struct.unpack_from('>I', data, 4)
-        arm64_idx = None
+        arm = None
         for i in range(n):
             cpu, sub, off, size, al = struct.unpack_from('>IIIII', data, 8 + i * 20)
             if cpu == 0x0100000C:
-                arm64_idx = i
+                arm = data[off:off + size]
                 break
-        if arm64_idx is None:
+        if arm is None:
             logp('[prebuilt-fix] %s: no arm64 slice, skip' % os.path.basename(path))
             return 1
-        off, size = struct.unpack_from('>II', data, 8 + arm64_idx * 20 + 8)
-        slice_buf = bytearray(data[off:off + size])
-        patch_slice(slice_buf)
-        data[off:off + size] = slice_buf
+        src = arm
     elif data[:8] == b'!<arch>\n':
-        patch_slice(data)
+        src = data
     else:
         return 1
 
-    with open(path, 'wb') as f:
-        f.write(data)
-    logp('[prebuilt-fix] %s: in-place patched=%d no-platform=%d'
-         % (os.path.basename(path), n_patched, n_noplat))
-    # 自验:重读文件,抽查第一个非 SYMDEF 成员的全部 LC (cmd/platform)
-    with open(path, 'rb') as f:
-        chk = f.read()
-    def dump_lcs(buf, tag):
-        p2 = 8
-        while p2 + 60 <= len(buf):
-            hdr = buf[p2:p2 + 60]
-            try:
-                size2 = int(hdr[48:58].decode('ascii', 'replace').strip() or 0)
-            except ValueError:
-                break
-            content = buf[p2 + 60:p2 + 60 + size2]
-            bo2 = 0
-            nf = hdr[:16].decode('ascii', 'replace')
-            if nf.startswith('#1/'):
-                bo2 = int(nf[3:].strip())
-            rn = content[:bo2].rstrip(bytes(1)).decode('ascii', 'replace')
-            if not rn.startswith('__.SYMDEF'):
-                body2 = content[bo2:]
-                lo2 = find_lc_offset(body2)
-                if lo2 is not None:
-                    sc2 = struct.unpack_from('<I', body2, 20)[0]
-                    pp2 = lo2
-                    out2 = []
-                    while pp2 + 8 <= lo2 + sc2:
-                        cmd2, cs2 = struct.unpack_from('<II', body2, pp2)
-                        if cs2 < 8 or pp2 + cs2 > lo2 + sc2:
-                            out2.append('BREAK@%d' % pp2)
-                            break
-                        if cmd2 in (LC_VERSION_MIN_IPHONEOS, LC_VERSION_MIN_MACOSX):
-                            out2.append('%#x/VER(%d)' % (cmd2, cs2))
-                        elif cmd2 == LC_BUILD_VERSION:
-                            out2.append('BUILD(plat=%d)' % struct.unpack_from('<I', body2, pp2 + 8)[0])
-                        else:
-                            out2.append('%#x' % cmd2)
-                        pp2 += cs2
-                    logp('[prebuilt-fix] VERIFY %s %s: hdr=%d %s'
-                         % (os.path.basename(path), rn, lo2, ' '.join(out2)))
-                return
-            p2 += 60 + size2 + (size2 & 1)
-    if chk[:4] == FAT:
-        n2, = struct.unpack_from('>I', chk, 4)
-        for i in range(n2):
-            cpu2, sub2, off2, size2, al2 = struct.unpack_from('>IIIII', chk, 8 + i * 20)
-            if cpu2 == 0x0100000C:
-                dump_lcs(chk[off2:off2 + size2], 'arm64')
-                break
-    elif chk[:8] == b'!<arch>\n':
-        dump_lcs(chk, 'thin')
-    # ld 视角实验:提取第一个成员,真跑 ld 单对象链接 + otool -l + vtool,三方对照
-    import tempfile
-    import shutil as _sh
-    tmp3 = tempfile.mkdtemp()
-    try:
-        m3 = os.path.join(tmp3, 'probe.o')
-        buf3 = None
-        if chk[:4] == FAT:
-            n3, = struct.unpack_from('>I', chk, 4)
-            for i in range(n3):
-                cpu3, sub3, off3, size3, al3 = struct.unpack_from('>IIIII', chk, 8 + i * 20)
-                if cpu3 == 0x0100000C:
-                    buf3 = chk[off3:off3 + size3]
+    p = 8
+    n_patched = 0
+    n_fail = 0
+    while p + 60 <= len(src):
+        hdr = src[p:p + 60]
+        name_field = hdr[:16].decode('ascii', 'replace')
+        try:
+            size = int(hdr[48:58].decode('ascii', 'replace').strip() or 0)
+        except ValueError:
+            break
+        content = src[p + 60:p + 60 + size]
+        bo = 0
+        if name_field.startswith('#1/'):
+            bo = int(name_field[3:].strip())
+        real_name = content[:bo].rstrip(bytes(1)).decode('ascii', 'replace')
+        if real_name.startswith('__.SYMDEF'):
+            p += 60 + size + (size & 1)
+            continue
+        body = content[bo:]
+        new_body = None
+        if body[:4] == b'\xcf\xfa\xed\xfe':
+            lc_off = find_lc_offset(body)
+            if lc_off is not None:
+                new_body = rebuild_member_clean(body, lc_off)
+        elif body[:4] == b'\xca\xfe\xba\xbe':
+            # FAT 成员:抽 arm64 内层切片重建
+            n_in, = struct.unpack_from('>I', body, 4)
+            for i in range(n_in):
+                cpu_in, sub_in, off_in, size_in, al_in = struct.unpack_from(
+                    '>IIIII', body, 8 + i * 20)
+                if cpu_in == 0x0100000C:
+                    inner = body[off_in:off_in + size_in]
+                    lc_off = find_lc_offset(inner)
+                    if lc_off is not None:
+                        new_body = rebuild_member_clean(inner, lc_off)
                     break
+        if new_body is not None:
+            members.append((real_name, new_body))
+            n_patched += 1
         else:
-            buf3 = chk
-        if buf3 is not None:
-            p3 = 8
-            while p3 + 60 <= len(buf3):
-                hdr3 = buf3[p3:p3 + 60]
-                nf3 = hdr3[:16].decode('ascii', 'replace')
-                try:
-                    sz3 = int(hdr3[48:58].decode('ascii', 'replace').strip() or 0)
-                except ValueError:
-                    break
-                ct3 = buf3[p3 + 60:p3 + 60 + sz3]
-                bo3 = int(nf3[3:].strip()) if nf3.startswith('#1/') else 0
-                rn3 = ct3[:bo3].rstrip(bytes(1)).decode('ascii', 'replace')
-                if rn3.startswith('__.SYMDEF') or not rn3:
-                    p3 += 60 + sz3 + (sz3 & 1)
-                    continue
-                with open(m3, 'wb') as f:
-                    f.write(ct3[bo3:])
-                logp('[prebuilt-fix] LDTEST member=%s size=%d' % (rn3, sz3 - bo3))
-                r3 = subprocess.run(['ld', '-r', '-arch', 'arm64', '-o',
-                                     os.path.join(tmp3, 'out.o'), m3],
-                                    capture_output=True, text=True)
-                logp('[prebuilt-fix] LDTEST ld -r rc=%d err=%s'
-                     % (r3.returncode, ((r3.stderr or '')[:400]).replace(chr(10), ' | ')))
-                r4 = subprocess.run(['otool', '-l', m3], capture_output=True, text=True)
-                lines4 = [l2.strip() for l2 in r4.stdout.split(chr(10))
-                          if 'cmd ' in l2 or 'cmdsize' in l2 or 'platform' in l2
-                          or 'minos' in l2 or 'sdk' in l2 or 'version' in l2]
-                logp('[prebuilt-fix] LDTEST otool: ' + ' ; '.join(lines4[:24]))
-                r5 = subprocess.run(['vtool', '-show-build', m3],
-                                    capture_output=True, text=True)
-                logp('[prebuilt-fix] LDTEST vtool: '
-                     + (r5.stdout or r5.stderr or '').replace(chr(10), ' | ')[:400])
-                # 十六进制转储整个 LC 区(头 32B + sizeofcmds),终结视角之争
-                with open(m3, 'rb') as f:
-                    blob3 = f.read()
-                nc3, sc3 = struct.unpack_from('<II', blob3, 16)
-                lc3 = blob3[32:32 + sc3]
-                logp('[prebuilt-fix] HEXHEAD ncmds=%d sizeofcmds=%d filelen=%d'
-                     % (nc3, sc3, len(blob3)))
-                for seg_i in range(0, len(lc3), 64):
-                    logp('[prebuilt-fix] HEXLC+%04x: %s'
-                         % (seg_i, lc3[seg_i:seg_i + 64].hex()))
-                break
-    finally:
-        _sh.rmtree(tmp3, ignore_errors=True)
+            members.append((real_name, body))
+            n_fail += 1
+        p += 60 + size + (size & 1)
+
+    logp('[prebuilt-fix] %s: members=%d rebuilt=%d keep-orig=%d'
+         % (os.path.basename(path), len(members), n_patched, n_fail))
+    if n_fail:
+        logp('[prebuilt-fix] FATAL %d members unfixable, archive left for ld to complain'
+             % n_fail)
+        return 1
+
+    new_arch = serialize_archive(members)
+    with open(path, 'wb') as f:
+        f.write(new_arch)
+    rr = subprocess.run(['ranlib', path], capture_output=True, text=True)
+    if rr.returncode != 0:
+        logp('[prebuilt-fix] FATAL ranlib failed: ' + (rr.stderr or '')[-300:])
+        return 1
+    logp('[prebuilt-fix] %s: re-serialized %d bytes + ranlib OK'
+         % (os.path.basename(path), len(new_arch)))
     return 0
 
 
