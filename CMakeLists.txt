@@ -389,6 +389,9 @@ file(GLOB EXTLIBS ${ENGINE}/external/*/prebuilt/ios/*.a)
 # 重叠的畸形（gh80 实测，libtool/ld 都救不回）—— 一并排除
 list(FILTER EXTLIBS EXCLUDE REGEX ".*/external/bullet/.*")
 list(FILTER EXTLIBS EXCLUDE REGEX ".*/external/Box2D/.*")
+# freetype 的 arm64 切片同样畸形（符号表与重定位表互相重叠,gh81 实测,libtool/ld 都救不回）。
+# 游戏大量用 ttf 文字渲染,若链接报 FT_ undefined 再从源码编 freetype（v3-deps 自带源码树）。
+list(FILTER EXTLIBS EXCLUDE REGEX ".*/external/freetype2/.*")
 # luajit 在 external/lua/luajit/ 两层深，上面的单层 glob 扫不到；只链 luajit 不链 lua（防重名符号）
 list(APPEND EXTLIBS ${ENGINE}/external/lua/luajit/prebuilt/ios/libluajit.a)
 target_link_libraries(WJJH PRIVATE ${EXTLIBS})
