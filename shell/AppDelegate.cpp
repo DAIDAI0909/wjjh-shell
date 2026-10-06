@@ -119,13 +119,14 @@ for _i, path in ipairs(__list) do
 end
 __wjjhlog('WJJH_BOOT: isclass stamped ' .. __ns .. ' [' .. __detail .. ']')
 
--- ===== addChild 兼容包装 =====
+-- ===== addChild 兼容包装(gh61 修正:原实现把无 tag 的 addChild 一律传 tag=0,
+--      cocos 3 参数 addChild 会把子节点 tag 重置为 0 -> tag 查重全灭的最初源头) =====
 if cc and cc.Node and type(cc.Node.addChild) == 'function' then
   local __origAddChild = cc.Node.addChild
   cc.Node.addChild = function(self, child, z, tag)
     if child == nil then return end
-    if z == nil then return __origAddChild(self, child, 0, 0) end
-    if tag == nil then return __origAddChild(self, child, z, 0) end
+    if z == nil then return __origAddChild(self, child) end
+    if tag == nil then return __origAddChild(self, child, z) end
     return __origAddChild(self, child, z, tag)
   end
 end
@@ -356,6 +357,17 @@ end
 -- ===== LoadingLayer.update 守卫 + 84% 卡死探针(03 会话) =====
 local __llSelf, __llUpdates, __llBlocked, __llPass = nil, 0, 0, 0
 local __modSeen = {}
+-- token 之后的流程里程碑(get_token 应答 -> ControllLayer -> User/BiWu/Task -> MenuLayer -> TitleUI -> StartGame)
+-- TitleUI.update 热路径只计数;SIGSEGV 前最后一条 WJJH_FLOW 日志=崩溃点
+local __wjjh_flowSpecs = {
+  ['app.views.layer.ControllLayer'] = { { 'getLayer' }, { 'pushLayer' }, { 'showLayer' }, { 'popLayer' }, { 'replaceLayer' } },
+  ['app.models.user.User'] = { { 'init' } },
+  ['app.models.task.Task'] = { { 'init' } },
+  ['app.models.BiWu.BiWu'] = { { 'initfightAllData' }, { 'initfightWeekAllData' } },
+  ['app.models.game.GameStart'] = { { 'start_game' } },
+  ['app.views.ui.TitleUI'] = { { 'init' }, { 'create' }, { 'update', 'hot' } },
+  ['app.controllers.Audio'] = { { 'playMusic' }, { 'playEffect' }, { 'playBackgroundMusic' }, { 'stopMusic' } },
+}
 local function __ts(v)
   if v == nil then return 'nil' end
   return tostring(v)
@@ -365,6 +377,33 @@ local function __wjjh_instrument(name, M)
   if M.__wjjh_probe then return end
   M.__wjjh_probe = true
   __wjjhlog('WJJH_MOD: ' .. name .. ' loaded, instrumenting')
+  if __wjjh_flowSpecs[name] then
+    -- 流程里程碑探针:enter/exit 日志,SIGSEGV/报错前最后一条即崩溃点
+    -- 注意:不用 pcall(5.1 不能跨 C 调用 yield,层切换方法可能内部 yield,包了会引入新 bug)
+    local hotCounters = {}
+    for i = 1, #__wjjh_flowSpecs[name] do
+      local spec = __wjjh_flowSpecs[name][i]
+      local mn = spec[1]
+      local hot = spec[2] == 'hot'
+      local of = M[mn]
+      if type(of) == 'function' then
+        M[mn] = function(self, ...)
+          if hot then
+            hotCounters[mn] = (hotCounters[mn] or 0) + 1
+            if hotCounters[mn] % 20 == 1 then
+              __wjjhlog('WJJH_FLOW: ' .. name .. '.' .. mn .. ' #' .. hotCounters[mn])
+            end
+            return of(self, ...)
+          end
+          __wjjhlog('WJJH_FLOW: ' .. name .. '.' .. mn .. ' enter')
+          local rs = { of(self, ...) }
+          __wjjhlog('WJJH_FLOW: ' .. name .. '.' .. mn .. ' exit')
+          return unpack(rs)
+        end
+      end
+    end
+    return
+  end
   if name == 'app.Helper' then
     -- ★核心修复(gh59 定案):getChildByTag 不可靠 -> classDefNodeGetInstance 的 tag 单例
     --   会重复 create(LoadingLayer 双实例 84% 冻结的根因)。改成 Lua 侧真单例。
@@ -494,6 +533,13 @@ local __wjjh_targets = {
   ['app.models.loader.Loader'] = true,
   ['app.models.game.Game'] = true,
   ['app.extends.Http.HttpManager'] = true,
+  ['app.views.layer.ControllLayer'] = true,
+  ['app.models.user.User'] = true,
+  ['app.models.task.Task'] = true,
+  ['app.models.BiWu.BiWu'] = true,
+  ['app.models.game.GameStart'] = true,
+  ['app.views.ui.TitleUI'] = true,
+  ['app.controllers.Audio'] = true,
 }
 local __origRequire = require
 require = function(name)
