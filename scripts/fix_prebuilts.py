@@ -384,6 +384,57 @@ def process_archive(path):
                 break
     elif chk[:8] == b'!<arch>\n':
         dump_lcs(chk, 'thin')
+    # ld 视角实验:提取第一个成员,真跑 ld 单对象链接 + otool -l + vtool,三方对照
+    import tempfile
+    import shutil as _sh
+    tmp3 = tempfile.mkdtemp()
+    try:
+        m3 = os.path.join(tmp3, 'probe.o')
+        buf3 = None
+        if chk[:4] == FAT:
+            n3, = struct.unpack_from('>I', chk, 4)
+            for i in range(n3):
+                cpu3, sub3, off3, size3, al3 = struct.unpack_from('>IIIII', chk, 8 + i * 20)
+                if cpu3 == 0x0100000C:
+                    buf3 = chk[off3:off3 + size3]
+                    break
+        else:
+            buf3 = chk
+        if buf3 is not None:
+            p3 = 8
+            while p3 + 60 <= len(buf3):
+                hdr3 = buf3[p3:p3 + 60]
+                nf3 = hdr3[:16].decode('ascii', 'replace')
+                try:
+                    sz3 = int(hdr3[48:58].decode('ascii', 'replace').strip() or 0)
+                except ValueError:
+                    break
+                ct3 = buf3[p3 + 60:p3 + 60 + sz3]
+                bo3 = int(nf3[3:].strip()) if nf3.startswith('#1/') else 0
+                rn3 = ct3[:bo3].rstrip(bytes(1)).decode('ascii', 'replace')
+                if rn3.startswith('__.SYMDEF') or not rn3:
+                    p3 += 60 + sz3 + (sz3 & 1)
+                    continue
+                with open(m3, 'wb') as f:
+                    f.write(ct3[bo3:])
+                logp('[prebuilt-fix] LDTEST member=%s size=%d' % (rn3, sz3 - bo3))
+                r3 = subprocess.run(['ld', '-r', '-arch', 'arm64', '-o',
+                                     os.path.join(tmp3, 'out.o'), m3],
+                                    capture_output=True, text=True)
+                logp('[prebuilt-fix] LDTEST ld -r rc=%d err=%s'
+                     % (r3.returncode, ((r3.stderr or '')[:400]).replace(chr(10), ' | ')))
+                r4 = subprocess.run(['otool', '-l', m3], capture_output=True, text=True)
+                lines4 = [l2.strip() for l2 in r4.stdout.split(chr(10))
+                          if 'cmd ' in l2 or 'cmdsize' in l2 or 'platform' in l2
+                          or 'minos' in l2 or 'sdk' in l2 or 'version' in l2]
+                logp('[prebuilt-fix] LDTEST otool: ' + ' ; '.join(lines4[:24]))
+                r5 = subprocess.run(['vtool', '-show-build', m3],
+                                    capture_output=True, text=True)
+                logp('[prebuilt-fix] LDTEST vtool: '
+                     + (r5.stdout or r5.stderr or '').replace(chr(10), ' | ')[:400])
+                break
+    finally:
+        _sh.rmtree(tmp3, ignore_errors=True)
     return 0
 
 
