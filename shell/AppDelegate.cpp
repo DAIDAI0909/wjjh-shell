@@ -367,12 +367,17 @@ local __wjjh_flowSpecs = {
   ['app.models.game.GameStart'] = { { 'start_game' } },
   ['app.views.ui.TitleUI'] = { { 'init' }, { 'create' }, { 'update', 'hot' } },
   ['app.controllers.Audio'] = { { 'playMusic' }, { 'playEffect' }, { 'playBackgroundMusic' }, { 'stopMusic' } },
-  ['app.views.layer.MainLayer'] = { { 'init' }, { 'create' }, { 'update', 'hot' }, { 'showLayer' }, { 'onShow' } },
-  ['app.views.layer.MenuLayer.MenuLayer'] = { { 'init' }, { 'create' }, { 'StartGame' } },
+  ['app.views.layer.MainLayer'] = { { 'init' }, { 'create' }, { 'update', 'hot' }, { 'showLayer' }, { 'onShow' }, { 'onAwake' }, { 'initCheck' }, { 'isShow' }, { 'checkIsHaveOfficial' }, { 'checkIsFamilyPrestige' }, { 'checkCanOpenDengLuJiangLi' }, { 'checkCanOpenVisitTask' } },
+  ['app.views.layer.MenuLayer.MenuLayer'] = { { 'init' }, { 'create' }, { 'StartGame' }, { 'onAwake' } },
   ['third.coroutine.CoroutinePool'] = { { 'update', 'hot' }, { 'doUpdate', 'hot' }, { 'add' }, { 'addAsync' } },
   ['third.coroutine.Coroutine'] = { { 'resume', 'hot' }, { 'init' } },
+  ['third.coroutine.CoroutineStack'] = { { 'resume', 'hot' }, { 'push' } },
   ['third.async.AsyncFunction'] = { { 'create' } },
   ['app.extends.LifeCycleSupport'] = { { 'awake' }, { 'onAwake' }, { 'register' } },
+  ['app.models.MonitorPool.MonitorPool'] = { { 'update', 'hot' } },
+  ['app.views.ui.MainUI'] = { { 'init' }, { 'create' }, { 'updataSkinAnim', 'hot' } },
+  ['app.views.layer.PopLayer.WaitingLayer'] = { { 'createInRunningScene' }, { 'hideAndStopAction' }, { 'hideAndRemoveSelf' } },
+  ['third.http.Request'] = { { 'send' } },
 }
 local function __ts(v)
   if v == nil then return 'nil' end
@@ -564,8 +569,13 @@ local __wjjh_targets = {
   ['app.views.layer.MenuLayer.MenuLayer'] = true,
   ['third.coroutine.CoroutinePool'] = true,
   ['third.coroutine.Coroutine'] = true,
+  ['third.coroutine.CoroutineStack'] = true,
   ['third.async.AsyncFunction'] = true,
   ['app.extends.LifeCycleSupport'] = true,
+  ['app.models.MonitorPool.MonitorPool'] = true,
+  ['app.views.ui.MainUI'] = true,
+  ['app.views.layer.PopLayer.WaitingLayer'] = true,
+  ['third.http.Request'] = true,
 }
 local __origRequire = require
 require = function(name)
