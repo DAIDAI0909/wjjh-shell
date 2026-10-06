@@ -154,7 +154,7 @@ def rebuild_member(body, lc_off):
             refs.append(cpp + 8)
 
     # ---- 3. 数据起点 = 走链区内的最早数据引用 ----
-    inside = [s for (s, e) in ranges if lc_off <= s < walked_end]
+    inside = [s for (s, e) in ranges if lc_off <= s <= walked_end]  # <=:走链常恰好停在数据起点
     if inside:
         true_end = min(inside)
         kept = [(cmd, cs, cpp) for cmd, cs, cpp in cmds
