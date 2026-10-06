@@ -142,16 +142,14 @@ def rebuild_member(body, lc_off):
             refs.append(cpp + 8)   # symoff
             refs.append(cpp + 16)  # stroff
         elif cmd == LC_DYSYMTAB:
-            all_zero = True
             for idx in (2, 4, 6, 8, 10):  # tocoff/modtaboff/extrefsymoff/indirectsymoff/extreloff
                 fo = cpp + 8 + idx * 4
                 if fo + 4 <= cpp + cs:
                     refs.append(fo)
-                    v, = struct.unpack_from('<I', body, fo)
-                    if v != 0:
-                        all_zero = False
-            if all_zero:
-                dys.append((cmd, cs, cpp))
+            ioff, nind = struct.unpack_from('<II', body, cpp + 8 + 8 * 4)  # indirectsymoff/nindirectsyms
+            if nind > 0 and ioff > 0:
+                ranges.append((ioff, min(ioff + nind * 4, file_end)))
+            dys.append((cmd, cs, cpp))  # 一律登记:空间不够时丢弃(DYSYMTAB 对 .o 可省)
         elif cmd == LC_DATA_IN_CODE:
             doff, dsz = struct.unpack_from('<II', body, cpp + 8)
             if dsz > 0 and doff > 0:
@@ -187,13 +185,14 @@ def rebuild_member(body, lc_off):
         pp += cs
 
     used = sum(cs for _, cs, _ in kept)
-    # 空间不够：丢弃全零 DYSYMTAB（从后往前）
+    # 空间不够：丢 DYSYMTAB（大者先丢,对 .o 可省略）
     if used + 24 > space:
-        for cmd, cs, cpp, droppable in reversed(dropped_dys):
-            kept = [(c, s2, p2) for c, s2, p2 in kept if p2 != cpp]
-            used = sum(s2 for _, s2, _ in kept)
-            if used + 24 <= space:
-                break
+        for cmd, cs, cpp in sorted(dys, key=lambda d: -d[1]):
+            if cpp + cs <= true_end and any(p2 == cpp for _, _, p2 in kept):
+                kept = [(c, s2, p2) for c, s2, p2 in kept if p2 != cpp]
+                used = sum(s2 for _, s2, _ in kept)
+                if used + 24 <= space:
+                    break
 
     new_sc = used + 24
     delta = new_sc - space
