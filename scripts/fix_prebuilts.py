@@ -19,6 +19,7 @@ repacked with libtool (which also regenerates the symbol index). luajit is
 skipped (built from source separately).
 """
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -272,39 +273,54 @@ def process_archive(path):
         logp('[prebuilt-fix] %s: %d members, rebuilt=%d skip=%d'
              % (os.path.basename(path), len(members), rebuilt, skipped))
 
+        orig_bodies = {i: body for i, (real_name, body) in enumerate(members)}
         for i, (real_name, body) in enumerate(members):
             with open(os.path.join(tmp, 'm%d.o' % i), 'wb') as f:
                 f.write(body)
         out_a = os.path.join(tmp, 'fixed.a')
         obj_paths = [os.path.join(tmp, 'm%d.o' % i) for i in range(len(members))]
-        for attempt in range(4):
+        normalized = set()
+        for attempt in range(6):
             r = subprocess.run(['libtool', '-static', '-o', out_a] + obj_paths,
                                capture_output=True, text=True)
             if r.returncode == 0:
                 break
             err = (r.stderr or '') + (r.stdout or '')
-            logp('[prebuilt-fix] libtool attempt %d failed: %s' % (attempt, err[-260:]))
-            # 从报错里找失败成员号（mNN.o），用经典 ld -r 归一化后重试
-            m = re.search(r'(?:object:.*?|/)(m(\d+)\.o) malformed', err)
+            logp('[prebuilt-fix] libtool attempt %d failed: %s' % (attempt, err[-300:]))
+            # 从报错里找失败成员号（mNN.o）
+            m = re.search(r'(?:object:.*?|/)(m(\d+)\.o)\s+malformed', err)
             if not m:
-                m = re.search(r'(m(\d+)\.o)[^ ]* (?:malformed|is not an object|unknown)', err)
+                m = re.search(r'(m(\d+)\.o)\s*[^\n]*?(?:malformed|is not an object|unknown)', err)
             if not m:
                 break
             idx = int(m.group(2))
-            if idx >= len(obj_paths):
+            if idx >= len(obj_paths) or idx in normalized:
                 break
-            bad = obj_paths[idx]
-            norm = bad + '.norm'
-            r2 = subprocess.run(['ld', '-r', '-ld_classic', '-o', norm, bad],
+            normalized.add(idx)
+            # 用【原始成员】跑经典 ld -r 归一化（它对畸形头极其宽容），
+            # 归一化产物再做一次 LC 平台重建，替换成员文件后重试 libtool
+            orig = os.path.join(tmp, 'orig%d.o' % idx)
+            with open(orig, 'wb') as f:
+                f.write(orig_bodies[idx])
+            norm = os.path.join(tmp, 'norm%d.o' % idx)
+            r2 = subprocess.run(['ld', '-r', '-ld_classic', '-o', norm, orig],
                                 capture_output=True, text=True)
-            if r2.returncode == 0 and os.path.exists(norm) and os.path.getsize(norm) > 0:
-                import shutil as _sh
-                _sh.copyfile(norm, bad)
-                logp('[prebuilt-fix] normalized %s via ld -r' % m.group(1))
-            else:
+            if r2.returncode != 0 or not os.path.exists(norm) or os.path.getsize(norm) == 0:
                 logp('[prebuilt-fix] ld -r failed for %s: %s'
-                     % (m.group(1), (r2.stderr or '')[-200:]))
+                     % (m.group(1), (r2.stderr or '')[-220:]))
                 break
+            with open(norm, 'rb') as f:
+                nb = f.read()
+            lc2 = find_lc_offset(nb)
+            if lc2 is None:
+                logp('[prebuilt-fix] normalized %s has no LC area, use as-is' % m.group(1))
+            else:
+                fixed2 = rebuild_member(nb, lc2)
+                if fixed2 is not None:
+                    nb = fixed2
+            with open(obj_paths[idx], 'wb') as f:
+                f.write(nb)
+            logp('[prebuilt-fix] normalized+retagged %s via ld -r, retrying' % m.group(1))
         if r.returncode != 0:
             logp('[prebuilt-fix] FATAL libtool failed after retries: '
                  + ((r.stderr or '')[-300:]))
