@@ -255,7 +255,7 @@ def rebuild_member_clean(body, lc_off):
         # 数据区翻回原序(命令区是新生成的小端,不翻)。
         flip = bytearray(len(body))
         for o4 in range(0, len(body) - 3, 4):
-            flip[o4:o4+4] = body[o4+3:o4-1:-1]
+            flip[o4:o4+4] = body[o4:o4+4][::-1]
         flip[0:4] = b'\xcf\xfa\xed\xfe'
         body = bytes(flip)
     seg_abs, lc_off, sizeofcmds = find_seg_and_lc_off(body)
