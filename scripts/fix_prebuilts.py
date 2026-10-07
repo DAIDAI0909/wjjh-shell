@@ -497,7 +497,7 @@ def process_archive(path):
     new_arch = serialize_archive(members)
     with open(path, 'wb') as f:
         f.write(new_arch)
-    rr = subprocess.run(['ranlib', path], capture_output=True, text=True)
+    rr = subprocess.run(['ranlib', path], capture_output=True, text=True, errors='replace')
     if rr.returncode != 0:
         logp('[prebuilt-fix] FATAL ranlib failed: ' + (rr.stderr or '')[-300:])
         return 1
