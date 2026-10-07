@@ -404,6 +404,23 @@ def serialize_archive(members, workdir):
                        capture_output=True, text=True, errors='replace')
     if r.returncode != 0:
         logp('[prebuilt-fix] FATAL libtool failed: ' + (r.stderr or '')[-300:])
+        # 实物诊断:对被拒成员跑 otool -h/-l,看它到底长什么样
+        m = re.search(r'(m(\d+)\.o)', (r.stderr or '') + (r.stdout or ''))
+        if m:
+            bad = os.path.join(workdir, m.group(1))
+            if os.path.exists(bad):
+                rh = subprocess.run(['otool', '-h', bad],
+                                    capture_output=True, text=True, errors='replace')
+                logp('[prebuilt-fix] DIAG otool -h %s: %s'
+                     % (m.group(1), (rh.stdout or rh.stderr or '').replace(chr(10), ' | ')[:500]))
+                rl = subprocess.run(['otool', '-l', bad],
+                                    capture_output=True, text=True, errors='replace')
+                logp('[prebuilt-fix] DIAG otool -l %s: %s'
+                     % (m.group(1), (rl.stdout or rl.stderr or '').replace(chr(10), ' | ')[:1500]))
+                with open(bad, 'rb') as f:
+                    blob = f.read()
+                logp('[prebuilt-fix] DIAG hex head64: %s' % blob[:64].hex())
+                logp('[prebuilt-fix] DIAG hex lc+192..256: %s' % blob[224:288].hex())
         return None
     with open(out, 'rb') as f:
         return f.read()
