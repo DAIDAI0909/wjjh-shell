@@ -46,45 +46,48 @@ def logp(msg):
             f.write(msg + chr(10))
 
 
-def find_lc_offset(body):
-    """探测 LC 区起始：28（标准）或 32（2017 工具链非标准头）。
-    校验：首条 LC 必为 LC_SEGMENT_64 且整条链走通、计数吻合。"""
-    if body[:4] not in (M64, M32):
-        return None
+def find_seg_and_lc_off(body):
+    """定位 LC 链真正起点:扫描前 64 字节内首个"可验证的 LC_SEGMENT_64"。
+
+    2017 成员头偏移有 28/32 两种(gh109 实锤长尾成员 32 视角完全合法、28 视角
+    被 __PAGEZERO 对齐垫片搅碎)。不再按偏移猜——直接找第一个 SEG 命令:
+      cmd=0x19, cmdsize 合理, nsects 合理, section 表在文件内, 链上能到 SYMTAB。
+    返回 (seg_abs, lc_off, sizeofcmds)。找不到返回 (None, None, None)。"""
     ncmds, sizeofcmds = struct.unpack_from('<II', body, 16)
-    best = None
-    best_score = -1
-    # gh87 铁律:ld/otool 一律按 28 走链(2017 非标准头);32 视角的合法链 ld 看不见。
-    # 28 验证通过必须无条件优先——否则补丁落在 ld 的链之外,改了等于没改。
-    for off in (28, 32):
-        end = off + sizeofcmds
-        if end > len(body) or end + 8 > len(body):
+    file_end = len(body)
+    for cand in range(16, 64, 4):
+        if cand + 8 > file_end:
+            break
+        cmd, cs = struct.unpack_from('<II', body, cand)
+        if cmd != 0x19 or cs < 72 or cand + cs > file_end:
             continue
-        pp = off
-        ok = True
-        count = 0
-        score = 0
-        while pp + 8 <= end:
-            cmd, cmdsize = struct.unpack_from('<II', body, pp)
-            if cmdsize < 8 or pp + cmdsize > end:
-                ok = False
+        nsects = struct.unpack_from('<I', body, cand + 64)[0]
+        if nsects == 0 or nsects > 64 or cand + 72 + nsects * 80 > file_end:
+            continue
+        # 疑似真 SEG:从其后走链,要求能到达 SYMTAB(0x2)且 symoff 可读
+        pp = cand + cs
+        ok = False
+        sym_ok = False
+        while pp + 8 <= cand + sizeofcmds and pp + 8 <= file_end:
+            cmd2, cs2 = struct.unpack_from('<II', body, pp)
+            if cs2 < 8 or pp + cs2 > min(cand + sizeofcmds + 64, file_end):
                 break
-            if cmd == LC_SEGMENT_64:
-                score += 2
-            if cmd == LC_SYMTAB:
-                score += 1
-            pp += cmdsize
-            count += 1
-        if ok and count == ncmds:
-            if off == 28:
-                return 28  # 28 视角合法即定案(ld 的一致视角)
-            if score > best_score:
-                best_score = score
-                best = off
-    # 平分时强制 28(链走向与 ld 一致)
-    if 28 in (28, 32):
-        pass
-    return best
+            if cmd2 == 0x2:
+                symoff, nsyms, stroff, strsize = struct.unpack_from('<IIII', body, pp + 8)
+                if 0 < symoff < file_end and 0 < nsyms < 0x100000:
+                    sym_ok = True
+                ok = True
+                break
+            pp += cs2
+        if ok and sym_ok:
+            return cand, cand, sizeofcmds
+    return None, None, None
+
+
+def find_lc_offset(body):
+    """兼容旧调用:返回 LC 链偏移。"""
+    seg, lc, sc = find_seg_and_lc_off(body)
+    return lc
 
 
 def parse_lcs(body, lc_off):
@@ -248,7 +251,9 @@ def rebuild_member_clean(body, lc_off):
     返回新 bytes;无法解析返回 None。"""
     if body[:4] != b'\xcf\xfa\xed\xfe':
         return None
-    ncmds, sizeofcmds = struct.unpack_from('<II', body, 16)
+    seg_abs, lc_off, sizeofcmds = find_seg_and_lc_off(body)
+    if seg_abs is None:
+        return None
     flags = struct.unpack_from('<I', body, 24)[0]
 
     # ---- 收集原成员的命令信息(只信字段,不信链) ----
@@ -366,8 +371,13 @@ def rebuild_member_clean(body, lc_off):
             break
     logp('[prebuilt-fix] member@%d: sections=%d max_nsect=%d rounds=%d'
          % (lc_off, len(sections), max_sect, expand_rounds))
-    if len(sections) < max_sect:
-        return None
+    # 2017 畸形:符号引用的 n_sect 可超过实有 section 数(1-based 序号引用越界)。
+    # 补空 section 占位,保住符号 n_sect 编号合法性,而不是放弃重建。
+    while len(sections) < max_sect:
+        si3 = len(sections)
+        sections.append((b'__pad%d' % si3 + bytes(16 - len(b'__pad%d' % si3)),
+                         b'__PAD'.ljust(16, bytes(1)), 0, 0, 0, 0, 0, 0, 0, 0, 0, b''))
+    logp('[prebuilt-fix] member@%d: padded sections to %d' % (lc_off, len(sections)))
 
     # ---- 组装新文件 ----
     out = bytearray()
