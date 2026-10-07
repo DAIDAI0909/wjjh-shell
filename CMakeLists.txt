@@ -436,3 +436,10 @@ if(EXISTS ${PY_FW})
 else()
     message(STATUS "Python.framework not found at ${PY_FW} — private server disabled")
 endif()
+
+# ---- 模拟器安装诊断(gh121):安装失败"Failed to get FD to bundle executable",
+#      在构建期把 bundle 内容/主可执行文件类型打到 build 日志 ----
+add_custom_command(TARGET WJJH POST_BUILD
+    COMMAND sh -c "echo '== WJJH bundle diag =='; ls -la '$<TARGET_BUNDLE_DIR:WJJH>' | head -20; echo '-- binary:'; file '$<TARGET_FILE:WJJH>'; otool -hv '$<TARGET_FILE:WJJH>'; echo '-- build-version:'; otool -l '$<TARGET_FILE:WJJH>' | grep -A5 LC_BUILD_VERSION || true; echo '-- frameworks:'; ls '$<TARGET_BUNDLE_DIR:WJJH>/Frameworks' 2>/dev/null | head -5 || true"
+    COMMENT "WJJH bundle/binary diagnostics"
+    VERBATIM)

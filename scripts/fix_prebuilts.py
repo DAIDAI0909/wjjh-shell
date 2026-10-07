@@ -117,10 +117,7 @@ def rebuild_member(body, lc_off):
       4. 数据原地不动，其后所有数据偏移统一 +delta（delta 常为负=数据前移）。"""
     file_end = len(body)
 
-    # ---- 1. 走链(宽容起点,严格终点)----
-    # 标准 .o 的命令顺序固定:SEG, [平台], SYMTAB, DYSYMTAB, [DATA_IN_CODE]。
-    # 收集到 SYMTAB 后必须立即停——继续走会在数据区里"同步"出假 SEG
-    # (gh116 实锤:假 SEG nsects=254 把重建成员撑到偏移越界,libtool 拒收)。
+    # ---- 1. 宽容走链 ----
     cmds = []
     pp = lc_off
     while pp + 8 <= file_end:
@@ -129,8 +126,6 @@ def rebuild_member(body, lc_off):
             break
         cmds.append((cmd, cs, pp))
         pp += cs
-        if cmd == 0x2:  # LC_SYMTAB:其后只剩表数据,停
-            break
     walked_end = pp
 
     # ---- 2. 收集数据引用与数据区间 ----
@@ -551,130 +546,109 @@ def serialize_archive(members, workdir):
 
 
 def process_archive(path):
-    """v13: vtool 官方工具改平台。
+    """v9: 重建每个 arm64 成员(干净标准 Mach-O),重序列化归档,ranlib 重建目录。
 
-    从归档抽出每个 arm64 成员 -> vtool -set-build-version ios-simulator ->
-    ar 重新打包。vtool 是苹果官方 Mach-O 平台改写工具,对 2017 畸形头的
-    兼容性远超自研字节手术(25 轮自研修复在符号表/重定位表的边角上全部阵亡)。"""
-    import tempfile
-    import shutil as _sh
-    tmp = tempfile.mkdtemp()
-    try:
-        with open(path, 'rb') as f:
-            data = f.read()
+    v8 的教训:重建后成员尺寸变化,按原槽位写回会撑破归档。v9 整体重序列化,
+    并把 fat 文件替换为 thin arm64 归档(模拟器链接只用 arm64 切片)。"""
+    with open(path, 'rb') as f:
+        data = f.read()
 
-        members = []
-        if data[:4] == b'\xca\xfe\xba\xbe':
-            n, = struct.unpack_from('>I', data, 4)
-            arm = None
-            for i in range(n):
-                cpu, sub, off, size, al = struct.unpack_from('>IIIII', data, 8 + i * 20)
-                if cpu == 0x0100000C:
-                    arm = data[off:off + size]
-                    break
-            if arm is None:
-                logp('[prebuilt-fix] %s: no arm64 slice, skip' % os.path.basename(path))
-                return 1
-            src = arm
-        elif data[:8] == b'!<arch>\n':
-            src = data
-        else:
-            return 1
-
-        p = 8
-        idx = 0
-        n_vtool = 0
-        n_vfail = 0
-        while p + 60 <= len(src):
-            hdr = src[p:p + 60]
-            name_field = hdr[:16].decode('ascii', 'replace')
-            try:
-                size = int(hdr[48:58].decode('ascii', 'replace').strip() or 0)
-            except ValueError:
+    members = []  # [(name, body)] — arm64 切片内的非 SYMDEF 成员
+    if data[:4] == b'\xca\xfe\xba\xbe':
+        n, = struct.unpack_from('>I', data, 4)
+        arm = None
+        for i in range(n):
+            cpu, sub, off, size, al = struct.unpack_from('>IIIII', data, 8 + i * 20)
+            if cpu == 0x0100000C:
+                arm = data[off:off + size]
                 break
-            content = src[p + 60:p + 60 + size]
-            bo = 0
-            if name_field.startswith('#1/'):
-                bo = int(name_field[3:].strip())
-            real_name = content[:bo].rstrip(bytes(1)).decode('ascii', 'replace')
-            if real_name.startswith('__.SYMDEF'):
-                p += 60 + size + (size & 1)
-                continue
-            body = content[bo:]
+        if arm is None:
+            logp('[prebuilt-fix] %s: no arm64 slice, skip' % os.path.basename(path))
+            return 1
+        src = arm
+    elif data[:8] == b'!<arch>\n':
+        src = data
+    else:
+        return 1
 
-            # 找到成员内的 arm64 Mach-O(瘦或胖内层),写到临时文件
-            arm_body = None
-            if body[:4] in (b'\xcf\xfa\xed\xfe', b'\xce\xfa\xed\xfe'):
-                arm_body = body
-            elif body[:4] == b'\xca\xfe\xba\xbe':
-                n_in, = struct.unpack_from('>I', body, 4)
-                for i in range(n_in):
-                    cpu_in, sub_in, off_in, size_in, al_in = struct.unpack_from(
-                        '>IIIII', body, 8 + i * 20)
-                    if cpu_in == 0x0100000C:
-                        arm_body = body[off_in:off_in + size_in]
-                        break
-            if arm_body is None:
-                logp('[prebuilt-fix] SKIP %s: no arm64 macho' % real_name)
-                p += 60 + size + (size & 1)
-                idx += 1
-                continue
-
-            src_o = os.path.join(tmp, 'v%d.o' % idx)
-            out_o = os.path.join(tmp, 'f%d.o' % idx)
-            with open(src_o, 'wb') as f:
-                f.write(arm_body)
-            r = subprocess.run(['vtool', '-set-build-version', '7',
-                                '13.0', '18.2', '-replace',
-                                '-output', out_o, src_o],
-                               capture_output=True, text=True, errors='replace')
-            ok = r.returncode == 0 and os.path.exists(out_o) and os.path.getsize(out_o) > 0
-            if not ok:
-                r = subprocess.run(['vtool', '-set-build-version', '7',
-                                    '13.0', '18.2', '-output', out_o, src_o],
-                                   capture_output=True, text=True, errors='replace')
-                ok = r.returncode == 0 and os.path.exists(out_o) and os.path.getsize(out_o) > 0
-            if ok:
-                with open(out_o, 'rb') as f:
-                    members.append((real_name, f.read()))
-                n_vtool += 1
-            else:
-                logp('[prebuilt-fix] vtool failed %s: %s'
-                     % (real_name, ((r.stderr or '') + (r.stdout or ''))[:200]))
-                members.append((real_name, body))
-                n_vfail += 1
+    p = 8
+    n_patched = 0
+    n_fail = 0
+    while p + 60 <= len(src):
+        hdr = src[p:p + 60]
+        name_field = hdr[:16].decode('ascii', 'replace')
+        try:
+            size = int(hdr[48:58].decode('ascii', 'replace').strip() or 0)
+        except ValueError:
+            break
+        content = src[p + 60:p + 60 + size]
+        bo = 0
+        if name_field.startswith('#1/'):
+            bo = int(name_field[3:].strip())
+        real_name = content[:bo].rstrip(bytes(1)).decode('ascii', 'replace')
+        if real_name.startswith('__.SYMDEF'):
             p += 60 + size + (size & 1)
-            idx += 1
+            continue
+        body = content[bo:]
+        new_body = None
+        if body[:4] in (b'\xcf\xfa\xed\xfe', b'\xce\xfa\xed\xfe'):
+            lc_off = find_lc_offset(body)
+            if lc_off is not None:
+                new_body = rebuild_member_clean(body, lc_off)
+        elif body[:4] == b'\xca\xfe\xba\xbe':
+            # FAT 成员:抽 arm64 内层切片重建
+            n_in, = struct.unpack_from('>I', body, 4)
+            for i in range(n_in):
+                cpu_in, sub_in, off_in, size_in, al_in = struct.unpack_from(
+                    '>IIIII', body, 8 + i * 20)
+                if cpu_in == 0x0100000C:
+                    inner = body[off_in:off_in + size_in]
+                    lc_off = find_lc_offset(inner)
+                    if lc_off is not None:
+                        new_body = rebuild_member_clean(inner, lc_off)
+                    break
+        if new_body is not None:
+            members.append((real_name, new_body))
+            n_patched += 1
+        else:
+            members.append((real_name, body))
+            n_fail += 1
+            # 失败阶段诊断
+            magic = body[:4].hex()
+            why = 'not-macho'
+            if body[:4] in (b'\xcf\xfa\xed\xfe', b'\xce\xfa\xed\xfe'):
+                nc4, sc4 = struct.unpack_from('<II', body, 16)
+                seg4, lc4, _ = find_seg_and_lc_off(body)
+                why = 'macho: ncmds=%d sizeofcmds=%d seg=%s' % (nc4, sc4, seg4)
+            elif body[:4] == b'\xca\xfe\xba\xbe':
+                n4, = struct.unpack_from('>I', body, 4)
+                cpus = [struct.unpack_from('>I', body, 8 + i * 20)[0] for i in range(min(n4, 8))]
+                why = 'fat cpus=%s' % [hex(c) for c in cpus]
+            logp('[prebuilt-fix] KEEPORIG %s magic=%s why=%s len=%d'
+                 % (real_name, magic, why, len(body)))
+        p += 60 + size + (size & 1)
 
-        logp('[prebuilt-fix] %s: members=%d vtool=%d fail=%d'
-             % (os.path.basename(path), len(members), n_vtool, n_vfail))
-        if n_vfail:
-            logp('[prebuilt-fix] FATAL %d members not converted' % n_vfail)
-            return 1
+    logp('[prebuilt-fix] %s: members=%d rebuilt=%d keep-orig=%d'
+         % (os.path.basename(path), len(members), n_patched, n_fail))
+    if n_fail:
+        logp('[prebuilt-fix] FATAL %d members unfixable, archive left for ld to complain'
+             % n_fail)
+        return 1
 
-        objs = []
-        for i, (name, body2) in enumerate(members):
-            op = os.path.join(tmp, 'm%d.o' % i)
-            with open(op, 'wb') as f:
-                f.write(body2)
-            objs.append(op)
-        out_a = os.path.join(tmp, 'out.a')
-        if os.path.exists(out_a):
-            os.remove(out_a)
-        r = subprocess.run(['ar', 'crs', out_a] + objs,
-                           capture_output=True, text=True, errors='replace')
-        if r.returncode != 0:
-            logp('[prebuilt-fix] FATAL ar failed: ' + (r.stderr or '')[-300:])
+    import tempfile
+    tmp2 = tempfile.mkdtemp()
+    try:
+        new_arch = serialize_archive(members, tmp2)
+        if new_arch is None:
             return 1
-        with open(out_a, 'rb') as f:
-            new_arch = f.read()
         with open(path, 'wb') as f:
             f.write(new_arch)
-        logp('[prebuilt-fix] %s: vtool+ar done, %d bytes'
+        logp('[prebuilt-fix] %s: re-serialized via ar, %d bytes'
              % (os.path.basename(path), len(new_arch)))
         return 0
     finally:
-        _sh.rmtree(tmp, ignore_errors=True)
+        import shutil
+        shutil.rmtree(tmp2, ignore_errors=True)
 
 
 def main():
