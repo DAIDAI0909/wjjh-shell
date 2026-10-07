@@ -572,6 +572,11 @@ def process_archive(path):
         else:
             members.append((real_name, body))
             n_fail += 1
+            # 长尾诊断:导出成员原始字节(base64,截 8KB)供本地复现
+            import base64
+            blob = body[:8192]
+            logp('[prebuilt-fix] KEEPORIG %s b64=%s'
+                 % (real_name, base64.b64encode(blob).decode()[:11000]))
         p += 60 + size + (size & 1)
 
     logp('[prebuilt-fix] %s: members=%d rebuilt=%d keep-orig=%d'
