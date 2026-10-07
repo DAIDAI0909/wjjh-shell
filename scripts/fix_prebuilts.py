@@ -392,20 +392,20 @@ def rebuild_member_clean(body, lc_off):
 
 
 def serialize_archive(members, workdir):
-    """用系统 ar 生成归档(苹果工具链自产,ld 必认)。"""
+    """用 libtool 生成归档(gh80 已验证:干净成员+libtool=ld 认)。"""
     objs = []
     for i, (name, body) in enumerate(members):
-        op = os.path.join(workdir, 'm%d_%s' % (i, name.replace('/', '_')))
+        op = os.path.join(workdir, 'm%d.o' % i)
         with open(op, 'wb') as f:
             f.write(body)
         objs.append(op)
     out = os.path.join(workdir, 'out.a')
     if os.path.exists(out):
         os.remove(out)
-    r = subprocess.run(['ar', 'crs', out] + objs,
+    r = subprocess.run(['libtool', '-static', '-o', out] + objs,
                        capture_output=True, text=True, errors='replace')
     if r.returncode != 0:
-        logp('[prebuilt-fix] FATAL ar failed: ' + (r.stderr or '')[-300:])
+        logp('[prebuilt-fix] FATAL libtool failed: ' + (r.stderr or '')[-300:])
         return None
     with open(out, 'rb') as f:
         return f.read()
