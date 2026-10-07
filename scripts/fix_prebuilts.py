@@ -297,7 +297,7 @@ def rebuild_member_clean(body, lc_off):
     # ---- 组装新文件 ----
     out = bytearray()
     head = bytearray(32)
-    struct.pack_into('<IIII', head, 0, 0x0C, 0x0100000C, 0, 1)  # magic,cputype,subtype,filetype
+    struct.pack_into('<IIII', head, 0, 0xFEEDFACF, 0x0100000C, 0, 1)  # MH_MAGIC_64,arm64,0,MH_OBJECT
     # ncmds/sizeofcmds 后填
     struct.pack_into('<I', head, 24, flags)
     out += head
