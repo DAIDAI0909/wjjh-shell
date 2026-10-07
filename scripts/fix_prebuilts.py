@@ -259,7 +259,7 @@ def rebuild_member_clean(body, lc_off):
     dys_raw = None
     pp = lc_off
     lc_end = lc_off + sizeofcmds
-    hard_end = min(lc_end + 4096, len(body))
+    hard_end = len(body)
     while pp + 8 <= hard_end:
         cmd, cs = struct.unpack_from('<II', body, pp)
         if cs < 8 or pp + cs > hard_end:
@@ -321,10 +321,10 @@ def rebuild_member_clean(body, lc_off):
         if n_sect > max_sect:
             max_sect = n_sect
     expand_rounds = 0
-    while len(sections) < max_sect and expand_rounds < 5:
+    while len(sections) < max_sect and expand_rounds < 3:
         expand_rounds += 1
         lc_end = hard_end
-        hard_end = min(lc_end + 4096, len(body))
+        hard_end = len(body)
         sections = []
         symtab = None
         dys_raw = None
