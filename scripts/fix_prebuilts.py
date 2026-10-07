@@ -560,7 +560,7 @@ def process_archive(path):
             continue
         body = content[bo:]
         new_body = None
-        if body[:4] == b'\xcf\xfa\xed\xfe':
+        if body[:4] in (b'\xcf\xfa\xed\xfe', b'\xce\xfa\xed\xfe'):
             lc_off = find_lc_offset(body)
             if lc_off is not None:
                 new_body = rebuild_member_clean(body, lc_off)
@@ -585,7 +585,7 @@ def process_archive(path):
             # 失败阶段诊断
             magic = body[:4].hex()
             why = 'not-macho'
-            if body[:4] == b'\xcf\xfa\xed\xfe':
+            if body[:4] in (b'\xcf\xfa\xed\xfe', b'\xce\xfa\xed\xfe'):
                 nc4, sc4 = struct.unpack_from('<II', body, 16)
                 seg4, lc4, _ = find_seg_and_lc_off(body)
                 why = 'macho: ncmds=%d sizeofcmds=%d seg=%s' % (nc4, sc4, seg4)
