@@ -117,7 +117,10 @@ def rebuild_member(body, lc_off):
       4. 数据原地不动，其后所有数据偏移统一 +delta（delta 常为负=数据前移）。"""
     file_end = len(body)
 
-    # ---- 1. 宽容走链 ----
+    # ---- 1. 走链(宽容起点,严格终点)----
+    # 标准 .o 的命令顺序固定:SEG, [平台], SYMTAB, DYSYMTAB, [DATA_IN_CODE]。
+    # 收集到 SYMTAB 后必须立即停——继续走会在数据区里"同步"出假 SEG
+    # (gh116 实锤:假 SEG nsects=254 把重建成员撑到偏移越界,libtool 拒收)。
     cmds = []
     pp = lc_off
     while pp + 8 <= file_end:
@@ -126,6 +129,8 @@ def rebuild_member(body, lc_off):
             break
         cmds.append((cmd, cs, pp))
         pp += cs
+        if cmd == 0x2:  # LC_SYMTAB:其后只剩表数据,停
+            break
     walked_end = pp
 
     # ---- 2. 收集数据引用与数据区间 ----
