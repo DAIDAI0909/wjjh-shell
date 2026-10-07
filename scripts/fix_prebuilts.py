@@ -287,10 +287,8 @@ def rebuild_member_clean(body, lc_off):
             dys_nonzero = any(v != 0 for v in vals[2:])
         elif cmd in (0x24, 0x23, 0x25):
             pass  # 平台命令:重建时统一替换
-        elif cmd == 0x2E:
-            pass  # LC_LINKER_OPTIMIZATION_HINT: 非必需,弃
         else:
-            dysyms.append((cmd, cs, bytes(body[pp:pp + cs])))
+            pass  # 其余命令(DATA_IN_CODE/LINKER_OPT 等)引用老偏移,重建后全部悬空——一律弃
         pp += cs
 
     if not sections or symtab is None:
