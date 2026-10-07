@@ -259,7 +259,7 @@ def rebuild_member_clean(body, lc_off):
     dys_raw = None
     pp = lc_off
     lc_end = lc_off + sizeofcmds
-    hard_end = min(lc_end + 64, len(body))
+    hard_end = min(lc_end + 4096, len(body))
     while pp + 8 <= hard_end:
         cmd, cs = struct.unpack_from('<II', body, pp)
         if cs < 8 or pp + cs > hard_end:
@@ -269,6 +269,9 @@ def rebuild_member_clean(body, lc_off):
             continue
         if cmd == 0x19:  # LC_SEGMENT_64
             nsects = struct.unpack_from('<I', body, pp + 64)[0]
+            if nsects > 64 or pp + 72 + nsects * 80 > len(body):
+                pp += 4
+                continue
             for si in range(nsects):
                 so = pp + 72 + si * 80
                 if so + 80 > len(body):
@@ -301,6 +304,69 @@ def rebuild_member_clean(body, lc_off):
         pp += cs
 
     if not sections or symtab is None:
+        return None
+
+    # 闭环校验:符号表最大 n_sect 必须 <= 收集的 section 总数;
+    # 不够说明还有 SEG 藏在更远处(__DATA 在伪 LC 后 sizeofcmds 之外),扩窗重扫
+    symoff_n, nsyms_n, stroff_n, strsize_n = symtab
+    max_sect = 0
+    for i in range(nsyms_n):
+        base = symoff_n + i * 16
+        if base + 16 > len(body):
+            break
+        n_type = body[base + 4]
+        if (n_type & 0x0E) == 0:
+            continue
+        n_sect = body[base + 5]
+        if n_sect > max_sect:
+            max_sect = n_sect
+    expand_rounds = 0
+    while len(sections) < max_sect and expand_rounds < 5:
+        expand_rounds += 1
+        lc_end = hard_end
+        hard_end = min(lc_end + 4096, len(body))
+        sections = []
+        symtab = None
+        dys_raw = None
+        dys_nonzero = False
+        dys = []
+        dysyms = []
+        pp2 = lc_off
+        while pp2 + 8 <= hard_end:
+            cmd2, cs2 = struct.unpack_from('<II', body, pp2)
+            if cs2 < 8 or pp2 + cs2 > hard_end:
+                pp2 += 4
+                continue
+            if cmd2 == 0x19:
+                nsects2 = struct.unpack_from('<I', body, pp2 + 64)[0]
+                if nsects2 > 64 or pp2 + 72 + nsects2 * 80 > len(body):
+                    pp2 += 4
+                    continue
+                for si2 in range(nsects2):
+                    so2 = pp2 + 72 + si2 * 80
+                    sectname2 = bytes(body[so2:so2 + 16])
+                    segname2 = bytes(body[so2 + 16:so2 + 32])
+                    addr2, size2 = struct.unpack_from('<QQ', body, so2 + 32)
+                    offset2, align2, reloff2, nreloc2 = struct.unpack_from('<IIII', body, so2 + 48)
+                    sflags2, res12, res22 = struct.unpack_from('<III', body, so2 + 64)
+                    rraw2 = b''
+                    if nreloc2 > 0 and 0 < reloff2 and reloff2 + nreloc2 * 8 <= len(body):
+                        rraw2 = bytes(body[reloff2:reloff2 + nreloc2 * 8])
+                    if 0 < offset2 < len(body):
+                        sections.append((sectname2, segname2, addr2, size2, align2,
+                                         reloff2, nreloc2, sflags2, res12, res22, offset2, rraw2))
+            elif cmd2 == 0x2:
+                so3, ns3, to3, ss3 = struct.unpack_from('<IIII', body, pp2 + 8)
+                if 0 < so3 < len(body) and ns3 > 0:
+                    symtab = (so3, ns3, to3, ss3)
+            elif cmd2 == 0xB:
+                dys_raw = bytes(body[pp2:pp2 + cs2])
+            pp2 += cs2
+        if len(sections) >= max_sect:
+            break
+    logp('[prebuilt-fix] member@%d: sections=%d max_nsect=%d rounds=%d'
+         % (lc_off, len(sections), max_sect, expand_rounds))
+    if len(sections) < max_sect:
         return None
 
     # ---- 组装新文件 ----
