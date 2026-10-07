@@ -624,13 +624,13 @@ def process_archive(path):
             out_o = os.path.join(tmp, 'f%d.o' % idx)
             with open(src_o, 'wb') as f:
                 f.write(arm_body)
-            r = subprocess.run(['vtool', '-set-build-version', 'ios-simulator',
+            r = subprocess.run(['vtool', '-set-build-version', '7',
                                 '13.0', '18.2', '-replace',
                                 '-output', out_o, src_o],
                                capture_output=True, text=True, errors='replace')
             ok = r.returncode == 0 and os.path.exists(out_o) and os.path.getsize(out_o) > 0
             if not ok:
-                r = subprocess.run(['vtool', '-set-build-version', 'ios-simulator',
+                r = subprocess.run(['vtool', '-set-build-version', '7',
                                     '13.0', '18.2', '-output', out_o, src_o],
                                    capture_output=True, text=True, errors='replace')
                 ok = r.returncode == 0 and os.path.exists(out_o) and os.path.getsize(out_o) > 0
