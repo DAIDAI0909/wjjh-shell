@@ -314,7 +314,7 @@ def rebuild_member_clean(body, lc_off):
     struct.pack_into('<QQQQ', seg, 24, 0, total_size, 0, total_size)
     struct.pack_into('<IIII', seg, 56, 7, 7, len(sections), 0)
     lc_blob += seg
-    for si, (sectname, segname, addr, size, align, reloff, nreloc, sflags, res1, res2, old_off) in enumerate(sections):
+    for si, (sectname, segname, addr, size, align, reloff, nreloc, sflags, res1, res2, old_off, reloc_raw) in enumerate(sections):
         sec = bytearray(80)
         sec[0:16] = sectname
         sec[16:32] = segname
