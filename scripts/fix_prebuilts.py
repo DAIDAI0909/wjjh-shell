@@ -391,30 +391,24 @@ def rebuild_member_clean(body, lc_off):
     return bytes(blob)
 
 
-def serialize_archive(members):
-    """把 [(name, body)] 序列化为 GNU archive(无 TOC,随后 ranlib 重建)。"""
-    out = bytearray(b'!<arch>\n')
-    for name, body in members:
-        nb = name.encode('ascii', 'replace')
-        hdr = bytearray(60)
-        if len(nb) <= 16:
-            hdr[0:16] = nb + bytes(16 - len(nb))
-            data = body
-        else:
-            ext = ('#1/' + str(len(nb))).encode('ascii')
-            hdr[0:16] = ext.ljust(16, bytes(1))
-            data = nb + bytes((4 - len(nb) % 4) % 4) + body
-            hdr[48:58] = ('%d' % (len(nb) + (4 - len(nb) % 4) % 4 + len(body))).ljust(10).encode()
-        hdr[16:28] = '0'.ljust(12).encode()          # mtime
-        hdr[28:34] = '0'.ljust(6).encode()           # uid
-        hdr[34:40] = '0'.ljust(6).encode()           # gid
-        hdr[40:48] = '100644'.ljust(8).encode()      # mode
-        hdr[48:58] = ('%d' % len(data)).ljust(10).encode() if len(nb) <= 16 else hdr[48:58]
-        hdr[58:60] = b'`\n'
-        out += hdr + data
-        if len(data) & 1:
-            out += bytes(1)
-    return bytes(out)
+def serialize_archive(members, workdir):
+    """用系统 ar 生成归档(苹果工具链自产,ld 必认)。"""
+    objs = []
+    for i, (name, body) in enumerate(members):
+        op = os.path.join(workdir, 'm%d_%s' % (i, name.replace('/', '_')))
+        with open(op, 'wb') as f:
+            f.write(body)
+        objs.append(op)
+    out = os.path.join(workdir, 'out.a')
+    if os.path.exists(out):
+        os.remove(out)
+    r = subprocess.run(['ar', 'crs', out] + objs,
+                       capture_output=True, text=True, errors='replace')
+    if r.returncode != 0:
+        logp('[prebuilt-fix] FATAL ar failed: ' + (r.stderr or '')[-300:])
+        return None
+    with open(out, 'rb') as f:
+        return f.read()
 
 
 def process_archive(path):
@@ -494,16 +488,20 @@ def process_archive(path):
              % n_fail)
         return 1
 
-    new_arch = serialize_archive(members)
-    with open(path, 'wb') as f:
-        f.write(new_arch)
-    rr = subprocess.run(['ranlib', path], capture_output=True, text=True, errors='replace')
-    if rr.returncode != 0:
-        logp('[prebuilt-fix] FATAL ranlib failed: ' + (rr.stderr or '')[-300:])
-        return 1
-    logp('[prebuilt-fix] %s: re-serialized %d bytes + ranlib OK'
-         % (os.path.basename(path), len(new_arch)))
-    return 0
+    import tempfile
+    tmp2 = tempfile.mkdtemp()
+    try:
+        new_arch = serialize_archive(members, tmp2)
+        if new_arch is None:
+            return 1
+        with open(path, 'wb') as f:
+            f.write(new_arch)
+        logp('[prebuilt-fix] %s: re-serialized via ar, %d bytes'
+             % (os.path.basename(path), len(new_arch)))
+        return 0
+    finally:
+        import shutil
+        shutil.rmtree(tmp2, ignore_errors=True)
 
 
 def main():
