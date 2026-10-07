@@ -252,7 +252,7 @@ def rebuild_member_clean(body, lc_off):
     flags = struct.unpack_from('<I', body, 24)[0]
 
     # ---- 收集原成员的命令信息(只信字段,不信链) ----
-    sections = []   # (sectname, segname, addr, size, align, reloff, nreloc, flags, res1, res2, old_off)
+    sections = []   # (sectname, segname, addr, size, align, reloff, nreloc, flags, res1, res2, old_off, reloc_raw)
     symtab = None   # (symoff, nsyms, stroff, strsize)
     dysyms = []     # 非 dysymtab 的其他命令原样保留: (cmd, cs, raw bytes)
     dys_nonzero = False
@@ -274,9 +274,12 @@ def rebuild_member_clean(body, lc_off):
                 addr, size = struct.unpack_from('<QQ', body, so + 32)
                 offset, align, reloff, nreloc = struct.unpack_from('<IIII', body, so + 48)
                 sflags, res1, res2 = struct.unpack_from('<III', body, so + 64)
+                reloc_raw = b''
+                if nreloc > 0 and 0 < reloff and reloff + nreloc * 8 <= len(body):
+                    reloc_raw = bytes(body[reloff:reloff + nreloc * 8])
                 if size > 0 and 0 < offset < len(body):
                     sections.append((sectname, segname, addr, size, align,
-                                     reloff, nreloc, sflags, res1, res2, offset))
+                                     reloff, nreloc, sflags, res1, res2, offset, reloc_raw))
         elif cmd == 0x2:  # LC_SYMTAB
             symoff, nsyms, stroff, strsize = struct.unpack_from('<IIII', body, pp + 8)
             if 0 < symoff < len(body) and nsyms > 0:
@@ -342,17 +345,16 @@ def rebuild_member_clean(body, lc_off):
         cur = (cur + 7) // 8 * 8
         sect_new_offs.append(cur)
         cur += size
-    # 重定位表(各 section 的 reloff/nreloc 区间)
-    relocs = []
-    for (sectname, segname, addr, size, align, reloff, nreloc, sflags, res1, res2, old_off) in sections:
-        if nreloc > 0 and 0 < reloff < len(body):
-            raw = bytes(body[reloff:reloff + nreloc * 8])
-            relocs.append((nreloc, raw))
+    # 重定位表:与 sections 一一对应(无 reloc 的 section 用空占位)
+    relocs = [(s2[6], s2[11]) for s2 in sections]  # (nreloc, reloc_raw)
     cur = (cur + 7) // 8 * 8
     reloc_new_offs = []
     for nreloc, raw in relocs:
-        reloc_new_offs.append(cur)
-        cur += len(raw)
+        if nreloc > 0 and raw:
+            reloc_new_offs.append(cur)
+            cur += len(raw)
+        else:
+            reloc_new_offs.append(0)
     # 符号表 + 字符串表
     sym_new_off = cur
     sym_bytes = bytes(body[symoff_n:symoff_n + nsyms * 16])
@@ -361,12 +363,15 @@ def rebuild_member_clean(body, lc_off):
     str_bytes = bytes(body[stroff_n:stroff_n + strsize])
     cur += len(str_bytes)
 
-    # 回填 section offset/reloff(lc_blob 内: SEG 命令占 [0,72), sections 从 72 起)
+    # 回填 section offset/reloff/nreloc(lc_blob 内: SEG 命令占 [0,72), sections 从 72 起)
     for si in range(len(sections)):
         so = 72 + si * 80
         struct.pack_into('<I', lc_blob, so + 48, sect_new_offs[si])
-        if si < len(reloc_new_offs):
+        nreloc, _ = relocs[si]
+        if nreloc > 0 and reloc_new_offs[si]:
             struct.pack_into('<I', lc_blob, so + 56, reloc_new_offs[si])
+        else:
+            struct.pack_into('<II', lc_blob, so + 56, 0, 0)
     # 回填 SYMTAB 偏移(构建时记录的位置)
     struct.pack_into('<I', lc_blob, symtab_at + 8, sym_new_off)
     struct.pack_into('<I', lc_blob, symtab_at + 16, str_new_off)
@@ -379,11 +384,12 @@ def rebuild_member_clean(body, lc_off):
     blob = bytearray(cur)
     blob[0:32] = head
     blob[32:32 + len(lc_blob)] = lc_blob
-    for si, (sectname, segname, addr, size, align, reloff, nreloc, sflags, res1, res2, old_off) in enumerate(sections):
+    for si, (sectname, segname, addr, size, align, reloff, nreloc, sflags, res1, res2, old_off, reloc_raw) in enumerate(sections):
         end_off = min(old_off + size, len(body))
         blob[sect_new_offs[si]:sect_new_offs[si] + (end_off - old_off)] = body[old_off:end_off]
     for (nreloc, raw), new_off in zip(relocs, reloc_new_offs):
-        blob[new_off:new_off + len(raw)] = raw
+        if raw and new_off:
+            blob[new_off:new_off + len(raw)] = raw
     blob[sym_new_off:sym_new_off + len(sym_bytes)] = sym_bytes
     blob[str_new_off:str_new_off + len(str_bytes)] = str_bytes
     return bytes(blob)
