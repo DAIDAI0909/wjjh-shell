@@ -249,8 +249,15 @@ def rebuild_member_clean(body, lc_off):
       [LC_DYSYMTAB(80) 仅当原成员有非零 dysymtab 偏移]
       数据区: sections 内容(按原相对顺序) + 重定位表 + 符号表 + 字符串表
     返回新 bytes;无法解析返回 None。"""
-    if body[:4] != b'\xcf\xfa\xed\xfe':
-        return None
+    big = (body[:4] == b'\xce\xfa\xed\xfe')
+    if big:
+        # MH_CIGAM_64:整份 body 逐 4 字节翻转成小端视图解析;落盘时仅把拷贝的
+        # 数据区翻回原序(命令区是新生成的小端,不翻)。
+        flip = bytearray(len(body))
+        for o4 in range(0, len(body) - 3, 4):
+            flip[o4:o4+4] = body[o4+3:o4-1:-1]
+        flip[0:4] = b'\xcf\xfa\xed\xfe'
+        body = bytes(flip)
     seg_abs, lc_off, sizeofcmds = find_seg_and_lc_off(body)
     if seg_abs is None:
         return None
@@ -484,6 +491,20 @@ def rebuild_member_clean(body, lc_off):
             blob[new_off:new_off + len(raw)] = raw
     blob[sym_new_off:sym_new_off + len(sym_bytes)] = sym_bytes
     blob[str_new_off:str_new_off + len(str_bytes)] = str_bytes
+    if big:
+        for si2 in range(len(sections)):
+            o2 = sect_new_offs[si2]
+            sz2 = sections[si2][3]
+            for o4 in range(o2, min(o2 + sz2, len(blob)) - 3, 4):
+                blob[o4:o4+4] = bytes(reversed(blob[o4:o4+4]))
+        for (nreloc2, raw2), ro2 in zip(relocs, reloc_new_offs):
+            if raw2 and ro2:
+                for o4 in range(ro2, min(ro2 + len(raw2), len(blob)) - 3, 4):
+                    blob[o4:o4+4] = bytes(reversed(blob[o4:o4+4]))
+        for o4 in range(sym_new_off, min(sym_new_off + len(sym_bytes), len(blob)) - 3, 4):
+            blob[o4:o4+4] = bytes(reversed(blob[o4:o4+4]))
+        for o4 in range(str_new_off, min(str_new_off + len(str_bytes), len(blob)) - 3, 4):
+            blob[o4:o4+4] = bytes(reversed(blob[o4:o4+4]))
     return bytes(blob)
 
 
