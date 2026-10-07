@@ -388,19 +388,29 @@ def rebuild_member_clean(body, lc_off):
     out += head
 
     lc_blob = bytearray()
-    # SEG
+    # SEG:vm 范围按原 sections 的 [min_addr, max_end] 重建(gh112 实锤:
+    # section.addr 沿用原值而 vmsize 用 total_size -> addr 越界,__DATA/__data out of range)
+    min_addr = min(s2[2] for s2 in sections)
+    max_end = max(s2[2] + s2[3] for s2 in sections)
+    span = max_end - min_addr
+    # 先算各 section 在新数据区内的相对偏移(供 addr 重映射)
+    cur_rel = 0
+    sect_rel = []
+    for s2 in sections:
+        cur_rel = (cur_rel + 7) // 8 * 8
+        sect_rel.append(cur_rel)
+        cur_rel += s2[3]
     seg = bytearray(72)
     struct.pack_into('<II', seg, 0, 0x19, 72 + 80 * len(sections))
-    seg[8:24] = b'__DATA'.ljust(16, bytes(1))[:16]  # segname 占位,以第一个 section 的 segname 为准? 用 __DATA 统一
-    total_size = sum(s[3] for s in sections)
-    struct.pack_into('<QQQQ', seg, 24, 0, total_size, 0, total_size)
+    seg[8:24] = b'__DATA'.ljust(16, bytes(1))[:16]
+    struct.pack_into('<QQQQ', seg, 24, min_addr, span, 0, span)
     struct.pack_into('<IIII', seg, 56, 7, 7, len(sections), 0)
     lc_blob += seg
     for si, (sectname, segname, addr, size, align, reloff, nreloc, sflags, res1, res2, old_off, reloc_raw) in enumerate(sections):
         sec = bytearray(80)
         sec[0:16] = sectname
         sec[16:32] = segname
-        struct.pack_into('<QQ', sec, 32, addr, size)
+        struct.pack_into('<QQ', sec, 32, min_addr + sect_rel[si], size)  # addr 重映射
         # offset 稍后回填(需要先算命令区大小)
         struct.pack_into('<IIII', sec, 48, 0, align, 0, nreloc)
         struct.pack_into('<III', sec, 64, sflags, res1, res2)
