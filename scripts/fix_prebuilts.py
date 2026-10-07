@@ -341,7 +341,7 @@ def rebuild_member_clean(body, lc_off):
     data_off = 32 + len(lc_blob)
     cur = data_off
     sect_new_offs = []
-    for (sectname, segname, addr, size, align, reloff, nreloc, sflags, res1, res2, old_off) in sections:
+    for (sectname, segname, addr, size, align, reloff, nreloc, sflags, res1, res2, old_off, reloc_raw) in sections:
         cur = (cur + 7) // 8 * 8
         sect_new_offs.append(cur)
         cur += size
