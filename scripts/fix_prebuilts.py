@@ -650,6 +650,35 @@ def process_archive(path):
             f.write(new_arch)
         logp('[prebuilt-fix] %s: re-serialized via ar, %d bytes'
              % (os.path.basename(path), len(new_arch)))
+        # 眼见为实:抽取最终归档的第一个真实成员,otool -l 看它的平台命令
+        with open(path, 'rb') as f:
+            chk = f.read()
+        p4 = 8
+        while p4 + 60 <= len(chk):
+            h4 = chk[p4:p4 + 60]
+            nf4 = h4[:16].decode('ascii', 'replace')
+            try:
+                sz4 = int(h4[48:58].decode('ascii', 'replace').strip() or 0)
+            except ValueError:
+                break
+            ct4 = chk[p4 + 60:p4 + 60 + sz4]
+            bo4 = int(nf4[3:].strip()) if nf4.startswith('#1/') else 0
+            rn4 = ct4[:bo4].rstrip(bytes(1)).decode('ascii', 'replace')
+            if rn4.startswith('__.SYMDEF'):
+                p4 += 60 + sz4 + (sz4 & 1)
+                continue
+            m4 = os.path.join(os.path.dirname(path) or '.', '_probe_first.o')
+            with open(m4, 'wb') as f:
+                f.write(ct4[bo4:])
+            r5 = subprocess.run(['otool', '-l', m4],
+                                capture_output=True, text=True, errors='replace')
+            keep4 = [l2.strip() for l2 in r5.stdout.split(chr(10))
+                     if 'cmd LC_' in l2 or 'platform' in l2 or 'minos' in l2
+                     or 'magic' in l2 or 'cmdsize' in l2]
+            logp('[prebuilt-fix] FINALCHECK %s first-member %s: %s'
+                 % (os.path.basename(path), rn4, ' ; '.join(keep4[:20])))
+            os.remove(m4)
+            break
         return 0
     finally:
         import shutil
