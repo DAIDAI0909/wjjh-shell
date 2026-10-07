@@ -259,10 +259,14 @@ def rebuild_member_clean(body, lc_off):
     dys_raw = None
     pp = lc_off
     lc_end = lc_off + sizeofcmds
-    while pp + 8 <= lc_end:
+    hard_end = min(lc_end + 64, len(body))
+    while pp + 8 <= hard_end:
         cmd, cs = struct.unpack_from('<II', body, pp)
-        if cs < 8 or pp + cs > min(lc_end + 64, len(body)):
-            break  # 跨界=数据,弃
+        if cs < 8 or pp + cs > hard_end:
+            # 伪 LC(数据):跳 4 字节继续扫——真 SEG(如 __DATA)可能在其后
+            # (gh105 实锤:break 会把 __DATA 段整个丢掉,符号 n_sect 编号全错)
+            pp += 4
+            continue
         if cmd == 0x19:  # LC_SEGMENT_64
             nsects = struct.unpack_from('<I', body, pp + 64)[0]
             for si in range(nsects):
