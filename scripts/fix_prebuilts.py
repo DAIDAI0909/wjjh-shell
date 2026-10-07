@@ -582,11 +582,19 @@ def process_archive(path):
         else:
             members.append((real_name, body))
             n_fail += 1
-            # 长尾诊断:导出成员原始字节(base64,截 8KB)供本地复现
-            import base64
-            blob = body[:8192]
-            logp('[prebuilt-fix] KEEPORIG %s b64=%s'
-                 % (real_name, base64.b64encode(blob).decode()[:11000]))
+            # 失败阶段诊断
+            magic = body[:4].hex()
+            why = 'not-macho'
+            if body[:4] == b'\xcf\xfa\xed\xfe':
+                nc4, sc4 = struct.unpack_from('<II', body, 16)
+                seg4, lc4, _ = find_seg_and_lc_off(body)
+                why = 'macho: ncmds=%d sizeofcmds=%d seg=%s' % (nc4, sc4, seg4)
+            elif body[:4] == b'\xca\xfe\xba\xbe':
+                n4, = struct.unpack_from('>I', body, 4)
+                cpus = [struct.unpack_from('>I', body, 8 + i * 20)[0] for i in range(min(n4, 8))]
+                why = 'fat cpus=%s' % [hex(c) for c in cpus]
+            logp('[prebuilt-fix] KEEPORIG %s magic=%s why=%s len=%d'
+                 % (real_name, magic, why, len(body)))
         p += 60 + size + (size & 1)
 
     logp('[prebuilt-fix] %s: members=%d rebuilt=%d keep-orig=%d'
