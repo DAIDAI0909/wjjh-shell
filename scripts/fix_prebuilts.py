@@ -277,7 +277,9 @@ def rebuild_member_clean(body, lc_off):
                 reloc_raw = b''
                 if nreloc > 0 and 0 < reloff and reloff + nreloc * 8 <= len(body):
                     reloc_raw = bytes(body[reloff:reloff + nreloc * 8])
-                if size > 0 and 0 < offset < len(body):
+                # 全部保留(含 size=0):符号表 n_sect 按 section 序号引用,丢一个编号就错位
+                # (gh104 实锤:"symbol 70 n_sect greater than number of sections")
+                if 0 < offset < len(body):
                     sections.append((sectname, segname, addr, size, align,
                                      reloff, nreloc, sflags, res1, res2, offset, reloc_raw))
         elif cmd == 0x2:  # LC_SYMTAB
