@@ -955,6 +955,38 @@ def main():
             logp('[prebuilt-fix] ALLLOAD %s: rc=%d err=%s'
                  % (rel, pr.returncode,
                     ((pr.stderr or '')[:220]).replace(chr(10), ' | ')))
+            # gh136: 对"整库崩"的库做成员级二分(解包逐成员 ld -r),导出崩溃成员
+            if pr.returncode < 0:
+                try:
+                    sub2 = os.path.join(tmpal, 'x_' + fn)
+                    os.makedirs(sub2, exist_ok=True)
+                    rr2 = subprocess.run(['ar', '-x', pth], cwd=sub2,
+                                         capture_output=True, text=True, errors='replace')
+                    import base64 as _b64
+                    cnt2 = 0
+                    for mfn in sorted(os.listdir(sub2)):
+                        if mfn.startswith('__.'):
+                            continue
+                        mfp = os.path.join(sub2, mfn)
+                        oo2 = os.path.join(sub2, 'o2.o')
+                        if os.path.exists(oo2):
+                            os.remove(oo2)
+                        r8 = subprocess.run(['ld', '-r', '-arch', 'arm64', '-all_load',
+                                             '-o', oo2, mfp],
+                                            capture_output=True, text=True, errors='replace')
+                        if r8.returncode < 0:
+                            cnt2 += 1
+                            with open(mfp, 'rb') as f9:
+                                mb9 = f9.read()
+                            logp('[prebuilt-fix] CRASHMEMBER %s/%s rc=%d len=%d b64=%s'
+                                 % (rel, mfn, r8.returncode, len(mb9),
+                                    _b64.b64encode(mb9[:40000]).decode()))
+                            if cnt2 >= 3:
+                                break
+                    if cnt2 == 0:
+                        logp('[prebuilt-fix] CRASHMEMBER %s: no single-member crash (combo-only?)' % rel)
+                except Exception as e8:
+                    logp('[prebuilt-fix] CRASHMEMBER err: %r' % e8)
     # gh134b: 组合二分 —— 定位让 ld 崩的库组合(主链接等价物)
     try:
         sus = []
