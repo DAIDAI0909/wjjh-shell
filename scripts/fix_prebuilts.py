@@ -296,6 +296,21 @@ def rebuild_member_clean(body, lc_off):
                 reloc_raw = b''
                 if nreloc > 0 and 0 < reloff and reloff + nreloc * 8 <= len(body):
                     reloc_raw = bytes(body[reloff:reloff + nreloc * 8])
+                    # gh130/131: 清洗现代 ld 拒收的畸形条目
+                    # (r_extern=0 的 ARM64_RELOC_PAGE21/PAGEOFF12 - "not supported")
+                    kept_ents = bytearray()
+                    n_kept = 0
+                    for ri in range(nreloc):
+                        ent = reloc_raw[ri * 8:(ri + 1) * 8]
+                        info = struct.unpack_from('<I', ent, 4)[0]
+                        ext_bit = (info >> 27) & 1
+                        rtype = (info >> 28) & 0xF
+                        if ext_bit == 0 and rtype in (3, 4):  # PAGE21/PAGEOFF12 必须 extern,local 形态=畸形
+                            continue
+                        kept_ents += ent
+                        n_kept += 1
+                    reloc_raw = bytes(kept_ents)
+                    nreloc = n_kept
                 # 全部保留(含 size=0):符号表 n_sect 按 section 序号引用,丢一个编号就错位
                 # (gh104 实锤:"symbol 70 n_sect greater than number of sections")
                 if 0 < offset < len(body):
@@ -708,6 +723,30 @@ def process_archive(path):
             f.write(new_arch)
         logp('[prebuilt-fix] %s: re-serialized via ar, %d bytes'
              % (os.path.basename(path), len(new_arch)))
+        # HEADDUMP:前 2 成员的头 32B(cputype 检查)
+        try:
+            with open(path, 'rb') as fh:
+                hb = fh.read()
+            ph = 8
+            hcnt = 0
+            while ph + 60 <= len(hb) and hcnt < 2:
+                hh = hb[ph:ph + 60]
+                nfh = hh[:16].decode('ascii', 'replace')
+                szh = int(hh[48:58].decode('ascii', 'replace').strip() or 0)
+                cth = hb[ph + 60:ph + 60 + szh]
+                boh = int(nfh[3:].strip()) if nfh.startswith('#1/') else 0
+                rnh = cth[:boh].rstrip(bytes(1)).decode('ascii', 'replace')
+                if rnh.startswith('__.SYMDEF') or not rnh:
+                    ph += 60 + szh + (szh & 1)
+                    continue
+                bh = cth[boh:]
+                logp('[prebuilt-fix] HEADDUMP %s/%s head32=%s cputype=%#x'
+                     % (os.path.basename(path), rnh, bh[:32].hex(),
+                        struct.unpack_from('<I', bh, 4)[0] if len(bh) >= 8 else 0))
+                hcnt += 1
+                ph += 60 + szh + (szh & 1)
+        except Exception as ehd:
+            logp('[prebuilt-fix] HEADDUMP err: %r' % ehd)
         # SELFPARSE:读回写盘内容的首成员,自己解析链与平台(不靠 otool)
         try:
             with open(path, 'rb') as f:
