@@ -505,7 +505,30 @@ def rebuild_member_clean(body, lc_off):
             reloc_new_offs.append(0)
     # 符号表 + 字符串表
     sym_new_off = cur
-    sym_bytes = bytes(body[symoff_n:symoff_n + nsyms * 16])
+    sym_bytes = bytearray(body[symoff_n:symoff_n + nsyms * 16])
+    # gh137: N_SECT 符号的 n_value 必须落在其节的新 addr 区间内——
+    # 2017 畸形值(如 n_value 指到节外)会让 ld -r SIGSEGV(curl m53.o 实锤)
+    n_clamped = 0
+    for i7 in range(len(sym_bytes) // 16):
+        b7 = i7 * 16
+        n_type7 = sym_bytes[b7 + 4]
+        n_sect7 = sym_bytes[b7 + 5]
+        if (n_type7 & 0x0E) == 0x0E and 1 <= n_sect7 <= len(sections):
+            a07 = sect_rel[n_sect7 - 1]
+            a17 = a07 + sections[n_sect7 - 1][3]
+            n_val7 = struct.unpack_from('<Q', sym_bytes, b7 + 8)[0]
+            if n_val7 < a07 or n_val7 >= a17:
+                struct.pack_into('<Q', sym_bytes, b7 + 8, a07)
+                n_clamped += 1
+        elif (n_type7 & 0x0E) == 0x00 and i7 >= 0:
+            # N_UNDF(外部未定义)的 n_value 应为 0
+            n_val7 = struct.unpack_from('<Q', sym_bytes, b7 + 8)[0]
+            if n_val7 != 0:
+                struct.pack_into('<Q', sym_bytes, b7 + 8, 0)
+                n_clamped += 1
+    if n_clamped:
+        logp('[prebuilt-fix] SYMCLEAN member@%d: clamped %d symbol values' % (lc_off, n_clamped))
+    sym_bytes = bytes(sym_bytes)
     cur += len(sym_bytes)
     str_new_off = cur
     str_bytes = bytes(body[stroff_n:stroff_n + strsize])
