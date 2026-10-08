@@ -722,6 +722,18 @@ def process_archive(path):
                                 ((r7.stderr or '')[:240]).replace(chr(10), ' | ')))
                         logp('[prebuilt-fix] ARB hex %s/%s @32..: %s'
                              % (os.path.basename(path), rn5, b5[32:112].hex()))
+                        logp('[prebuilt-fix] ARB hexH %s/%s head32: %s'
+                             % (os.path.basename(path), rn5, b5[:32].hex()))
+                        logp('[prebuilt-fix] ARB hexC %s/%s [420:470]: %s'
+                             % (os.path.basename(path), rn5, b5[420:470].hex()))
+                        try:
+                            with open(m6, 'rb') as f6r:
+                                rb6 = f6r.read()
+                            a8 = (rb6 == b5)
+                            logp('[prebuilt-fix] ARB m6check %s/%s: same=%s m6[420:470]=%s'
+                                 % (os.path.basename(path), rn5, a8, rb6[420:470].hex()))
+                        except Exception as e6b:
+                            logp('[prebuilt-fix] ARB m6check err: %r' % e6b)
                     except Exception as e6:
                         logp('[prebuilt-fix] ARB error: %r' % e6)
                 probed += 1
