@@ -946,6 +946,8 @@ def main():
         norm = dirpath.replace(os.sep, '/')
         if '/prebuilt/ios' not in norm or '/luajit/' in norm:
             continue
+        if '/external/png/' in norm:
+            continue  # gh141: png 由源码编译接管(build_png_source.py),重建会破坏新 CFI
         for fn in files:
             if not fn.endswith('.a'):
                 continue
