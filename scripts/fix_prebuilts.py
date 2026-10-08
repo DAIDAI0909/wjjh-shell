@@ -834,6 +834,33 @@ def main():
             if process_archive(path) == 0:
                 count += 1
     logp('[prebuilt-fix] archives processed: %d' % count)
+
+    # gh130: 整库 -all_load 探针 —— 找出让 ld Abort 的库(主链接 ld 崩无从定位,
+    # 逐库 -all_load 全成员加载可复现并定位)
+    import tempfile as _tf2
+    tmpal = _tf2.mkdtemp()
+    for dirpath, dirs, files in os.walk(root):
+        norm = dirpath.replace(os.sep, '/')
+        if '/prebuilt/ios' not in norm or '/luajit/' in norm:
+            continue
+        if any(('/%s' % arch) in norm for arch in ('i386', 'armv7', 'arm64', 'x86_64')):
+            continue  # 只探顶层库(子目录架构变体不参与主链接)
+        for fn in files:
+            if not fn.endswith('.a'):
+                continue
+            pth = os.path.join(dirpath, fn)
+            dst = os.path.join(tmpal, 'al.o')
+            if os.path.exists(dst):
+                os.remove(dst)
+            pr = subprocess.run(['ld', '-r', '-arch', 'arm64', '-all_load',
+                                 '-o', dst, pth],
+                                capture_output=True, text=True, errors='replace')
+            rel = pth.replace('/Users/runner/work/wjjh-shell/wjjh-shell/', '')
+            logp('[prebuilt-fix] ALLLOAD %s: rc=%d err=%s'
+                 % (rel, pr.returncode,
+                    ((pr.stderr or '')[:220]).replace(chr(10), ' | ')))
+    import shutil as _sh3
+    _sh3.rmtree(tmpal, ignore_errors=True)
     return 0
 
 
