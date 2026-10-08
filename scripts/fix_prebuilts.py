@@ -296,21 +296,6 @@ def rebuild_member_clean(body, lc_off):
                 reloc_raw = b''
                 if nreloc > 0 and 0 < reloff and reloff + nreloc * 8 <= len(body):
                     reloc_raw = bytes(body[reloff:reloff + nreloc * 8])
-                    # gh130/131: 清洗现代 ld 拒收的畸形条目
-                    # (r_extern=0 的 ARM64_RELOC_PAGE21/PAGEOFF12 - "not supported")
-                    kept_ents = bytearray()
-                    n_kept = 0
-                    for ri in range(nreloc):
-                        ent = reloc_raw[ri * 8:(ri + 1) * 8]
-                        info = struct.unpack_from('<I', ent, 4)[0]
-                        ext_bit = (info >> 27) & 1
-                        rtype = (info >> 28) & 0xF
-                        if ext_bit == 0 and rtype in (3, 4):  # PAGE21/PAGEOFF12 必须 extern,local 形态=畸形
-                            continue
-                        kept_ents += ent
-                        n_kept += 1
-                    reloc_raw = bytes(kept_ents)
-                    nreloc = n_kept
                 # 全部保留(含 size=0):符号表 n_sect 按 section 序号引用,丢一个编号就错位
                 # (gh104 实锤:"symbol 70 n_sect greater than number of sections")
                 if 0 < offset < len(body):
@@ -464,7 +449,29 @@ def rebuild_member_clean(body, lc_off):
         sect_new_offs.append(cur)
         cur += size
     # 重定位表:与 sections 一一对应(无 reloc 的 section 用空占位)
-    relocs = [(s2[6], s2[11]) for s2 in sections]  # (nreloc, reloc_raw)
+    # gh132: 清洗统一放这里(覆盖首次收集与 n_sect 重扫两条路径)——
+    # 丢弃 r_extern=0 的 ARM64_RELOC_PAGE21/PAGEOFF12(local 形态,现代 ld 拒收)
+    def _clean_relocs(nreloc_in, raw_in):
+        if not raw_in or nreloc_in <= 0:
+            return nreloc_in, raw_in
+        keep = bytearray()
+        n_kept = 0
+        for ri in range(nreloc_in):
+            ent = raw_in[ri * 8:(ri + 1) * 8]
+            if len(ent) < 8:
+                break
+            info = struct.unpack_from('<I', ent, 4)[0]
+            ext_bit = (info >> 27) & 1
+            rtype = (info >> 28) & 0xF
+            if ext_bit == 0 and rtype in (3, 4):
+                continue
+            keep += ent
+            n_kept += 1
+        return n_kept, bytes(keep)
+    relocs = []
+    for s2 in sections:
+        nc2, rc2 = _clean_relocs(s2[6], s2[11])
+        relocs.append((nc2, rc2))
     cur = (cur + 7) // 8 * 8
     reloc_new_offs = []
     for nreloc, raw in relocs:
@@ -485,9 +492,9 @@ def rebuild_member_clean(body, lc_off):
     for si in range(len(sections)):
         so = 72 + si * 80
         struct.pack_into('<I', lc_blob, so + 48, sect_new_offs[si])
-        nreloc, _ = relocs[si]
-        if nreloc > 0 and reloc_new_offs[si]:
-            struct.pack_into('<I', lc_blob, so + 56, reloc_new_offs[si])
+        nc3, _ = relocs[si]
+        if nc3 > 0 and reloc_new_offs[si]:
+            struct.pack_into('<II', lc_blob, so + 56, reloc_new_offs[si], nc3)
         else:
             struct.pack_into('<II', lc_blob, so + 56, 0, 0)
     # 回填 SYMTAB 偏移(构建时记录的位置)
@@ -528,6 +535,7 @@ def rebuild_member_clean(body, lc_off):
 
 
 _ldr_logged = 0
+_ldr_listed = 0
 
 
 def ld_r_normalize(member_bytes, workdir, idx):
@@ -561,6 +569,32 @@ def ld_r_normalize(member_bytes, workdir, idx):
             logp('[prebuilt-fix] LDRFAIL %s (%s): %s'
                  % (os.path.basename(src), ' '.join(att[:2]) if att else 'bare',
                     ((r.stderr or '')[:260]).replace(chr(10), ' | ')))
+        if _ldr_listed < 2:
+            _ldr_listed += 1
+            try:
+                mb = member_bytes
+                scm = struct.unpack_from('<I', mb, 20)[0]
+                lom = find_seg_and_lc_off(mb)[0]
+                secs = []
+                if lom is not None:
+                    ppm = lom
+                    while ppm + 8 <= lom + scm + 64 and ppm + 8 <= len(mb):
+                        cm, csm = struct.unpack_from('<II', mb, ppm)
+                        if csm < 8 or ppm + csm > lom + scm + 64:
+                            break
+                        if cm == 0x19:
+                            nsm = struct.unpack_from('<I', mb, ppm + 64)[0]
+                            for si9 in range(min(nsm, 40)):
+                                so9 = ppm + 72 + si9 * 80
+                                if so9 + 80 > len(mb):
+                                    break
+                                sn9 = mb[so9:so9 + 16].rstrip(bytes(1)).decode('ascii', 'replace')
+                                zg9 = mb[so9 + 16:so9 + 32].rstrip(bytes(1)).decode('ascii', 'replace')
+                                secs.append(zg9 + '/' + sn9)
+                        ppm += csm
+                logp('[prebuilt-fix] LDRSECTS %s: %s' % (os.path.basename(src), ','.join(secs[:24])))
+            except Exception as e9:
+                logp('[prebuilt-fix] LDRSECTS err: %r' % e9)
     return None
 
 
