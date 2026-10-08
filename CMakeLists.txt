@@ -388,6 +388,7 @@ target_compile_definitions(WJJH PRIVATE
     COCOS2D_DEBUG=0
     CC_USE_3D_PHYSICS=0
     CC_USE_NAVMESH=0
+    CC_USE_WEBP=0
 )
 
 if(WJJH_LAUNCH_LOG)
@@ -407,7 +408,8 @@ foreach(_lb ${EXTLIBS})
     get_filename_component(_lbn ${_lb} NAME)
     if(_lbn STREQUAL "libchipmunk.a" OR _lbn STREQUAL "libwebp.a"
        OR _lbn STREQUAL "libpng.a" OR _lbn STREQUAL "libjpeg.a"
-       OR _lbn STREQUAL "libtiff.a" OR _lbn STREQUAL "libluajit.a")
+       OR _lbn STREQUAL "libtiff.a" OR _lbn STREQUAL "libluajit.a"
+       OR _lbn STREQUAL "libfreetype.a")
         list(APPEND EXTLIBS_KEEP ${_lb})
     endif()
 endforeach()
