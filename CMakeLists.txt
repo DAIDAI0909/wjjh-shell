@@ -251,8 +251,9 @@ file(GLOB EX_SRC
 )
 file(GLOB_RECURSE EX_PARTICLE_SRC ${ENGINE}/extensions/Particle3D/*.cpp)
 list(APPEND EX_SRC ${EX_PARTICLE_SRC})
-# gh135: assets-manager(AssetsManagerEx)用 curl -> 排除(斩 curl 引用)
-list(FILTER EX_SRC EXCLUDE REGEX ".*/assets-manager/.*")
+# gh152: 恢复 assets-manager —— gh135 误判"用 curl"排除，实测源码零 curl 调用
+# （只在注释里出现 CURLE_OK；Downloader 在 MAC/IOS 走 CDDownloader-apple.mm=NSURLSession）。
+# extension 绑定(cc.AssetsManager*)需要它，而游戏启动链要 cc.TableView 等 extension 类。
 
 # ---- external 单文件/源码库（v3-deps 带来的，无预编译 .a）----
 file(GLOB_RECURSE UTIL_SRC
@@ -295,9 +296,9 @@ list(FILTER LUA_BIND_SRC EXCLUDE REGEX ".*/luasocket/wsocket\\.c")
 list(FILTER COCOS_SRC EXCLUDE REGEX ".*/network/WebSocket\\.cpp")
 # gh146: SocketIO.cpp 引 WebSocket 类(已排); Lua_web_socket 绑定同源 - 一并排
 list(FILTER COCOS_SRC EXCLUDE REGEX ".*/network/SocketIO\\.cpp")
-# gh144: extension 绑定引用了已排除的 AssetsManager 等实现(undefined) - 排掉这两个绑定文件
-list(FILTER LUA_BIND_SRC EXCLUDE REGEX ".*/lua_cocos2dx_extension_auto\\.cpp")
-list(FILTER LUA_BIND_SRC EXCLUDE REGEX ".*/lua_cocos2dx_extension_manual\\.cpp")
+# gh144 曾排掉 extension 绑定以躲 AssetsManager undefined；gh152 把 assets-manager
+# 源码收回来后重新纳入 —— 游戏启动链 Loader.loadBase 要 require TableViewEx(cc.TableView)，
+# 且 cc.ScrollView/Control* 也来自此绑定（桩替不了真实现）。
 list(FILTER LUA_BIND_SRC EXCLUDE REGEX ".*/Lua_web_socket\\.cpp")
 # gh147: network_manual 注册函数引用已排的 web_socket 绑定(tolua_web_socket_open) - 排掉
 list(FILTER LUA_BIND_SRC EXCLUDE REGEX ".*/lua_cocos2dx_network_manual\\.cpp")
