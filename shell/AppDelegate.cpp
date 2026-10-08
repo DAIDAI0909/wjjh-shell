@@ -146,6 +146,13 @@ bool AppDelegate::applicationDidFinishLaunching()
     // main.lua 路径注入给 chunk
     lua_pushlstring(L, path.c_str(), path.size());
     lua_setglobal(L, "__WJJH_MAINLUA");
+    // gh154: CI 自动点按开关（只由 CMake 的 WJJH_CI_DIAG 打开；真机包恒 false）
+#if defined(WJJH_CI_DIAG)
+    lua_pushboolean(L, 1);
+#else
+    lua_pushboolean(L, 0);
+#endif
+    lua_setglobal(L, "__WJJH_AUTOSTART");
     wjjh_bootlog(("WJJH_BOOT: src/main.lua -> " + path).c_str());
     wjjh_bootlog(("WJJH_BOOT: res/LuaExtend.lua -> " + probeRes).c_str());
     if (path.empty()) {
@@ -607,6 +614,18 @@ local function __wjjh_instrument(name, M)
     end
     return
   end
+  if name == 'app.views.layer.MenuLayer.MenuLayer' then
+    -- gh154: 抓 MenuLayer 实例，供 CI 自动点按（勾协议 + 点「开始游戏」）
+    local oc = M.create
+    if type(oc) == 'function' then
+      M.create = function(self, ...)
+        local o = oc(self, ...)
+        __WJJH_MENU_LAYER = o
+        __wjjhlog('WJJH_AUTOSTART: MenuLayer captured')
+        return o
+      end
+    end
+  end
   if name == 'app.Helper' then
     -- ★核心修复(gh59 定案):getChildByTag 不可靠 -> classDefNodeGetInstance 的 tag 单例
     --   会重复 create(LoadingLayer 双实例 84% 冻结的根因)。改成 Lua 侧真单例。
@@ -862,6 +881,53 @@ local function __wjjh_onceProbes(sc)
   __wjjhlog('WJJH_ENV: Loader=' .. type(package.loaded['app.models.loader.Loader']) .. ' Game=' .. type(package.loaded['app.models.game.Game']) .. ' HttpM=' .. type(HttpManagerEx) .. ' ccexpGame=' .. type(cc.exports and cc.exports.Game or nil))
 end
 
+-- ===== gh154: CI 自动点按（仅 CI 诊断构建；真机包 __WJJH_AUTOSTART=false，整条路径不跑）=====
+-- CI 上没人手点「点击开始游戏」。分两拍：先勾隐私协议，再触发开始按钮。
+-- 阶段计数保证各只触发一次；pcall 只包我们自己的调度回调（主线程 Timer 回调，不在协程内，
+-- 不会踩 yield-safe 铁律）。
+local __wjjh_autoStage = 0
+local __wjjh_autoWait = 0
+local function __wjjh_autoStartTick()
+  if not __WJJH_AUTOSTART then return end
+  local menu = __WJJH_MENU_LAYER
+  if menu == nil then return end
+  if __wjjh_autoStage == 0 then
+    __wjjh_autoStage = 1
+    local ok, err = pcall(function()
+      if menu.CheckBox_Policy ~= nil and menu.CheckBox_Policy:isSelected() == false then
+        menu.CheckBox_Policy:setSelected(true)
+        menu.CheckBox_Policy:setBright(true)
+      end
+    end)
+    __wjjhlog('WJJH_AUTOSTART: policy checked ok=' .. tostring(ok) .. ' err=' .. __ts(err))
+    return
+  end
+  if __wjjh_autoStage == 1 then
+    __wjjh_autoStage = 2
+    local ok, err = pcall(function() menu:Text_Start_releaseFunc() end)
+    __wjjhlog('WJJH_AUTOSTART: start fired ok=' .. tostring(ok) .. ' err=' .. __ts(err))
+    return
+  end
+  -- 已点过：等 15s 看开始按钮是否隐藏（=流程已推进）；没推进就重试一次
+  if __wjjh_autoStage == 2 then
+    __wjjh_autoWait = __wjjh_autoWait + 1
+    if __wjjh_autoWait == 30 then
+      local ok1, vis = pcall(function()
+        return menu.Button_startGame ~= nil and menu.Button_startGame:isVisible()
+      end)
+      if ok1 and vis == true then
+        local ok, err = pcall(function() menu:Text_Start_releaseFunc() end)
+        __wjjhlog('WJJH_AUTOSTART: start retry ok=' .. tostring(ok) .. ' err=' .. __ts(err))
+      else
+        __wjjh_autoStage = 3
+        __wjjhlog('WJJH_AUTOSTART: start button hidden -> flow advanced')
+      end
+    elseif __wjjh_autoWait > 30 and __wjjh_autoWait % 60 == 0 then
+      __wjjhlog('WJJH_AUTOSTART: waiting, still on menu (t=' .. __wjjh_autoWait .. ')')
+    end
+  end
+end
+
 local function __wjjh_tryHook()
   __wjjh_pollN = (__wjjh_pollN or 0) + 1
   for name, _ in pairs(__wjjh_targets) do
@@ -876,6 +942,7 @@ local function __wjjh_tryHook()
     local ok, e = pcall(__wjjh_dumpState)
     if not ok then __wjjhlog('WJJH_CEN err=' .. __ts(e)) end
   end
+  __wjjh_autoStartTick()
 end
 cc.Director:getInstance():getScheduler():scheduleScriptFunc(__wjjh_tryHook, 0.5, false)
 

@@ -404,9 +404,12 @@ target_compile_definitions(WJJH PRIVATE
 
 if(WJJH_LAUNCH_LOG)
     target_compile_definitions(WJJH PRIVATE WJJH_LAUNCH_LOG_PATH="${WJJH_LAUNCH_LOG}")
+    # gh154: CI 诊断构建总开关（自动点按等 CI 专用行为都挂在这个宏下；真机包不定义）
+    target_compile_definitions(WJJH PRIVATE WJJH_CI_DIAG=1)
 elseif(DEFINED ENV{GITHUB_ACTIONS})
     # GitHub Actions runner 的固定工作区路径
     target_compile_definitions(WJJH PRIVATE WJJH_LAUNCH_LOG_PATH="/Users/runner/work/wjjh-ios/wjjh-ios/launch.log")
+    target_compile_definitions(WJJH PRIVATE WJJH_CI_DIAG=1)
 endif()
 
 # ---- third-party prebuilt static libs（cocos 官方包，含模拟器架构）----
