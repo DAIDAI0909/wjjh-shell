@@ -291,6 +291,8 @@ file(GLOB_RECURSE LUA_BIND_SRC
 list(FILTER LUA_BIND_SRC EXCLUDE REGEX ".*/lua_cocos2dx_physics3d_auto\\.cpp|.*/lua_cocos2dx_navmesh_auto\\.cpp")
 list(FILTER LUA_BIND_SRC EXCLUDE REGEX ".*/manual/platform/android/.*|.*/manual/physics3d/.*|.*/manual/navmesh/.*|.*/manual/video/.*")
 list(FILTER LUA_BIND_SRC EXCLUDE REGEX ".*/luasocket/wsocket\\.c")
+# gh145: WebSocket.cpp 引用 websockets 库(lws_*)已不在链接; 游戏不用 WebSocket
+list(FILTER COCOS_SRC EXCLUDE REGEX ".*/network/WebSocket\\.cpp")
 # gh144: extension 绑定引用了已排除的 AssetsManager 等实现(undefined) - 排掉这两个绑定文件
 list(FILTER LUA_BIND_SRC EXCLUDE REGEX ".*/lua_cocos2dx_extension_auto\\.cpp")
 list(FILTER LUA_BIND_SRC EXCLUDE REGEX ".*/lua_cocos2dx_extension_manual\\.cpp")
