@@ -549,7 +549,7 @@ def ld_r_normalize(member_bytes, workdir, idx):
         f.write(member_bytes)
     if os.path.exists(dst):
         os.remove(dst)
-    global _ldr_logged
+    global _ldr_logged, _ldr_listed
     attempts = [
         ['-platform_version', 'ios-simulator', '13.0', '18.2'],
         ['-platform_version', 'iossimulator', '13.0', '18.2'],
