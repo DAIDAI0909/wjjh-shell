@@ -472,6 +472,29 @@ def rebuild_member_clean(body, lc_off):
     for s2 in sections:
         nc2, rc2 = _clean_relocs(s2[6], s2[11])
         relocs.append((nc2, rc2))
+    # gh134: CFI 节(__compact_unwind/__eh_frame)清空数据+reloc —— 这些 2017 CFI 数据
+    # 让现代 ld 的解析器断言崩溃(websockets/png/uv/bullet/box2d/tiff 的 abort 族)。
+    # 只清 size/reloc,节条目序号保留(符号 n_sect 不变,不触发错位)。
+    def _is_cfi(s2):
+        sn = s2[0].rstrip(bytes(1)) if isinstance(s2[0], (bytes, bytearray)) else b''
+        zn = s2[1].rstrip(bytes(1)) if isinstance(s2[1], (bytes, bytearray)) else b''
+        return (sn == b'__compact_unwind') or (sn == b'__eh_frame')
+    sections2 = []
+    relocs2 = []
+    n_cfi_cleared = 0
+    for i3 in range(len(sections)):
+        s2 = sections[i3]
+        nc2, rc2 = relocs[i3]
+        if _is_cfi(s2):
+            s2 = (s2[0], s2[1], s2[2], 0, s2[4], s2[5], 0, s2[7], s2[8], s2[9], s2[10], b'')
+            nc2, rc2 = 0, b''
+            n_cfi_cleared += 1
+        sections2.append(s2)
+        relocs2.append((nc2, rc2))
+    sections = sections2
+    relocs = relocs2
+    if n_cfi_cleared:
+        logp('[prebuilt-fix] CFICLEAR member@%d: cleared %d CFI section(s)' % (lc_off, n_cfi_cleared))
     cur = (cur + 7) // 8 * 8
     reloc_new_offs = []
     for nreloc, raw in relocs:
@@ -932,6 +955,51 @@ def main():
             logp('[prebuilt-fix] ALLLOAD %s: rc=%d err=%s'
                  % (rel, pr.returncode,
                     ((pr.stderr or '')[:220]).replace(chr(10), ' | ')))
+    # gh134b: 组合二分 —— 定位让 ld 崩的库组合(主链接等价物)
+    try:
+        sus = []
+        for dirpath, dirs, files in os.walk(root):
+            norm = dirpath.replace(os.sep, '/')
+            if '/prebuilt/ios' not in norm or '/luajit/' in norm:
+                continue
+            if any(('/%s' % arch) in norm for arch in ('i386', 'armv7', 'arm64', 'x86_64')):
+                continue
+            for fn in files:
+                if not fn.endswith('.a'):
+                    continue
+                pth = os.path.join(dirpath, fn)
+                # 只保留主链接相关库(有引用嫌疑的)
+                base = fn
+                if base.startswith('libBullet') or base == 'libbox2d.a' or base == 'libMiniCL.a' or base == 'libLinearMath.a':
+                    continue  # CMake 已排除的库
+                sus.append(pth)
+
+        def combo_ok(libs, tag):
+            dstx = os.path.join(tmpal, 'combo.o')
+            if os.path.exists(dstx):
+                os.remove(dstx)
+            prx = subprocess.run(['ld', '-r', '-arch', 'arm64', '-all_load',
+                                  '-o', dstx] + libs,
+                                 capture_output=True, text=True, errors='replace')
+            logp('[prebuilt-fix] COMBO %s n=%d rc=%d' % (tag, len(libs), prx.returncode))
+            return prx.returncode == 0
+
+        if sus:
+            all_ok = combo_ok(sus, 'all')
+            if all_ok:
+                logp('[prebuilt-fix] COMBO all-ok: library set loads fine; final-link issue is member-pull related')
+            else:
+                cur = list(sus)
+                while len(cur) > 1:
+                    half = cur[:len(cur) // 2]
+                    if combo_ok(half, 'half-%d' % len(half)):
+                        cur = cur[len(cur) // 2:]
+                    else:
+                        cur = half
+                logp('[prebuilt-fix] COMBO culprit=%s'
+                     % cur[0].replace('/Users/runner/work/wjjh-shell/wjjh-shell/', ''))
+    except Exception as ec2:
+        logp('[prebuilt-fix] COMBO err: %r' % ec2)
     import shutil as _sh3
     _sh3.rmtree(tmpal, ignore_errors=True)
     return 0
