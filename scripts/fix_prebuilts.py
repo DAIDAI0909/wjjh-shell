@@ -574,8 +574,8 @@ def ld_r_normalize(member_bytes, workdir, idx):
         os.remove(dst)
     global _ldr_logged, _ldr_listed
     attempts = [
+        ['-platform_version', 'ios-simulator', '13.0', '18.2', '-no_compact_unwind'],
         ['-platform_version', 'ios-simulator', '13.0', '18.2'],
-        ['-platform_version', 'iossimulator', '13.0', '18.2'],
         ['-platform_version', '7', '13.0', '18.2'],
         [],
     ]
@@ -982,7 +982,7 @@ def main():
                                   '-o', dstx] + libs,
                                  capture_output=True, text=True, errors='replace')
             logp('[prebuilt-fix] COMBO %s n=%d rc=%d' % (tag, len(libs), prx.returncode))
-            return prx.returncode == 0
+            return prx.returncode >= 0  # gh135: 仅 signal(负 rc) 算崩
 
         if sus:
             all_ok = combo_ok(sus, 'all')

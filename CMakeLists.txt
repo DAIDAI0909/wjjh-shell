@@ -220,6 +220,8 @@ list(FILTER COCOS_SRC EXCLUDE REGEX
 list(FILTER COCOS_SRC EXCLUDE REGEX ".*/platform/tizen/.*|.*/audio/tizen/.*")
 list(FILTER COCOS_SRC EXCLUDE REGEX ".*/physics3d/.*|.*/physics/chipmunk/.*")
 list(FILTER COCOS_SRC EXCLUDE REGEX ".*/vr/.*")
+# gh135: 斩 curl 引用(CCDownloader-curl 用 curl; iOS 有 apple 版走 NSURLSession)
+list(FILTER COCOS_SRC EXCLUDE REGEX ".*/network/CCDownloader-curl\\.cpp")
 list(FILTER COCOS_SRC EXCLUDE REGEX ".*/navmesh/.*")
 list(FILTER COCOS_SRC EXCLUDE REGEX ".*/network/HttpClient\\.cpp")
 list(FILTER COCOS_SRC EXCLUDE REGEX ".*/editor-support/dragonbones/.*|.*/editor-support/script/.*")
@@ -238,6 +240,8 @@ file(GLOB EX_SRC
 )
 file(GLOB_RECURSE EX_PARTICLE_SRC ${ENGINE}/extensions/Particle3D/*.cpp)
 list(APPEND EX_SRC ${EX_PARTICLE_SRC})
+# gh135: assets-manager(AssetsManagerEx)用 curl -> 排除(斩 curl 引用)
+list(FILTER EX_SRC EXCLUDE REGEX ".*/assets-manager/.*")
 
 # ---- external 单文件/源码库（v3-deps 带来的，无预编译 .a）----
 file(GLOB_RECURSE UTIL_SRC
