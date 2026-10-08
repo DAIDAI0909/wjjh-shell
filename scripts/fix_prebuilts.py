@@ -30,9 +30,9 @@ M32 = b'\xce\xfa\xed\xfe'
 LC_SEGMENT_64 = 0x19
 LC_SYMTAB = 0x2
 LC_DYSYMTAB = 0xB
-LC_BUILD_VERSION = 0x25
-LC_VERSION_MIN_MACOSX = 0x23
-LC_VERSION_MIN_IPHONEOS = 0x24
+LC_BUILD_VERSION = 0x32  # 真值!0x25 是 LC_VERSION_MIN_IPHONEOS(设备平台)——30 轮自证循环的总根源
+LC_VERSION_MIN_MACOSX = 0x24
+LC_VERSION_MIN_IPHONEOS = 0x25
 LC_DATA_IN_CODE = 0x29
 PLATFORM_IOS_SIMULATOR = 7
 
@@ -309,7 +309,7 @@ def rebuild_member_clean(body, lc_off):
             dys_raw = bytes(body[pp:pp + cs])
             vals = [struct.unpack_from('<I', body, pp + 8 + i * 4)[0] for i in range(18)]
             dys_nonzero = any(v != 0 for v in vals[2:])
-        elif cmd in (0x24, 0x23, 0x25):
+        elif cmd in (0x24, 0x25, 0x2F, 0x30, 0x32):  # 平台命令族(含真 BUILD 0x32):重建时统一替换
             pass  # 平台命令:重建时统一替换
         else:
             pass  # 其余命令(DATA_IN_CODE/LINKER_OPT 等)引用老偏移,重建后全部悬空——一律弃
@@ -423,7 +423,7 @@ def rebuild_member_clean(body, lc_off):
         struct.pack_into('<III', sec, 64, sflags, res1, res2)
         lc_blob += sec
     # BUILD
-    lc_blob += struct.pack('<IIIIII', 0x25, 24, 7, 0x000D0000, 0x00110500, 0)
+    lc_blob += struct.pack('<IIIIII', 0x32, 24, 7, 0x000D0000, 0x00110500, 0)
     # SYMTAB
     symoff_n, nsyms, stroff_n, strsize = symtab
     symtab_at = len(lc_blob)  # 记录 SYMTAB 命令在 lc_blob 内的真实位置
@@ -736,11 +736,11 @@ def process_archive(path):
                                     okc = False
                                     break
                                 tag = hex(c5)
-                                if c5 == 0x25:
+                                if c5 == 0x32:
                                     tag = 'BUILD(plat=%d)' % struct.unpack_from('<I', b5, pp5 + 8)[0]
-                                elif c5 == 0x24:
+                                elif c5 == 0x25:
                                     tag = 'VER_IOS'
-                                elif c5 == 0x23:
+                                elif c5 == 0x24:
                                     tag = 'VER_MAC'
                                 steps.append(tag)
                                 pp5 += s5
