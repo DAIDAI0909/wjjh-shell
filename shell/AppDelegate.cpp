@@ -193,20 +193,79 @@ if cc and cc.Node and type(cc.Node.addChild) == 'function' then
   end
 end
 
+-- ===== gh153: tolua 守卫基础（安装期探测 tolua.isnull；chunk 早于 cocos Lua init，
+--      该函数可能还没定义 —— 没有就优雅降级为"不拦"，保住原行为）=====
+local __wjjh_isnull = nil
+do
+  local t = rawget(_G, 'tolua')
+  if type(t) == 'table' and type(t.isnull) == 'function' then
+    local ok, r = pcall(t.isnull, cc and cc.Director and cc.Director:getInstance() or nil)
+    if ok then __wjjh_isnull = t.isnull end
+  end
+  __wjjhlog('WJJH_BOOT: tolua.isnull available=' .. tostring(__wjjh_isnull ~= nil))
+end
+
 -- ===== getChildByTag 纯 Lua 替代(gh59 实测 tagTest=false,原生查找不可靠) =====
+-- gh153: 加 tolua 守卫。gh152 崩溃实锤 = lua_cocos2dx_Node_getTag 收到失效/空 userdata
+-- （tolua_tousertype 在 Release 不做有效性检查，直接 self->getTag() -> SIGSEGV@0x0）。
+-- 守卫同时"自证"：把非法子节点的类型 + Lua 调用点 traceback 打出来，限流 20 条。
 if cc and cc.Node then
   __WJJH_nativeGetChildByTag = cc.Node.getChildByTag
+  local __wjjh_badkid = 0
+  local function __wjjh_kid_ok(k)
+    if k == nil then return false end
+    if __wjjh_isnull == nil then return true end
+    local ok, bad = pcall(__wjjh_isnull, k)
+    if not ok then return true end
+    return not bad
+  end
   cc.Node.getChildByTag = function(self, tag)
+    if self == nil then return nil end
     local kids = self:getChildren()
     if type(kids) == 'table' then
       for i = 1, #kids do
         local k = kids[i]
-        if k and type(k.getTag) == 'function' and k:getTag() == tag then return k end
+        if k and type(k.getTag) == 'function' then
+          if __wjjh_kid_ok(k) then
+            if k:getTag() == tag then return k end
+          elseif __wjjh_badkid < 20 then
+            __wjjh_badkid = __wjjh_badkid + 1
+            __wjjhlog('WJJH_TAGGUARD: child#' .. i .. ' invalid (type=' .. type(k) ..
+                      ') bt=' .. tostring(debug.traceback('', 2)):gsub('\n', ' | '):sub(1, 700))
+          end
+        end
       end
     end
     return nil
   end
-  __wjjhlog('WJJH_BOOT: getChildByTag polyfill installed')
+  __wjjhlog('WJJH_BOOT: getChildByTag polyfill installed (v2 tolua-guarded)')
+end
+
+-- ===== gh153: cc.Node.getTag 全局守卫 =====
+-- 覆盖所有调用点（游戏自身 + 我们的探针）：self 非法时记 traceback 并返回 0，不再进 native。
+if cc and cc.Node and type(cc.Node.getTag) == 'function' and not cc.Node.__wjjh_gettag_guarded then
+  cc.Node.__wjjh_gettag_guarded = true
+  local __wjjh_orig_getTag = cc.Node.getTag
+  local __wjjh_badtag = 0
+  cc.Node.getTag = function(self, ...)
+    local bad = false
+    if self == nil then
+      bad = true
+    elseif __wjjh_isnull ~= nil then
+      local ok, r = pcall(__wjjh_isnull, self)
+      if ok then bad = r end
+    end
+    if bad then
+      if __wjjh_badtag < 20 then
+        __wjjh_badtag = __wjjh_badtag + 1
+        __wjjhlog('WJJH_TAGGUARD: getTag invalid self#' .. __wjjh_badtag .. ' (type=' .. type(self) ..
+                  ') bt=' .. tostring(debug.traceback('', 2)):gsub('\n', ' | '):sub(1, 700))
+      end
+      return 0
+    end
+    return __wjjh_orig_getTag(self, ...)
+  end
+  __wjjhlog('WJJH_BOOT: cc.Node.getTag guard installed')
 end
 
 -- ===== SimpleAudioEngine 音频守卫(gh64 定案:res 树只有 Image/,音频文件全缺席;
