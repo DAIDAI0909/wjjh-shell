@@ -637,7 +637,7 @@ def process_archive(path):
         p += 60 + size + (size & 1)
 
     logp('[prebuilt-fix] %s: members=%d rebuilt=%d keep-orig=%d'
-         % (os.path.basename(path), len(members), n_patched, n_fail))
+         % (path.replace('/Users/runner/work/wjjh-shell/wjjh-shell/', ''), len(members), n_patched, n_fail))
     if n_fail:
         logp('[prebuilt-fix] FATAL %d members unfixable, archive left for ld to complain'
              % n_fail)
@@ -699,7 +699,7 @@ def process_archive(path):
                         except Exception:
                             pass
                 logp('[prebuilt-fix] SELFPARSE %s/%s: %s'
-                     % (os.path.basename(path), rn5, desc))
+                     % (path.replace('/Users/runner/work/wjjh-shell/wjjh-shell/', ''), rn5, desc))
                 # 四视角仲裁(仅 m0):otool + ld -r + 原始字节 dump
                 if rn5.startswith('m0') or probed == 0:
                     m6 = os.path.join(os.path.dirname(path), '_arb.o')
@@ -712,26 +712,26 @@ def process_archive(path):
                         keep6 = [l6.strip() for l6 in r6.stdout.split(chr(10))
                                  if 'cmd LC_' in l6 or 'platform' in l6 or 'cmdsize' in l6]
                         logp('[prebuilt-fix] ARB otool %s/%s: %s'
-                             % (os.path.basename(path), rn5, ' ; '.join(keep6[:14])))
+                             % (path.replace('/Users/runner/work/wjjh-shell/wjjh-shell/', ''), rn5, ' ; '.join(keep6[:14])))
                         if os.path.exists(mo6):
                             os.remove(mo6)
                         r7 = subprocess.run(['ld', '-r', '-arch', 'arm64', '-o', mo6, m6],
                                             capture_output=True, text=True, errors='replace')
                         logp('[prebuilt-fix] ARB ld-r %s/%s: rc=%d err=%s'
-                             % (os.path.basename(path), rn5, r7.returncode,
+                             % (path.replace('/Users/runner/work/wjjh-shell/wjjh-shell/', ''), rn5, r7.returncode,
                                 ((r7.stderr or '')[:240]).replace(chr(10), ' | ')))
                         logp('[prebuilt-fix] ARB hex %s/%s @32..: %s'
-                             % (os.path.basename(path), rn5, b5[32:112].hex()))
+                             % (path.replace('/Users/runner/work/wjjh-shell/wjjh-shell/', ''), rn5, b5[32:112].hex()))
                         logp('[prebuilt-fix] ARB hexH %s/%s head32: %s'
-                             % (os.path.basename(path), rn5, b5[:32].hex()))
+                             % (path.replace('/Users/runner/work/wjjh-shell/wjjh-shell/', ''), rn5, b5[:32].hex()))
                         logp('[prebuilt-fix] ARB hexC %s/%s [420:470]: %s'
-                             % (os.path.basename(path), rn5, b5[420:470].hex()))
+                             % (path.replace('/Users/runner/work/wjjh-shell/wjjh-shell/', ''), rn5, b5[420:470].hex()))
                         try:
                             with open(m6, 'rb') as f6r:
                                 rb6 = f6r.read()
                             a8 = (rb6 == b5)
                             logp('[prebuilt-fix] ARB m6check %s/%s: same=%s m6[420:470]=%s'
-                                 % (os.path.basename(path), rn5, a8, rb6[420:470].hex()))
+                                 % (path.replace('/Users/runner/work/wjjh-shell/wjjh-shell/', ''), rn5, a8, rb6[420:470].hex()))
                         except Exception as e6b:
                             logp('[prebuilt-fix] ARB m6check err: %r' % e6b)
                     except Exception as e6:
