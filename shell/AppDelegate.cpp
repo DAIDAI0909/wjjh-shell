@@ -758,6 +758,17 @@ local function __wjjh_tryHook()
 end
 cc.Director:getInstance():getScheduler():scheduleScriptFunc(__wjjh_tryHook, 0.5, false)
 
+-- ===== gh150: WebSocket 绑定已被排除（websockets 库不链接）=====
+-- cocos/init.lua -> DeprecatedNetworkClass 把 cc.WebSocket 拷成全局 WebSocket，
+-- 为 nil 时 DeprecatedNetworkFunc 紧接着 `WebSocket.sendTextMsg = ...` 直接抛错，
+-- main.lua 引导链中止 -> 无场景黑屏（gh149 实证）。给哑类占位：
+-- create 返回 nil（私服走 HTTP；在线对战才有真 ws 需求，届时用 NSURLSessionWebSocketTask 原生实现）。
+if cc ~= nil and cc.WebSocket == nil then
+  cc.WEBSOCKET_OPEN, cc.WEBSOCKET_MESSAGE, cc.WEBSOCKET_CLOSE, cc.WEBSOCKET_ERROR = 0, 1, 2, 3
+  cc.WebSocket = { create = function(...) return nil end }
+  __wjjhlog('WJJH_BOOT: cc.WebSocket stub installed (binding excluded)')
+end
+
 -- ===== main.lua =====
 local f, err = loadfile(__WJJH_MAINLUA)
 if not f then
