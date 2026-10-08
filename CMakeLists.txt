@@ -62,6 +62,17 @@ if(NOT EXISTS ${ENGINE}/external/luajit/include/lua.h)
         endif()
     endif()
 
+    # ---- gh138: libpng 源码现编(2017 prebuilt 的 png 成员组合让现代 ld 断言崩) ----
+    if(WJJH_ARM64)
+        find_program(PY3B_EXE python3)
+        if(PY3B_EXE)
+            execute_process(COMMAND ${PY3B_EXE} ${CMAKE_SOURCE_DIR}/scripts/build_png_source.py ${ENGINE}
+                            RESULT_VARIABLE png_r OUTPUT_VARIABLE png_out ERROR_VARIABLE png_out
+                            TIMEOUT 420)
+            message(STATUS "png-source-build:\n${png_out}")
+        endif()
+    endif()
+
     # ---- 从源码构建 LuaJIT 2.1.0-beta3 替换 2017 预编译库 ----
     # 预编译库的 lj_vm.o 带 macOS 平台标记（且对象头非标准），新链接器拒绝链进 iOS 模拟器；
     # 现代 clang 按源码现编则平台标记天然正确。API 同为 Lua 5.1，与 tolua/绑定完全兼容。
