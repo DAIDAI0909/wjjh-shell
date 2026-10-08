@@ -540,7 +540,15 @@ def serialize_archive(members, workdir):
                     blob = f.read()
                 logp('[prebuilt-fix] DIAG hex head64: %s' % blob[:64].hex())
                 logp('[prebuilt-fix] DIAG hex lc+192..256: %s' % blob[224:288].hex())
-        return None
+        # fallback: ar 不校验成员合法性,直接打包(ld 对成员宽容)
+        logp('[prebuilt-fix] libtool refused, fallback to ar')
+        if os.path.exists(out):
+            os.remove(out)
+        r2 = subprocess.run(['ar', 'crs', out] + objs,
+                            capture_output=True, text=True, errors='replace')
+        if r2.returncode != 0:
+            logp('[prebuilt-fix] FATAL ar failed: ' + (r2.stderr or '')[-300:])
+            return None
     with open(out, 'rb') as f:
         return f.read()
 
@@ -645,6 +653,57 @@ def process_archive(path):
             f.write(new_arch)
         logp('[prebuilt-fix] %s: re-serialized via ar, %d bytes'
              % (os.path.basename(path), len(new_arch)))
+        # SELFPARSE:读回写盘内容的首成员,自己解析链与平台(不靠 otool)
+        try:
+            with open(path, 'rb') as f:
+                back = f.read()
+            p5 = 8
+            probed = 0
+            while p5 + 60 <= len(back) and probed < 2:
+                h5 = back[p5:p5 + 60]
+                nf5 = h5[:16].decode('ascii', 'replace')
+                sz5 = int(h5[48:58].decode('ascii', 'replace').strip() or 0)
+                ct5 = back[p5 + 60:p5 + 60 + sz5]
+                bo5 = int(nf5[3:].strip()) if nf5.startswith('#1/') else 0
+                rn5 = ct5[:bo5].rstrip(bytes(1)).decode('ascii', 'replace')
+                if rn5.startswith('__.SYMDEF') or not rn5:
+                    p5 += 60 + sz5 + (sz5 & 1)
+                    continue
+                b5 = ct5[bo5:]
+                magic5 = b5[:4].hex()
+                desc = magic5
+                if b5[:4] in (b'\xcf\xfa\xed\xfe', b'\xce\xfa\xed\xfe'):
+                    sc5 = struct.unpack_from('<I', b5, 20)[0]
+                    for cand in (32, 28):
+                        try:
+                            pp5 = cand
+                            steps = []
+                            okc = True
+                            while pp5 + 8 <= cand + sc5 and pp5 + 8 <= len(b5):
+                                c5, s5 = struct.unpack_from('<II', b5, pp5)
+                                if s5 < 8 or pp5 + s5 > cand + sc5:
+                                    okc = False
+                                    break
+                                tag = hex(c5)
+                                if c5 == 0x25:
+                                    tag = 'BUILD(plat=%d)' % struct.unpack_from('<I', b5, pp5 + 8)[0]
+                                elif c5 == 0x24:
+                                    tag = 'VER_IOS'
+                                elif c5 == 0x23:
+                                    tag = 'VER_MAC'
+                                steps.append(tag)
+                                pp5 += s5
+                                if len(steps) >= 8:
+                                    break
+                            desc += ' hdr%d[%s]%s' % (cand, ','.join(steps), '' if okc else '!BREAK')
+                        except Exception:
+                            pass
+                logp('[prebuilt-fix] SELFPARSE %s/%s: %s'
+                     % (os.path.basename(path), rn5, desc))
+                probed += 1
+                p5 += 60 + sz5 + (sz5 & 1)
+        except Exception as e5:
+            logp('[prebuilt-fix] SELFPARSE error: %r' % e5)
         return 0
     finally:
         import shutil
