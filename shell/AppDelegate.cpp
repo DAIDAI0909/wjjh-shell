@@ -584,6 +584,19 @@ local function __wjjh_instrument(name, M)
   if M.__wjjh_probe then return end
   M.__wjjh_probe = true
   __wjjhlog('WJJH_MOD: ' .. name .. ' loaded, instrumenting')
+  if name == 'app.views.layer.MenuLayer.MenuLayer' then
+    -- gh154/155: 抓 MenuLayer 实例，供 CI 自动点按（勾协议 + 点「开始游戏」）。
+    -- ★必须放在 flowSpec 分支之前——该模块在上表里，走 flowSpec 会 return 掉。
+    local oc = M.create
+    if type(oc) == 'function' then
+      M.create = function(self, ...)
+        local o = oc(self, ...)
+        __WJJH_MENU_LAYER = o
+        __wjjhlog('WJJH_AUTOSTART: MenuLayer captured')
+        return o
+      end
+    end
+  end
   if __wjjh_flowSpecs[name] then
     -- 流程里程碑探针:enter 日志,SIGSEGV 前最后一条即崩溃点
     -- ★yield-safe 铁律:被包装函数可能内部 coroutine.yield(CoroutineStack:push 就会),
@@ -613,18 +626,6 @@ local function __wjjh_instrument(name, M)
       end
     end
     return
-  end
-  if name == 'app.views.layer.MenuLayer.MenuLayer' then
-    -- gh154: 抓 MenuLayer 实例，供 CI 自动点按（勾协议 + 点「开始游戏」）
-    local oc = M.create
-    if type(oc) == 'function' then
-      M.create = function(self, ...)
-        local o = oc(self, ...)
-        __WJJH_MENU_LAYER = o
-        __wjjhlog('WJJH_AUTOSTART: MenuLayer captured')
-        return o
-      end
-    end
   end
   if name == 'app.Helper' then
     -- ★核心修复(gh59 定案):getChildByTag 不可靠 -> classDefNodeGetInstance 的 tag 单例
