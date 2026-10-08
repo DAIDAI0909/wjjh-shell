@@ -399,6 +399,21 @@ endif()
 
 # ---- third-party prebuilt static libs（cocos 官方包，含模拟器架构）----
 file(GLOB EXTLIBS ${ENGINE}/external/*/prebuilt/ios/*.a)
+# gh140: 白名单——只链"已证明健康"的库（30+ 轮修复后 rc=0 的集合）。
+# 不健康库（curl/websockets/uv/js_static/crypto/ssl/box2d/bullet*）从链接剔除:
+# 若无引用=彻底无害;若被引用,链接会在 undefined 里点名引用者,再对症处理。
+set(EXTLIBS_KEEP "")
+foreach(_lb ${EXTLIBS})
+    get_filename_component(_lbn ${_lb} NAME)
+    if(_lbn STREQUAL "libchipmunk.a" OR _lbn STREQUAL "libwebp.a"
+       OR _lbn STREQUAL "libpng.a" OR _lbn STREQUAL "libjpeg.a"
+       OR _lbn STREQUAL "libtiff.a" OR _lbn STREQUAL "libluajit.a")
+        list(APPEND EXTLIBS_KEEP ${_lb})
+    endif()
+endforeach()
+list(LENGTH EXTLIBS_KEEP _nkeep)
+message(STATUS "gh140 whitelist: keeping ${_nkeep} of ${EXTLIBS} external libs")
+set(EXTLIBS ${EXTLIBS_KEEP})
 # bullet/Box2D 的 arm64 切片是真机构建（2017 库）：3D 物理已关、2D 物理游戏零引用
 #（physics-nodes 用 chipmunk，不链 libbox2d），arm64 切片还有符号表/重定位表互相
 # 重叠的畸形（gh80 实测，libtool/ld 都救不回）—— 一并排除
