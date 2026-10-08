@@ -700,6 +700,30 @@ def process_archive(path):
                             pass
                 logp('[prebuilt-fix] SELFPARSE %s/%s: %s'
                      % (os.path.basename(path), rn5, desc))
+                # 四视角仲裁(仅 m0):otool + ld -r + 原始字节 dump
+                if rn5.startswith('m0') or probed == 0:
+                    m6 = os.path.join(os.path.dirname(path), '_arb.o')
+                    mo6 = os.path.join(os.path.dirname(path), '_arb_out.o')
+                    try:
+                        with open(m6, 'wb') as f6:
+                            f6.write(b5)
+                        r6 = subprocess.run(['otool', '-l', m6],
+                                            capture_output=True, text=True, errors='replace')
+                        keep6 = [l6.strip() for l6 in r6.stdout.split(chr(10))
+                                 if 'cmd LC_' in l6 or 'platform' in l6 or 'cmdsize' in l6]
+                        logp('[prebuilt-fix] ARB otool %s/%s: %s'
+                             % (os.path.basename(path), rn5, ' ; '.join(keep6[:14])))
+                        if os.path.exists(mo6):
+                            os.remove(mo6)
+                        r7 = subprocess.run(['ld', '-r', '-arch', 'arm64', '-o', mo6, m6],
+                                            capture_output=True, text=True, errors='replace')
+                        logp('[prebuilt-fix] ARB ld-r %s/%s: rc=%d err=%s'
+                             % (os.path.basename(path), rn5, r7.returncode,
+                                ((r7.stderr or '')[:240]).replace(chr(10), ' | ')))
+                        logp('[prebuilt-fix] ARB hex %s/%s @32..: %s'
+                             % (os.path.basename(path), rn5, b5[32:112].hex()))
+                    except Exception as e6:
+                        logp('[prebuilt-fix] ARB error: %r' % e6)
                 probed += 1
                 p5 += 60 + sz5 + (sz5 & 1)
         except Exception as e5:
