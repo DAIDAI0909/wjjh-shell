@@ -6,6 +6,8 @@
 #include "WjjhJM.h"
 #include "WjjhXHR.h"
 #include <os/log.h>
+#include <sys/time.h>
+#include <unistd.h>
 
 USING_NS_CC;
 using namespace std;
@@ -23,6 +25,62 @@ static int wjjh_lua_log(lua_State* LS)
     const char* s = lua_tostring(LS, 1);
     if (s) wjjh_bootlog(s);
     return 0;
+}
+
+// ---- gh151: LuaSocket 最小替身 ----
+// iOS 游戏包内没有 LuaSocket 的 Lua 文件（src/packages/ 只有 mvc），但
+// app/Definition.lua:1 与 cocos/cocos2d/functions.lua 都 require("socket")，
+// 且全树只用到 socket.gettime（17 处计时）与 socket.select（1 处 sleep）。
+// 这里装一个原生小模块进 package.loaded['socket']（require 直接命中，不查文件）
+// + 全局 socket（游戏直接 socket.gettime()）。真网络不走 LuaSocket（走自研 XHR）。
+static double wjjh_now_sec()
+{
+    struct timeval tv;
+    gettimeofday(&tv, nullptr);
+    return (double)tv.tv_sec + (double)tv.tv_usec / 1000000.0;
+}
+
+static int wjjh_lua_socket_gettime(lua_State* LS)
+{
+    lua_pushnumber(LS, (lua_Number)wjjh_now_sec());
+    return 1;
+}
+
+static int wjjh_lua_socket_select(lua_State* LS)
+{
+    // socket.select(recvt, sendt, timeout)：游戏只用 (nil,nil,n) 当 sleep；
+    // 保持"超时返回 nil,'timeout'"语义
+    lua_Number t = luaL_optnumber(LS, 3, 0);
+    if (t > 0) usleep((useconds_t)(t * 1000000.0));
+    lua_pushnil(LS);
+    lua_pushstring(LS, "timeout");
+    return 2;
+}
+
+static void wjjh_socket_install(lua_State* L)
+{
+    lua_newtable(L);
+    lua_pushcfunction(L, wjjh_lua_socket_gettime);
+    lua_setfield(L, -2, "gettime");
+    lua_pushcfunction(L, wjjh_lua_socket_select);
+    lua_setfield(L, -2, "select");
+    lua_pushstring(L, "LuaSocket-stub(wjjh)");
+    lua_setfield(L, -2, "_VERSION");
+
+    lua_pushvalue(L, -1);
+    lua_setglobal(L, "socket");          // 全局 socket = M
+
+    lua_getglobal(L, "package");         // [M, package]
+    if (lua_istable(L, -1)) {
+        lua_getfield(L, -1, "loaded");   // [M, package, loaded]
+        if (lua_istable(L, -1)) {
+            lua_pushvalue(L, -3);        // [M, package, loaded, M]
+            lua_setfield(L, -2, "socket");   // loaded.socket = M
+        }
+        lua_pop(L, 1);                   // [M, package]
+    }
+    lua_pop(L, 1);                       // [M]
+    lua_pop(L, 1);                       // []
 }
 
 AppDelegate::AppDelegate()
@@ -69,6 +127,10 @@ bool AppDelegate::applicationDidFinishLaunching()
     // 真 JM 加密（协议与服务端 fz_crypto.py 对齐）；Lua 块里的透传桩因 `if not JM` 自动跳过
     wjjh_jm_install(L);
     wjjh_bootlog("WJJH_BOOT: JM real crypto installed");
+
+    // LuaSocket 替身（包里没有 socket.lua；游戏只用 gettime/select 计时与 sleep）
+    wjjh_socket_install(L);
+    wjjh_bootlog("WJJH_BOOT: socket stub installed (gettime/select)");
 
     // 原生 XMLHttpRequest（NSURLSession）：cocos 的 LuaMinXmlHttpRequest tolua 绑定
     // 在 Release 下 self 为 NULL 直接解引用（b71 .ips 实证），整体替换
