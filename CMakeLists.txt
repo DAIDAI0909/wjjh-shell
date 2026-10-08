@@ -46,6 +46,17 @@ if(NOT EXISTS ${ENGINE}/external/luajit/include/lua.h)
     # 172 的新版 LuaJIT 头没有 cocos 用的 luaL_reg —— 固定 130 版头文件（lib 用我们源码现编的）
     file(COPY ${CMAKE_SOURCE_DIR}/luajit_inc_130/ DESTINATION ${ENGINE}/external/lua/luajit/include)
 
+    # ---- gh139: libpng 源码现编前置(在 fix_prebuilts 之前,让探针也看到新库) ----
+    if(WJJH_ARM64)
+        find_program(PY3B_EXE python3)
+        if(PY3B_EXE)
+            execute_process(COMMAND ${PY3B_EXE} ${CMAKE_SOURCE_DIR}/scripts/build_png_source.py ${ENGINE}
+                            RESULT_VARIABLE png_r OUTPUT_VARIABLE png_out ERROR_VARIABLE png_out
+                            TIMEOUT 420)
+            message(STATUS "png-source-build:\n${png_out}")
+        endif()
+    endif()
+
     # ---- 预编译库平台修补：arm64 模拟器路线需要（切片来自 fat 库的 arm64，平台声明是
     #      2017 真机构建——Xcode 26 链接器拒收，统一重建为 iOS-simulator LC_BUILD_VERSION）----
     if(WJJH_ARM64)
@@ -59,17 +70,6 @@ if(NOT EXISTS ${ENGINE}/external/luajit/include/lua.h)
             else()
                 message(STATUS "prebuilt platform patch:\n${fp_out}")
             endif()
-        endif()
-    endif()
-
-    # ---- gh138: libpng 源码现编(2017 prebuilt 的 png 成员组合让现代 ld 断言崩) ----
-    if(WJJH_ARM64)
-        find_program(PY3B_EXE python3)
-        if(PY3B_EXE)
-            execute_process(COMMAND ${PY3B_EXE} ${CMAKE_SOURCE_DIR}/scripts/build_png_source.py ${ENGINE}
-                            RESULT_VARIABLE png_r OUTPUT_VARIABLE png_out ERROR_VARIABLE png_out
-                            TIMEOUT 420)
-            message(STATUS "png-source-build:\n${png_out}")
         endif()
     endif()
 
@@ -414,6 +414,8 @@ target_link_libraries(WJJH PRIVATE ${EXTLIBS})
 # 2017 年的预编译库存档成员未按 8 字节对齐，Xcode 26 新链接器直接报错；
 # 经典链接器（ld-classic）十三年来一直接受它们 —— x86_64 路线必须用它
 target_link_options(WJJH PRIVATE "-Wl,-ld_classic")
+# gh139: -why_load 探针(ld 打印每个被拉成员原因;崩溃前最后一行=真凶成员)
+target_link_options(WJJH PRIVATE "-Wl,-why_load")
 
 target_link_libraries(WJJH PRIVATE
     "-framework OpenGLES" "-framework OpenAL" "-framework UIKit"
