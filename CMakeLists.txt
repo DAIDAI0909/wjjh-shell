@@ -299,6 +299,8 @@ list(FILTER COCOS_SRC EXCLUDE REGEX ".*/network/SocketIO\\.cpp")
 list(FILTER LUA_BIND_SRC EXCLUDE REGEX ".*/lua_cocos2dx_extension_auto\\.cpp")
 list(FILTER LUA_BIND_SRC EXCLUDE REGEX ".*/lua_cocos2dx_extension_manual\\.cpp")
 list(FILTER LUA_BIND_SRC EXCLUDE REGEX ".*/Lua_web_socket\\.cpp")
+# gh147: network_manual 注册函数引用已排的 web_socket 绑定(tolua_web_socket_open) - 排掉
+list(FILTER LUA_BIND_SRC EXCLUDE REGEX ".*/lua_cocos2dx_network_manual\\.cpp")
 
 file(GLOB SHELL_SRC
     ${CMAKE_SOURCE_DIR}/shell/*.mm
