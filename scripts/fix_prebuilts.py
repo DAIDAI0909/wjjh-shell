@@ -508,6 +508,27 @@ def rebuild_member_clean(body, lc_off):
     return bytes(blob)
 
 
+def ld_r_normalize(member_bytes, workdir, idx):
+    """用 ld -r 让链接器亲自重新产出该成员(平台=ios-simulator 由 ld 写入)。
+
+    26 轮字节修补后仍存在 Python 与 otool/ld 视角分歧的怪象;ld -r 的产物是
+    Apple 链接器自己生成的,后续链接必然接受。失败返回 None(调用方用重建成员兜底)。"""
+    src = os.path.join(workdir, 'n%d_in.o' % idx)
+    dst = os.path.join(workdir, 'n%d_out.o' % idx)
+    with open(src, 'wb') as f:
+        f.write(member_bytes)
+    if os.path.exists(dst):
+        os.remove(dst)
+    r = subprocess.run(['ld', '-r', '-arch', 'arm64',
+                        '-platform_version', 'ios-simulator', '13.0', '18.2',
+                        '-o', dst, src],
+                       capture_output=True, text=True, errors='replace')
+    if r.returncode == 0 and os.path.exists(dst) and os.path.getsize(dst) > 0:
+        with open(dst, 'rb') as f:
+            return f.read()
+    return None
+
+
 def serialize_archive(members, workdir):
     """用 libtool 生成归档(gh80 已验证:干净成员+libtool=ld 认)。"""
     objs = []
@@ -579,6 +600,11 @@ def process_archive(path):
     else:
         return 1
 
+    import tempfile as _tf
+    tmpnorm = _tf.mkdtemp()
+    idx2 = 0
+    n_norm = 0
+    n_normfail = 0
     p = 8
     n_patched = 0
     n_fail = 0
@@ -616,7 +642,14 @@ def process_archive(path):
                         new_body = rebuild_member_clean(inner, lc_off)
                     break
         if new_body is not None:
-            members.append((real_name, new_body))
+            norm = ld_r_normalize(new_body, tmpnorm, idx2)
+            idx2 += 1
+            if norm is not None:
+                members.append((real_name, norm))
+                n_norm += 1
+            else:
+                members.append((real_name, new_body))
+                n_normfail += 1
             n_patched += 1
         else:
             members.append((real_name, body))
@@ -636,8 +669,10 @@ def process_archive(path):
                  % (real_name, magic, why, len(body)))
         p += 60 + size + (size & 1)
 
-    logp('[prebuilt-fix] %s: members=%d rebuilt=%d keep-orig=%d'
-         % (path.replace('/Users/runner/work/wjjh-shell/wjjh-shell/', ''), len(members), n_patched, n_fail))
+    logp('[prebuilt-fix] %s: members=%d rebuilt=%d keep-orig=%d ld-r=%d ldr-fail=%d'
+         % (path.replace('/Users/runner/work/wjjh-shell/wjjh-shell/', ''), len(members), n_patched, n_fail, n_norm, n_normfail))
+    import shutil as _sh2
+    _sh2.rmtree(tmpnorm, ignore_errors=True)
     if n_fail:
         logp('[prebuilt-fix] FATAL %d members unfixable, archive left for ld to complain'
              % n_fail)
