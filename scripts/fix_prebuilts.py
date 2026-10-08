@@ -508,6 +508,9 @@ def rebuild_member_clean(body, lc_off):
     return bytes(blob)
 
 
+_ldr_logged = 0
+
+
 def ld_r_normalize(member_bytes, workdir, idx):
     """用 ld -r 让链接器亲自重新产出该成员(平台=ios-simulator 由 ld 写入)。
 
@@ -519,13 +522,26 @@ def ld_r_normalize(member_bytes, workdir, idx):
         f.write(member_bytes)
     if os.path.exists(dst):
         os.remove(dst)
-    r = subprocess.run(['ld', '-r', '-arch', 'arm64',
-                        '-platform_version', 'ios-simulator', '13.0', '18.2',
-                        '-o', dst, src],
-                       capture_output=True, text=True, errors='replace')
-    if r.returncode == 0 and os.path.exists(dst) and os.path.getsize(dst) > 0:
-        with open(dst, 'rb') as f:
-            return f.read()
+    global _ldr_logged
+    attempts = [
+        ['-platform_version', 'ios-simulator', '13.0', '18.2'],
+        ['-platform_version', 'iossimulator', '13.0', '18.2'],
+        ['-platform_version', '7', '13.0', '18.2'],
+        [],
+    ]
+    for att in attempts:
+        if os.path.exists(dst):
+            os.remove(dst)
+        r = subprocess.run(['ld', '-r', '-arch', 'arm64'] + att + ['-o', dst, src],
+                           capture_output=True, text=True, errors='replace')
+        if r.returncode == 0 and os.path.exists(dst) and os.path.getsize(dst) > 0:
+            with open(dst, 'rb') as f:
+                return f.read()
+        if _ldr_logged < 4:
+            _ldr_logged += 1
+            logp('[prebuilt-fix] LDRFAIL %s (%s): %s'
+                 % (os.path.basename(src), ' '.join(att[:2]) if att else 'bare',
+                    ((r.stderr or '')[:260]).replace(chr(10), ' | ')))
     return None
 
 
@@ -746,6 +762,21 @@ def process_archive(path):
                                             capture_output=True, text=True, errors='replace')
                         keep6 = [l6.strip() for l6 in r6.stdout.split(chr(10))
                                  if 'cmd LC_' in l6 or 'platform' in l6 or 'cmdsize' in l6]
+                        keep6full = [l6 for l6 in r6.stdout.split(chr(10))][:44]
+                        logp('[prebuilt-fix] ARB otoolfull %s/%s: %s'
+                             % (os.path.basename(path), rn5,
+                                ' | '.join(x.strip() for x in keep6full)[:1100]))
+                        r6b = subprocess.run(['xcrun', 'llvm-objdump', '--macho',
+                                              '--private-headers', m6],
+                                             capture_output=True, text=True, errors='replace')
+                        logp('[prebuilt-fix] ARB llvmdump %s/%s: %s'
+                             % (os.path.basename(path), rn5,
+                                ((r6b.stdout or r6b.stderr or '')[:900]).replace(chr(10), ' | ')))
+                        r6c = subprocess.run(['vtool', '-show-build', m6],
+                                             capture_output=True, text=True, errors='replace')
+                        logp('[prebuilt-fix] ARB vtool %s/%s: %s'
+                             % (os.path.basename(path), rn5,
+                                ((r6c.stdout or r6c.stderr or '')[:500]).replace(chr(10), ' | ')))
                         logp('[prebuilt-fix] ARB otool %s/%s: %s'
                              % (path.replace('/Users/runner/work/wjjh-shell/wjjh-shell/', ''), rn5, ' ; '.join(keep6[:14])))
                         if os.path.exists(mo6):
