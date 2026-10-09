@@ -54,6 +54,10 @@ def main():
     fetch('jhserver.zip', 'jhserver_private.zip')
     fetch('shell_secret.zip', 'shell_secret.zip')
     fetch('res_ui.zip', 'res_ui_private.zip')
+    # gh157: res 缺口资产（Anim/Font/Music/OtherImage/...）—— 从安卓 danji 包补齐；
+    # 之前只搬了 res/Image，导致 getSkAnim(Anim/*.json) 断言失败、字体/音频全缺。
+    fetch('res_full.zip', 'res_full_private.zip')
+    fetch('res_root.zip', 'res_root_private.zip')   # res 根目录图片（hpframe 血条等）
 
     if os.path.exists('py_ios_server'):
         shutil.rmtree('py_ios_server')
@@ -76,9 +80,19 @@ def main():
     with zipfile.ZipFile('res_ui_private.zip') as z:
         z.extractall('gamelua')
     os.remove('res_ui_private.zip')
+    # 缺口资产树（Anim/Font/Music/...）同样解到 gamelua/res/
+    with zipfile.ZipFile('res_full_private.zip') as z:
+        z.extractall('gamelua')
+    os.remove('res_full_private.zip')
+    # res 根目录图片（fightback/hpframe_*/point/shadow）
+    with zipfile.ZipFile('res_root_private.zip') as z:
+        z.extractall('gamelua')
+    os.remove('res_root_private.zip')
     import subprocess
     print('[fetch-private] gamelua/res/Image files:',
           sum(len(fs) for _d, _dn, fs in os.walk('gamelua/res/Image')), flush=True)
+    print('[fetch-private] gamelua/res/Anim files:',
+          sum(len(fs) for _d, _dn, fs in os.walk('gamelua/res/Anim')), flush=True)
 
 
 if __name__ == '__main__':
