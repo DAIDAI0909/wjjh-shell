@@ -384,6 +384,15 @@ end
 for _, n in ipairs({'ExtRichText','ExtRichTextScroll','ExtPageView','YXShaderSprite','YXMotionStreak','YXEaseAction','YXHelper','encrypt','LogManager'}) do
   __stubClass(n)
 end
+-- gh168: 链式桩的"万能返回体"——此前 __chain 全局从未定义，链式桩方法全返回 nil，
+-- 游戏里 `X:getInstance():removeAnimCache(...)` 这类写法就崩（gh165 实测 MainLayer.lua:123
+-- 的 cannot-resume-dead-coroutine 连锁错即出自 YXSkeletonAnimationCache:getInstance()=nil）。
+-- 定义成"自返回"的宽松表：任何方法调用返回它自己（真值），任何字段访问返回函数。
+__chain = setmetatable({}, {__index = function(t, k)
+  local f = function() return t end
+  rawset(t, k, f)
+  return f
+end})
 local __stubClassChain = function(name)
   if _G[name] then return _G[name] end
   local t = {}
@@ -1000,6 +1009,28 @@ local function __wjjh_autoRoleTick()
       nil, sexFunc)
   end)
   __wjjhlog('WJJH_AUTOSTART: create role fired ok=' .. tostring(ok) .. ' err=' .. __ts(err))
+  -- gh168: 再等 ~3s 把建号对话框收掉——正常流程由按钮的 setPanelHide 关闭；
+  -- 我们走数据层直调 createRoleAndEntryGame（等价「男」+「武学世家」），得补这一刀，
+  -- 否则选性别对话框一直盖在主界面上（gh165 截图实证）。
+  local dlgTicks = 0
+  local function dlgCloser()
+    dlgTicks = dlgTicks + 1
+    if dlgTicks < 6 then return end
+    return true
+  end
+  __wjjh_autoRoleTick = function()
+    if dlgCloser() then
+      local ok2, err2 = pcall(function()
+        local D = package.loaded['app.views.layer.DialogLayer.DialogDLayer']
+        if D ~= nil then
+          local inst = D:getInstance()
+          if inst ~= nil and inst.hide ~= nil then inst:hide() end
+        end
+      end)
+      __wjjhlog('WJJH_AUTOSTART: hide create-role dialog ok=' .. tostring(ok2) .. ' err=' .. __ts(err2))
+      __wjjh_autoRoleTick = function() end
+    end
+  end
 end
 
 local function __wjjh_tryHook()
