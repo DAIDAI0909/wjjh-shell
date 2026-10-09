@@ -1056,9 +1056,10 @@ local function __wjjh_autoRoleTick()
           __wjjhlog('WJJH_AUTOSTART: entryMap fired ok=' .. tostring(ok4) .. ' err=' .. __ts(err4))
           return
         end
-        -- gh172: 进图后转储房间出口图 + 自动走一步（房间 UI 出口按钮就是
-        -- MapLayer:entryRoom(fromRoomId, toRoomId, direction)；entryRoomByDirection 已被上游禁用）
-        if navTicks == 130 then
+        -- gh172/173: 进图后转储房间出口图 + 自动走一步（房间 UI 出口按钮就是
+        -- MapLayer:entryRoom(fromRoomId, toRoomId, direction)；entryRoomByDirection 已被上游禁用）。
+        -- ★tick 提前到 70（=entryMap 后 ~13s）：CI 取证窗口约 60-90s，130 太晚（gh172 实测被截）
+        if navTicks == 70 then
           local ok5, err5 = pcall(function()
             local CL = package.loaded['app.views.layer.ControllLayer']
             local layer = CL and CL:getInstance() and CL:getInstance():getLayer('MapLayer')
