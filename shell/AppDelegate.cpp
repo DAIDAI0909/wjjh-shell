@@ -446,13 +446,10 @@ local __mkSkel = function(...)
   tolua.setpeer(sk, __wjjh_skelPeerFull())
   return sk
 end
--- ===== gh164: YXSkeletonAnimation 真工厂（真实现优先,哑节点兜底）=====
+-- ===== gh164/166: 骨骼工厂（哑节点版）=====
 -- YXSkeletonAnimation/spine38 是安卓魔改引擎的 C++ 全局，官方 3.15.1 没有。
 -- 旧链式桩的 createWithFile 恒返回 nil（__chain 未定义）——资产补全后流程走到
 -- HeadView:__initEffectAnimView → Resource:getSkAnim 就断言"动画初始化出错"。
--- 现在：优先用 cocos 自带 sp.SkeletonAnimation（真渲染）；失败退哑节点（流程不断）。
--- ===== gh164/166: 骨骼工厂（哑节点版）=====
--- YXSkeletonAnimation/spine38 是安卓魔改引擎的 C++ 全局，官方 3.15.1 没有。
 -- gh164 曾试"真实现优先"用 cocos 自带 sp.SkeletonAnimation：**实测崩**
 -- （spAtlas_create→spAtlas_dispose，因为游戏 .atlas/.skel 是 spine 3.8 格式，
 --   官方 3.15.1 的运行时是 3.5/3.6，解析不了）→ gh166 回到哑节点。
