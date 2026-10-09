@@ -107,6 +107,19 @@ def main():
         root = os.path.join(srcdir, os.listdir(srcdir)[0])
         print('[ft-src] 源码树:', root)
 
+        # 关掉可选模块（zlib/bzip2/lzw）——2.5.5 的 ftoption.h 默认开 zlib，
+        # 其 ftgzip.c 在 clang 16 下触发 -Wincompatible-pointer-types 硬错；
+        # 我们的字体是明文 ttf，不需要压缩容器支持，也免掉 -lz 依赖。
+        opt = os.path.join(root, 'include', 'freetype', 'config', 'ftoption.h')
+        if os.path.exists(opt):
+            txt = open(opt, encoding='utf-8', errors='replace').read()
+            for flag in ('FT_CONFIG_OPTION_USE_ZLIB', 'FT_CONFIG_OPTION_USE_BZIP2',
+                         'FT_CONFIG_OPTION_USE_LZW'):
+                txt = re.sub(r'^(\s*)#define\s+%s\s*$' % flag, r'\1/* disabled by wjjh */',
+                             txt, flags=re.M)
+            open(opt, 'w', encoding='utf-8', newline='\n').write(txt)
+            print('[ft-src] 已关闭 USE_ZLIB/USE_BZIP2/USE_LZW')
+
         sdk = run(['xcrun', '-sdk', 'iphonesimulator', '-show-sdk-path']).stdout.strip()
         objs = []
         cfiles = [f for f in MODULE_FILES if os.path.exists(os.path.join(root, f))]
@@ -118,7 +131,8 @@ def main():
                      '-isysroot', sdk, '-target', 'arm64-apple-ios13.0-simulator',
                      '-I', os.path.join(root, 'include'),
                      '-DFT2_BUILD_LIBRARY', '-O2', '-fno-objc-arc',
-                     '-Wno-deprecated-declarations', '-Wno-unused-function'])
+                     '-Wno-deprecated-declarations', '-Wno-unused-function',
+                     '-Wno-incompatible-pointer-types', '-Wno-int-conversion'])
             if r.returncode != 0:
                 print('[ft-src] compile %s failed: %s' % (cf, (r.stderr or '')[-500:]))
                 print('[ft-src] keep original freetype')
