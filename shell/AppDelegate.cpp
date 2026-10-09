@@ -1115,12 +1115,44 @@ local function __wjjh_autoRoleTick()
             end
             __wjjhlog('WJJH_NPC: room ' .. __ts(room.id) .. ' roles [' .. table.concat(names, ', ') .. ']')
             if target ~= nil then
-              local PC = require('app.views.layer.PopLayer.PopupLayerController')
+              -- gh177: 路径修正为 app.views.base.PopupLayerController（全局同名优先）；打开观察层
+              local PC = PopupLayerController
+              if PC == nil then
+                local okP, mod = pcall(require, 'app.views.base.PopupLayerController')
+                if okP then PC = mod end
+              end
               local tn = target.name or (target.getName and target:getName()) or target.id
-              PC:showLayer('RoleObserveLayer', function(obs)
-                obs:showLayer(target, 'MAP')
-              end)
-              __wjjhlog('WJJH_NPC: RoleObserveLayer opened for ' .. __ts(tn))
+              if PC ~= nil and PC.showLayer ~= nil then
+                PC:showLayer('RoleObserveLayer', function(obs)
+                  obs:showLayer(target, 'MAP')
+                  -- 打印观察层功能按钮（挑战/对话等入口就在这里，供下一轮自动点）
+                  local kids = nil
+                  if obs ~= nil and obs.ListView_FuncBtns ~= nil and obs.ListView_FuncBtns.getChildren ~= nil then
+                    kids = obs.ListView_FuncBtns:getChildren()
+                  end
+                  local btns = {}
+                  if type(kids) == 'table' then
+                    for i = 1, #kids do
+                      local ch = kids[i]
+                      local label = nil
+                      if ch ~= nil then
+                        for _, fld in ipairs({ 'Text_name', 'Text_buttonName', 'Text_title', 'Text' }) do
+                          local t = ch[fld]
+                          if t ~= nil and t.getString ~= nil then
+                            label = t:getString()
+                            break
+                          end
+                        end
+                      end
+                      btns[#btns + 1] = __ts(ch and ch.getName and ch:getName()) .. '=' .. __ts(label)
+                    end
+                  end
+                  __wjjhlog('WJJH_NPC: observe btns [' .. table.concat(btns, ', ') .. ']')
+                end)
+                __wjjhlog('WJJH_NPC: RoleObserveLayer opened for ' .. __ts(tn))
+              else
+                __wjjhlog('WJJH_NPC: PopupLayerController unavailable')
+              end
             end
           end)
           __wjjhlog('WJJH_NPC: done ok=' .. tostring(ok7) .. ' err=' .. __ts(err7))
