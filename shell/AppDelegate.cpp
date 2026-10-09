@@ -1092,9 +1092,43 @@ local function __wjjh_autoRoleTick()
           end)
           __wjjhlog('WJJH_AUTOSTART: walk step done ok=' .. tostring(ok5) .. ' err=' .. __ts(err5))
         end
-        -- gh174: 连走多间房（避开回访，最多 8 步，每 4 tick 一步）——把整关房间图摸出来，
-        -- 每步记录 房间名 + 出口 + 房内 NPC（getRoomRoleList），为找目标 NPC/战斗入口铺路。
-        if navTicks > 70 and navTicks <= 102 and (navTicks - 70) % 4 == 0 then
+        -- gh176: NPC 交互——把房内角色解析成对象（拿真名），并自动打开观察层
+        -- （点 NPC 按钮的处理就是 PopupLayerController:showLayer("RoleObserveLayer", …:showLayer(role,"MAP"))）
+        if navTicks == 92 then
+          local ok7, err7 = pcall(function()
+            local CL = package.loaded['app.views.layer.ControllLayer']
+            local layer = CL and CL:getInstance() and CL:getInstance():getLayer('MapLayer')
+            if layer == nil or layer._currRoom == nil then
+              __wjjhlog('WJJH_NPC: MapLayer/currRoom nil, skip')
+              return
+            end
+            local room = layer._currRoom
+            local map = layer._currMap
+            local ids = map and map.getRoomRoleList and map:getRoomRoleList(room.id) or {}
+            local names = {}
+            local target = nil
+            for i, rid in ipairs(ids or {}) do
+              local role = map.getRole and map:getRole(rid)
+              local nm = role and (role.name or (role.getName and role:getName()))
+              names[#names + 1] = tostring(rid) .. '=' .. __ts(nm) .. '(' .. __ts(role and role.type) .. ')'
+              if target == nil and role ~= nil and role.type == 'role' then target = role end
+            end
+            __wjjhlog('WJJH_NPC: room ' .. __ts(room.id) .. ' roles [' .. table.concat(names, ', ') .. ']')
+            if target ~= nil then
+              local PC = require('app.views.layer.PopLayer.PopupLayerController')
+              local tn = target.name or (target.getName and target:getName()) or target.id
+              PC:showLayer('RoleObserveLayer', function(obs)
+                obs:showLayer(target, 'MAP')
+              end)
+              __wjjhlog('WJJH_NPC: RoleObserveLayer opened for ' .. __ts(tn))
+            end
+          end)
+          __wjjhlog('WJJH_NPC: done ok=' .. tostring(ok7) .. ' err=' .. __ts(err7))
+          __wjjh_autoRoleTick = function() end
+        end
+        -- gh174: 连走多间房（避开回访，每 4 tick 一步）——把整关房间图摸出来，
+        -- 每步记录 房间名 + 出口 + 房内 NPC；gh175 起只走进 enterable 的房间。
+        if navTicks > 70 and navTicks <= 86 and (navTicks - 70) % 4 == 0 then
           local ok6, err6 = pcall(function()
             local CL = package.loaded['app.views.layer.ControllLayer']
             local layer = CL and CL:getInstance() and CL:getInstance():getLayer('MapLayer')
