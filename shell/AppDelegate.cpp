@@ -401,7 +401,7 @@ local __stubClassChain = function(name)
   _G[name] = t
   return t
 end
-for _, n in ipairs({'YXSkeletonAnimation','YXSkeletonAnimationCache'}) do
+for _, n in ipairs({'YXSkeletonAnimationCache'}) do
   __stubClassChain(n)
 end
 
@@ -425,13 +425,46 @@ local __mkSkel = function(...)
   })
   return sk
 end
+-- ===== gh164: YXSkeletonAnimation 真工厂（真实现优先,哑节点兜底）=====
+-- YXSkeletonAnimation/spine38 是安卓魔改引擎的 C++ 全局，官方 3.15.1 没有。
+-- 旧链式桩的 createWithFile 恒返回 nil（__chain 未定义）——资产补全后流程走到
+-- HeadView:__initEffectAnimView → Resource:getSkAnim 就断言"动画初始化出错"。
+-- 现在：优先用 cocos 自带 sp.SkeletonAnimation（真渲染）；失败退哑节点（流程不断）。
+local __wjjh_mkSpine = function(skel, atlas, scale)
+  if _G.sp and sp.SkeletonAnimation then
+    local ok, node = pcall(function()
+      local c = sp.SkeletonAnimation.create
+      if type(c) == 'function' then return c(sp.SkeletonAnimation, skel, atlas, scale or 1) end
+      return nil
+    end)
+    if ok and node ~= nil then return node end
+    local ok2, node2 = pcall(function()
+      local c = sp.SkeletonAnimation.createWithBinaryFile
+      if type(c) == 'function' then return c(sp.SkeletonAnimation, skel, atlas, scale or 1) end
+      return nil
+    end)
+    if ok2 and node2 ~= nil then return node2 end
+  end
+  return __mkSkel()
+end
+local __wjjhYXSkel = {}
+__wjjhYXSkel.createWithFile = function(self, skel, atlas, scale) return __wjjh_mkSpine(skel, atlas, scale) end
+__wjjhYXSkel.createWithBinaryFile = function(self, skel, atlas, scale) return __wjjh_mkSpine(skel, atlas, scale) end
+__wjjhYXSkel.create = function(self, skel, atlas, scale) return __wjjh_mkSpine(skel, atlas, scale) end
+setmetatable(__wjjhYXSkel, {__index = function(tt, k)
+  local f = function() return __mkSkel() end
+  rawset(tt, k, f)
+  return f
+end})
+_G['YXSkeletonAnimation'] = __wjjhYXSkel
+
 spine38 = setmetatable({}, {__index = function(t, k)
   if k == 'NewSkeletonAnimation' then
-    return { createWithBinaryFile = __mkSkel, createWithFile = __mkSkel, create = __mkSkel }
+    return { createWithBinaryFile = __wjjh_mkSpine, createWithFile = __wjjh_mkSpine, create = __wjjh_mkSpine }
   end
   return nil
 end})
-__wjjhlog('WJJH_BOOT: C/D stubs + skeleton factory installed')
+__wjjhlog('WJJH_BOOT: C/D stubs + skeleton factory v2 (real-spine-first) installed')
 
 -- ===== cpp.Game 桩 =====
 if not cpp then
