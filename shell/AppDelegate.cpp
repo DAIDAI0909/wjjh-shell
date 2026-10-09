@@ -1091,6 +1091,28 @@ if cc ~= nil and cc.WebSocket == nil then
   __wjjhlog('WJJH_BOOT: cc.WebSocket stub installed (binding excluded)')
 end
 
+-- ===== gh171: 安卓魔改引擎的 ccui 专有方法补丁 =====
+-- 官方 3.15.1 的 ccui.Button 没有 setMoveTouchCancelEnable（安卓定制引擎加的，
+-- 语义=滑动即取消点击）。TotalMapUI.lua:150 在造地图按钮时调它 → 地图 setMap 崩。
+-- 按需补 no-op shim（返回 self 便于链式）；后续遇到同类再往这里加。
+if ccui ~= nil then
+  local __wjjh_ccui_shims = {
+    setMoveTouchCancelEnable = function(self, enable) return self end,
+  }
+  local __wjjh_patched = 0
+  for _, cls in ipairs({ ccui.Button, ccui.Widget, ccui.Layout, ccui.ScrollView, cc.Node }) do
+    if cls ~= nil then
+      for k, f in pairs(__wjjh_ccui_shims) do
+        if cls[k] == nil then
+          cls[k] = f
+          __wjjh_patched = __wjjh_patched + 1
+        end
+      end
+    end
+  end
+  __wjjhlog('WJJH_BOOT: ccui custom-method shims installed (' .. __wjjh_patched .. ')')
+end
+
 -- ===== main.lua =====
 local f, err = loadfile(__WJJH_MAINLUA)
 if not f then
