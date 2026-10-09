@@ -54,6 +54,11 @@ if(NOT EXISTS ${ENGINE}/external/luajit/include/lua.h)
                             RESULT_VARIABLE png_r OUTPUT_VARIABLE png_out ERROR_VARIABLE png_out
                             TIMEOUT 420)
             message(STATUS "png-source-build:\n${png_out}")
+            # gh158: freetype 同样源码现编（2017 库在真加载字体时模块指针崩）
+            execute_process(COMMAND ${PY3B_EXE} ${CMAKE_SOURCE_DIR}/scripts/build_freetype_source.py ${ENGINE}
+                            RESULT_VARIABLE ft_r OUTPUT_VARIABLE ft_out ERROR_VARIABLE ft_out
+                            TIMEOUT 600)
+            message(STATUS "freetype-source-build:\n${ft_out}")
         endif()
     endif()
 

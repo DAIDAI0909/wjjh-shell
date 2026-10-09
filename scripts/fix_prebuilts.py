@@ -948,6 +948,8 @@ def main():
             continue
         if '/external/png/' in norm:
             continue  # gh141: png 由源码编译接管(build_png_source.py),重建会破坏新 CFI
+        if '/external/freetype2/' in norm:
+            continue  # gh158: freetype 改为源码编译接管(build_freetype_source.py)
         for fn in files:
             if not fn.endswith('.a'):
                 continue
