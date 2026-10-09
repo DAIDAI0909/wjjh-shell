@@ -559,7 +559,15 @@ if ExtRichTextScroll and rawget(ExtRichTextScroll, '__wjjh_real') ~= true then
     getRichText = function() return __inner end,
     setBounceEnabled = function() end, setDirection = function() end,
     setSize = function() end, pushBackText = function() end,
-    pushBackNewLine = function() end, setDirectionEnabled = function() end }
+    pushBackNewLine = function() end, setDirectionEnabled = function() end,
+    setScrollBarEnabled = function() end }
+  -- gh179: 未列出的方法一律自动 no-op——把"我们桩缺方法"这整类崩掉的风险一次根治
+  -- （FightUI.lua:104 richPrint:setScrollBarEnabled 就是这么炸的）
+  setmetatable(__peer, {__index = function(t, k)
+    local f = function() return nil end
+    rawset(t, k, f)
+    return f
+  end})
   local __node = cc.Node:create()
   tolua.setpeer(__node, __peer)
   ExtRichTextScroll.create = function(...)
@@ -1283,6 +1291,8 @@ end
 if ccui ~= nil then
   local __wjjh_ccui_shims = {
     setMoveTouchCancelEnable = function(self, enable) return self end,
+    -- gh179: 战斗 UI 用的（FightUI.lua:63/65/104）
+    setScrollBarEnabled = function(self, enable) return self end,
   }
   local __wjjh_patched = 0
   for _, cls in ipairs({ ccui.Button, ccui.Widget, ccui.Layout, ccui.ScrollView, cc.Node }) do
