@@ -22,7 +22,13 @@ import urllib.request
 ENGINE = sys.argv[1]
 DEST = os.path.join(ENGINE, 'external', 'freetype2', 'prebuilt', 'ios', 'libfreetype.a')
 WORK = '/tmp/wjjh_freetype'
-HDR = os.path.join(ENGINE, 'external', 'freetype2', 'include', 'freetype', 'freetype.h')
+FT_ROOT = os.path.join(ENGINE, 'external', 'freetype2')
+# deps 布局: include/<platform>/freetype2/freetype.h（iOS=include/ios）；另有扁平布局兜底
+HDR_CANDIDATES = [
+    os.path.join(FT_ROOT, 'include', 'ios', 'freetype2', 'freetype.h'),
+    os.path.join(FT_ROOT, 'include', 'freetype', 'freetype.h'),
+    os.path.join(FT_ROOT, 'include', 'freetype2', 'freetype.h'),
+]
 
 # 模块聚合源（freetype 官方"每模块一编译单元"清单；不存在的自动跳过）
 MODULE_FILES = [
@@ -48,7 +54,22 @@ def run(cmd, **kw):
 
 
 def read_version():
-    txt = open(HDR, encoding='utf-8', errors='replace').read()
+    hdr = None
+    for cand in HDR_CANDIDATES:
+        if os.path.exists(cand):
+            hdr = cand
+            break
+    if hdr is None:
+        inc = os.path.join(FT_ROOT, 'include')
+        try:
+            print('[ft-src] 头文件候选都不存在, include 树: %r' % (
+                {d: os.listdir(os.path.join(inc, d))[:6]
+                 for d in os.listdir(inc)} if os.path.isdir(inc) else 'no include dir'))
+        except Exception as e:
+            print('[ft-src] 列 include 失败: %r' % e)
+        return None, None, None
+    print('[ft-src] 版本头:', hdr)
+    txt = open(hdr, encoding='utf-8', errors='replace').read()
     def get(name):
         m = re.search(r'#define\s+%s\s+(\d+)' % name, txt)
         return int(m.group(1)) if m else None
@@ -109,6 +130,15 @@ def main():
         r = run(['ar', 'crs', out] + objs)
         if r.returncode != 0:
             print('[ft-src] ar failed: %s' % (r.stderr or '')[-300:])
+            return 0
+        # 保险：新库必须含核心符号（FT_Init_FreeType 等），否则保留原库
+        nm = run(['nm', '-g', out])
+        syms = nm.stdout or ''
+        need = ['_FT_Init_FreeType', '_FT_New_Memory_Face', '_FT_Load_Glyph',
+                '_FT_Set_Char_Size', '_FT_Done_FreeType']
+        miss = [s for s in need if s not in syms]
+        if miss:
+            print('[ft-src] 新库缺符号 %r, 保留原库' % miss)
             return 0
         shutil.copyfile(out, DEST)
         print('[ft-src] freetype rebuilt from source -> %s (%d bytes, %d objs)'
