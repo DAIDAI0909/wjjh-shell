@@ -1091,7 +1091,47 @@ local function __wjjh_autoRoleTick()
             end
           end)
           __wjjhlog('WJJH_AUTOSTART: walk step done ok=' .. tostring(ok5) .. ' err=' .. __ts(err5))
-          __wjjh_autoRoleTick = function() end
+        end
+        -- gh174: 连走多间房（避开回访，最多 8 步，每 4 tick 一步）——把整关房间图摸出来，
+        -- 每步记录 房间名 + 出口 + 房内 NPC（getRoomRoleList），为找目标 NPC/战斗入口铺路。
+        if navTicks > 70 and navTicks <= 102 and (navTicks - 70) % 4 == 0 then
+          local ok6, err6 = pcall(function()
+            local CL = package.loaded['app.views.layer.ControllLayer']
+            local layer = CL and CL:getInstance() and CL:getInstance():getLayer('MapLayer')
+            if layer == nil or layer._currRoom == nil then return end
+            local room = layer._currRoom
+            local map = layer._currMap
+            __walkVisited = __walkVisited or {}
+            __walkVisited[room.id] = true
+            local roles = {}
+            if map ~= nil and map.getRoomRoleList ~= nil then
+              local rl = map:getRoomRoleList(room.id)
+              if type(rl) == 'table' then
+                for _, r in pairs(rl) do
+                  local nm = r
+                  if type(r) == 'table' then nm = r.name or r.roleName or (r.getRole and r:getRole() and r:getRole().name) end
+                  roles[#roles + 1] = __ts(nm)
+                end
+              end
+            end
+            __wjjhlog('WJJH_WALK: at ' .. __ts(room.id) .. ' [' .. __ts(room.name) .. '] npc=[' ..
+                      table.concat(roles, ', ') .. ']')
+            local lastDir, lastTo = nil, nil
+            if type(room.link) == 'table' then
+              for d, rid in pairs(room.link) do
+                if __walkVisited[rid] == nil then lastDir, lastTo = d, rid; break end
+              end
+            end
+            if lastTo == nil then
+              __wjjhlog('WJJH_WALK: all exits visited at ' .. __ts(room.id) .. ' -> stop')
+              return
+            end
+            layer:entryRoom(room.id, lastTo, lastDir)
+            __wjjhlog('WJJH_WALK: move ' .. __ts(room.id) .. ' -> ' .. __ts(lastTo))
+          end)
+          if not ok6 then
+            __wjjhlog('WJJH_WALK: step err=' .. __ts(err6))
+          end
         end
       end
     end
