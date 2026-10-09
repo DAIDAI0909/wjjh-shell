@@ -406,23 +406,44 @@ for _, n in ipairs({'YXSkeletonAnimationCache'}) do
 end
 
 -- ===== 骨骼桩 v2(真 cc.Node+peer 骨骼方法)=====
-local __mkSkel = function(...)
-  local sk = cc.Node:create()
+-- gh165: peer 方法集扩全——YXSkeletonAnimationEx.lua 会调用一批 YX 专有方法
+-- （setSlotColor/setAttachment/setStartTime/setEndTime/resetAnimState/setSpeedScale/
+--   setSlotsToSetupPose/setBonesToSetupPose/setBackwards）。
+-- ★真 spine 节点只挂"YX 专有补充"（extras），绝不遮 setAnimation/setTimeScale 等原生方法；
+--   哑节点才挂全套（全套=原生名+YX 名都变 no-op）。
+local __wjjh_skelPeerExtra = function()
   local events = { { name = 'Hurt', stringValue = 'chest', time = 0, floatValue = 0, intValue = 0 } }
-  tolua.setpeer(sk, {
+  return {
     getAnimEvents = function(self, animName) return events end,
     getAnimDuration = function(self, animName) return 0.1 end,
-    setAnimation = function(self, a, n, l) end,
-    addAnimation = function(self, ...) end,
-    setTrackTime = function(self, t) end,
-    setTimeScale = function(self, s) end,
-    setCompleteListener = function(self, cb) end,
-    setEventCallback = function(self, cb) end,
-    registerScriptHandler = function(self, cb) end,
-    getBoneSetupPosePosition = function(self, a, b) return {x = 0, y = 0} end,
-    updateWorldTransform = function(self) end,
-    setToSetupPose = function(self) end,
-  })
+    getBoneSetupPosePosition = function(self, a, b) return { x = 0, y = 0 } end,
+    setSlotsToSetupPose = function(self) end,
+    setBonesToSetupPose = function(self) end,
+    setSlotColor = function(self, slot, color) end,
+    setAttachment = function(self, slot, name) end,
+    resetAnimState = function(self, ...) end,
+    setBackwards = function(self, b) end,
+    setStartTime = function(self, t) end,
+    setEndTime = function(self, t) end,
+  }
+end
+local __wjjh_skelPeerFull = function()
+  local peer = __wjjh_skelPeerExtra()
+  peer.setAnimation = function(self, a, n, l) end
+  peer.addAnimation = function(self, ...) end
+  peer.setTrackTime = function(self, t) end
+  peer.setTimeScale = function(self, s) end
+  peer.setSpeedScale = function(self, s) end
+  peer.setCompleteListener = function(self, cb) end
+  peer.setEventCallback = function(self, cb) end
+  peer.registerScriptHandler = function(self, cb) end
+  peer.updateWorldTransform = function(self) end
+  peer.setToSetupPose = function(self) end
+  return peer
+end
+local __mkSkel = function(...)
+  local sk = cc.Node:create()
+  tolua.setpeer(sk, __wjjh_skelPeerFull())
   return sk
 end
 -- ===== gh164: YXSkeletonAnimation 真工厂（真实现优先,哑节点兜底）=====
@@ -430,21 +451,13 @@ end
 -- 旧链式桩的 createWithFile 恒返回 nil（__chain 未定义）——资产补全后流程走到
 -- HeadView:__initEffectAnimView → Resource:getSkAnim 就断言"动画初始化出错"。
 -- 现在：优先用 cocos 自带 sp.SkeletonAnimation（真渲染）；失败退哑节点（流程不断）。
+-- ===== gh164/166: 骨骼工厂（哑节点版）=====
+-- YXSkeletonAnimation/spine38 是安卓魔改引擎的 C++ 全局，官方 3.15.1 没有。
+-- gh164 曾试"真实现优先"用 cocos 自带 sp.SkeletonAnimation：**实测崩**
+-- （spAtlas_create→spAtlas_dispose，因为游戏 .atlas/.skel 是 spine 3.8 格式，
+--   官方 3.15.1 的运行时是 3.5/3.6，解析不了）→ gh166 回到哑节点。
+-- 真 3.8 渲染留作后续项（需要 3.8 运行时）。
 local __wjjh_mkSpine = function(skel, atlas, scale)
-  if _G.sp and sp.SkeletonAnimation then
-    local ok, node = pcall(function()
-      local c = sp.SkeletonAnimation.create
-      if type(c) == 'function' then return c(sp.SkeletonAnimation, skel, atlas, scale or 1) end
-      return nil
-    end)
-    if ok and node ~= nil then return node end
-    local ok2, node2 = pcall(function()
-      local c = sp.SkeletonAnimation.createWithBinaryFile
-      if type(c) == 'function' then return c(sp.SkeletonAnimation, skel, atlas, scale or 1) end
-      return nil
-    end)
-    if ok2 and node2 ~= nil then return node2 end
-  end
   return __mkSkel()
 end
 local __wjjhYXSkel = {}
