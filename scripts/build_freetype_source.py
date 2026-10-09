@@ -162,21 +162,24 @@ def main():
         if r.returncode != 0:
             print('[ft-src] ar failed: %s' % (r.stderr or '')[-300:])
             return 0
-        # 保险：新库必须含核心符号 + 各驱动/模块类（模块类指针正是老库崩的那批），
-        # 否则保留原库（宁可链接期报错，也不带病上线）
+        # 保险：核心全局符号必须全（缺了就直接当失败），模块类符号只做"告警级"统计
+        # （2.5.5 里 module class 多为 static，不同版本 nm 可见性不一，不能当硬条件误伤）
         nm = run(['nm', out])
         syms = nm.stdout or ''
         need_global = ['_FT_Init_FreeType', '_FT_New_Memory_Face', '_FT_Load_Glyph',
                        '_FT_Set_Char_Size', '_FT_Done_FreeType',
-                       '_FT_New_Face', '_FT_Get_Char_Index']
+                       '_FT_New_Face', '_FT_Get_Char_Index', '_FT_Open_Face']
         miss = [s for s in need_global if s not in syms]
-        # 模块类符号（本地符号也要有）：tt/cff/psnames/autofit/raster/smooth
-        mod_keys = ['tt_driver_class', 'cff_driver_class', 'psnames_module_class',
-                    'autofit_module_class', 'ft_raster1_renderer_class',
-                    'ft_smooth_renderer_class', 'sfnt_module_class']
-        miss += [k for k in mod_keys if k not in syms]
         if miss:
-            print('[ft-src] 新库缺符号 %r, 保留原库' % miss)
+            print('[ft-src] 新库缺全局符号 %r, 保留原库' % miss)
+            return 0
+        print('[ft-src] nm 全符号 %d 个; 关键名字出现情况: %r'
+              % (len(syms.splitlines()),
+                 {k: (k in syms) for k in ('tt_driver_class', 'cff_driver_class',
+                                           'psnames_module_class', 'autofit_module',
+                                           'ft_default_modules', 'sfnt_module_class')}))
+        if len(objs) < 30:
+            print('[ft-src] 成功编译的编译单元只有 %d 个（<30），可疑，保留原库' % len(objs))
             return 0
         shutil.copyfile(out, DEST)
         print('[ft-src] freetype rebuilt from source -> %s (%d bytes, %d objs)'
