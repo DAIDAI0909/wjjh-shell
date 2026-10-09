@@ -384,15 +384,22 @@ end
 for _, n in ipairs({'ExtRichText','ExtRichTextScroll','ExtPageView','YXShaderSprite','YXMotionStreak','YXEaseAction','YXHelper','encrypt','LogManager'}) do
   __stubClass(n)
 end
--- gh168: 链式桩的"万能返回体"——此前 __chain 全局从未定义，链式桩方法全返回 nil，
--- 游戏里 `X:getInstance():removeAnimCache(...)` 这类写法就崩（gh165 实测 MainLayer.lua:123
--- 的 cannot-resume-dead-coroutine 连锁错即出自 YXSkeletonAnimationCache:getInstance()=nil）。
--- 定义成"自返回"的宽松表：任何方法调用返回它自己（真值），任何字段访问返回函数。
-__chain = setmetatable({}, {__index = function(t, k)
-  local f = function() return t end
-  rawset(t, k, f)
-  return f
-end})
+-- gh168/181: 链式桩的"万能返回体"——此前 __chain 未定义，链式桩方法全返回 nil，
+-- 游戏里 `X:getInstance():removeAnimCache(...)` 这类写法就崩（MainLayer.lua:123）。
+-- gh181: 实测"字段访问返回函数"仍会崩（LifeCycleSupport.lua:35 把字段当表索引：
+-- `_lifeCycleEventSubject` 是 function 值 → attempt to index（发生在切磋战斗收尾
+-- FightLayer:startMapFight）。现在每个字段/方法都返回**自返回的宽松表**：
+-- 既能继续索引、又能被调用、又恒为真值。
+local __wjjh_chain_mt
+__wjjh_chain_mt = {
+  __index = function(t, k)
+    local v = setmetatable({}, __wjjh_chain_mt)
+    rawset(t, k, v)
+    return v
+  end,
+  __call = function(self, ...) return self end,
+}
+__chain = setmetatable({}, __wjjh_chain_mt)
 local __stubClassChain = function(name)
   if _G[name] then return _G[name] end
   local t = {}
