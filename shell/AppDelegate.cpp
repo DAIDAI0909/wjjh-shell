@@ -929,6 +929,36 @@ local function __wjjh_autoStartTick()
   end
 end
 
+-- ===== gh156: CI 自动建号（数据层，等价于点「男」+「武学世家」）=====
+-- 走到建号流程（游戏 require 了 app.views.layer.CreateRoleLayer）后，直接调它自己的
+-- createRoleAndEntryGame → HTTP createRole → 上传存档 → ControllLayer:startGame() → 主界面。
+-- 数值/技能照抄 CreateRoleLayer:show() 的 func1（武学世家）；sexFunc 照抄 Dialog4UI 男分支。
+-- 真机包 __WJJH_AUTOSTART=false，整条不跑。
+local __wjjh_autoRoleFired = false
+local function __wjjh_autoRoleTick()
+  if not __WJJH_AUTOSTART or __wjjh_autoRoleFired then return end
+  if __wjjh_autoStage < 2 then return end          -- 等「开始游戏」点过
+  local M = package.loaded['app.views.layer.CreateRoleLayer']
+  if M == nil then return end                      -- 等游戏自己 require（=已到建号流程）
+  __wjjh_autoRoleFired = true
+  local ok, err = pcall(function()
+    local inst = M:getInstance()
+    local sexFunc = function()
+      User:setRoleAttr('name', '无名小辈')
+      User:setRoleAttr('sex', '男')
+      User:setRoleAttr('age', 14)
+    end
+    inst:createRoleAndEntryGame(
+      24, 22, 18, 16, 19, 21,
+      { jibenquanjiao = { id = 'jibenquanjiao', exp = 121 },
+        jibenzhaojia  = { id = 'jibenzhaojia',  exp = 121 },
+        jibenqinggong = { id = 'jibenqinggong', exp = 121 },
+        jibenneigong  = { id = 'jibenneigong',  exp = 121 } },
+      nil, sexFunc)
+  end)
+  __wjjhlog('WJJH_AUTOSTART: create role fired ok=' .. tostring(ok) .. ' err=' .. __ts(err))
+end
+
 local function __wjjh_tryHook()
   __wjjh_pollN = (__wjjh_pollN or 0) + 1
   for name, _ in pairs(__wjjh_targets) do
@@ -944,6 +974,7 @@ local function __wjjh_tryHook()
     if not ok then __wjjhlog('WJJH_CEN err=' .. __ts(e)) end
   end
   __wjjh_autoStartTick()
+  __wjjh_autoRoleTick()
 end
 cc.Director:getInstance():getScheduler():scheduleScriptFunc(__wjjh_tryHook, 0.5, false)
 
