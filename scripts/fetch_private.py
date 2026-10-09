@@ -56,7 +56,10 @@ def main():
     fetch('res_ui.zip', 'res_ui_private.zip')
     # gh157: res 缺口资产（Anim/Font/Music/OtherImage/...）—— 从安卓 danji 包补齐；
     # 之前只搬了 res/Image，导致 getSkAnim(Anim/*.json) 断言失败、字体/音频全缺。
-    fetch('res_full.zip', 'res_full_private.zip')
+    # gh167: 迭代期用精简核心包 res_core.zip（228MB；去掉了战斗骨骼 gongfu*/specialEffect/
+    # enterVictory/Cover/ep2/FightEffect 与 Music——下载省一半）。出正式包或要战斗动画时，
+    # 把下面这行换回 fetch('res_full.zip', ...)（502MB，服务器上仍在）。
+    fetch('res_core.zip', 'res_full_private.zip')
     fetch('res_root.zip', 'res_root_private.zip')   # res 根目录图片（hpframe 血条等）
 
     if os.path.exists('py_ios_server'):
