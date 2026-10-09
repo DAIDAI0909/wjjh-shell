@@ -1194,10 +1194,10 @@ local function __wjjh_autoRoleTick()
           __wjjhlog('WJJH_NPC: done ok=' .. tostring(ok7) .. ' err=' .. __ts(err7))
           __wjjh_autoRoleTick = function() end
         end
-        -- gh174: 连走多间房（避开回访，每 4 tick 一步）——把整关房间图摸出来，
-        -- 每步记录 房间名 + 出口 + 房内 NPC；gh175 起只走进 enterable 的房间。
+        -- gh180: 目标驱动的探索——每到一间房：逐 NPC 算动作表（createMapRoleFuncList），
+        -- 发现「切磋/挑战/动手/比试/攻击/战斗」直接触发（走 observe 层路径），否则继续走。
         if navTicks > 70 and navTicks <= 86 and (navTicks - 70) % 4 == 0 then
-          local ok6, err6 = pcall(function()
+          local okG, errG = pcall(function()
             local CL = package.loaded['app.views.layer.ControllLayer']
             local layer = CL and CL:getInstance() and CL:getInstance():getLayer('MapLayer')
             if layer == nil or layer._currRoom == nil then return end
@@ -1205,48 +1205,59 @@ local function __wjjh_autoRoleTick()
             local map = layer._currMap
             __walkVisited = __walkVisited or {}
             __walkVisited[room.id] = true
-            local roles = {}
-            if map ~= nil and map.getRoomRoleList ~= nil then
-              local rl = map:getRoomRoleList(room.id)
-              if type(rl) == 'table' then
-                for _, r in pairs(rl) do
-                  local nm = r
-                  if type(r) == 'table' then nm = r.name or r.roleName or (r.getRole and r:getRole() and r:getRole().name) end
-                  roles[#roles + 1] = __ts(nm)
-                end
-              end
-            end
-            __wjjhlog('WJJH_WALK: at ' .. __ts(room.id) .. ' [' .. __ts(room.name) .. '] npc=[' ..
-                      table.concat(roles, ', ') .. ']')
-            local lastDir, lastTo = nil, nil
-            local skipped = {}
-            if type(room.link) == 'table' then
-              for d, rid in pairs(room.link) do
-                if __walkVisited[rid] == nil then
-                  -- gh175: 只挑可进入的房间（enterable ~= 1 会被 checkCanEnterNewMapRoom 拦下）
-                  local attr = nil
-                  if map ~= nil and map.getRoomAttr ~= nil then attr = map:getRoomAttr(rid) end
-                  local ent = attr and attr.enterable
-                  if ent == 1 or ent == true or ent == nil then
-                    lastDir, lastTo = d, rid; break
-                  else
-                    skipped[#skipped + 1] = tostring(rid) .. '(enterable=' .. __ts(ent) .. ')'
+            if __wjjh_fightFired then return end
+            -- 逐 NPC 找可触发的战斗动作
+            local okModel, ROM = pcall(require, 'app.models.role.RoleObserveModel')
+            local ids = map and map.getRoomRoleList and map:getRoomRoleList(room.id) or {}
+            if okModel and ROM ~= nil and ROM.createMapRoleFuncList ~= nil then
+              for i, rid in ipairs(ids or {}) do
+                local role = map.getRole and map:getRole(rid)
+                if role ~= nil and role.type == 'role' then
+                  local nm = role.name or (role.getName and role:getName()) or role.id
+                  local okL, fl = pcall(ROM.createMapRoleFuncList, ROM, role)
+                  local names = {}
+                  if okL and type(fl) == 'table' then
+                    for j, v in ipairs(fl) do names[#names + 1] = tostring(v.btnName) end
+                  end
+                  __wjjhlog('WJJH_GOAL: at ' .. __ts(room.id) .. ' npc ' .. __ts(nm) ..
+                            ' actions [' .. table.concat(names, ', ') .. '] ok=' .. tostring(okL))
+                  if okL and type(fl) == 'table' then
+                    for j, v in ipairs(fl) do
+                      local an = tostring(v.btnName or '')
+                      if an:find('切磋') or an:find('挑战') or an:find('动手')
+                         or an:find('比试') or an:find('攻击') or an:find('战斗') then
+                        __wjjh_fightFired = true
+                        local okF, errF = pcall(v.btnFunc)
+                        __wjjhlog('WJJH_GOAL: FIRED [' .. an .. '] vs ' .. __ts(nm) ..
+                                  ' ok=' .. tostring(okF) .. ' err=' .. __ts(errF))
+                        return
+                      end
+                    end
                   end
                 end
               end
             end
-            if #skipped > 0 then
-              __wjjhlog('WJJH_WALK: locked exits: ' .. table.concat(skipped, ', '))
+            -- 没有可打的目标：继续走（优先未访问+可进入；否则退而求其次走任意可进入的未走出口）
+            local lastDir, lastTo = nil, nil
+            if type(room.link) == 'table' then
+              for d, rid in pairs(room.link) do
+                local attr = nil
+                if map ~= nil and map.getRoomAttr ~= nil then attr = map:getRoomAttr(rid) end
+                local ent = attr and attr.enterable
+                if (ent == 1 or ent == true or ent == nil) and __walkVisited[rid] == nil then
+                  lastDir, lastTo = d, rid; break
+                end
+              end
             end
             if lastTo == nil then
-              __wjjhlog('WJJH_WALK: no open unvisited exit at ' .. __ts(room.id) .. ' -> stop')
+              __wjjhlog('WJJH_GOAL: no new room from ' .. __ts(room.id) .. ' -> hold')
               return
             end
             layer:entryRoom(room.id, lastTo, lastDir)
-            __wjjhlog('WJJH_WALK: move ' .. __ts(room.id) .. ' -> ' .. __ts(lastTo))
+            __wjjhlog('WJJH_GOAL: walk ' .. __ts(room.id) .. ' -> ' .. __ts(lastTo))
           end)
-          if not ok6 then
-            __wjjhlog('WJJH_WALK: step err=' .. __ts(err6))
+          if not okG then
+            __wjjhlog('WJJH_GOAL: step err=' .. __ts(errG))
           end
         end
       end
