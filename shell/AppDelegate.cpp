@@ -1117,13 +1117,27 @@ local function __wjjh_autoRoleTick()
             __wjjhlog('WJJH_WALK: at ' .. __ts(room.id) .. ' [' .. __ts(room.name) .. '] npc=[' ..
                       table.concat(roles, ', ') .. ']')
             local lastDir, lastTo = nil, nil
+            local skipped = {}
             if type(room.link) == 'table' then
               for d, rid in pairs(room.link) do
-                if __walkVisited[rid] == nil then lastDir, lastTo = d, rid; break end
+                if __walkVisited[rid] == nil then
+                  -- gh175: 只挑可进入的房间（enterable ~= 1 会被 checkCanEnterNewMapRoom 拦下）
+                  local attr = nil
+                  if map ~= nil and map.getRoomAttr ~= nil then attr = map:getRoomAttr(rid) end
+                  local ent = attr and attr.enterable
+                  if ent == 1 or ent == true or ent == nil then
+                    lastDir, lastTo = d, rid; break
+                  else
+                    skipped[#skipped + 1] = tostring(rid) .. '(enterable=' .. __ts(ent) .. ')'
+                  end
+                end
               end
             end
+            if #skipped > 0 then
+              __wjjhlog('WJJH_WALK: locked exits: ' .. table.concat(skipped, ', '))
+            end
             if lastTo == nil then
-              __wjjhlog('WJJH_WALK: all exits visited at ' .. __ts(room.id) .. ' -> stop')
+              __wjjhlog('WJJH_WALK: no open unvisited exit at ' .. __ts(room.id) .. ' -> stop')
               return
             end
             layer:entryRoom(room.id, lastTo, lastDir)
