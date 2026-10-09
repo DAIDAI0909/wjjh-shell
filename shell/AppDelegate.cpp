@@ -1122,6 +1122,34 @@ local function __wjjh_autoRoleTick()
                 if okP then PC = mod end
               end
               local tn = target.name or (target.getName and target:getName()) or target.id
+              -- gh178: 观察层动作表挂钩（打印动作名 + 自动触发挑战类动作）
+              local okR, ROL = pcall(require, 'app.views.layer.RoleLayer.RoleObserveLayer')
+              if okR and ROL ~= nil and type(ROL.showBtns) == 'function' and not ROL.__wjjh_btns_hooked then
+                ROL.__wjjh_btns_hooked = true
+                local origShow = ROL.showBtns
+                ROL.showBtns = function(self, funcList)
+                  local names = {}
+                  for i, v in ipairs(funcList or {}) do
+                    names[#names + 1] = i .. ':' .. __ts(v.btnName)
+                  end
+                  __wjjhlog('WJJH_NPC: btns [' .. table.concat(names, ', ') .. ']')
+                  if not __wjjh_fightFired then
+                    for i, v in ipairs(funcList or {}) do
+                      local nm = tostring(v.btnName or '')
+                      if nm:find('挑战') or nm:find('切磋') or nm:find('动手') or nm:find('比试')
+                         or nm:find('攻击') or nm:find('战斗') then
+                        __wjjh_fightFired = true
+                        local okF, errF = pcall(v.btnFunc)
+                        __wjjhlog('WJJH_NPC: FIRED action [' .. nm .. '] ok=' ..
+                                  tostring(okF) .. ' err=' .. __ts(errF))
+                        break
+                      end
+                    end
+                  end
+                  return origShow(self, funcList)
+                end
+                __wjjhlog('WJJH_NPC: showBtns hooked')
+              end
               if PC ~= nil and PC.showLayer ~= nil then
                 PC:showLayer('RoleObserveLayer', function(obs)
                   obs:showLayer(target, 'MAP')
