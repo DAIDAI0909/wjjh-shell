@@ -1033,17 +1033,29 @@ local function __wjjh_autoRoleTick()
       local navTicks = 0
       __wjjh_autoRoleTick = function()
         navTicks = navTicks + 1
-        if navTicks ~= 16 then return end
-        local ok3, err3 = pcall(function()
-          local CL = package.loaded['app.views.layer.ControllLayer']
-          if CL ~= nil then
-            local cl = CL:getInstance()
-            if cl ~= nil and cl.pushLayer ~= nil then
-              cl:pushLayer('SelectMapLayer')
+        if navTicks == 16 then
+          local ok3, err3 = pcall(function()
+            local CL = package.loaded['app.views.layer.ControllLayer']
+            if CL ~= nil then
+              local cl = CL:getInstance()
+              if cl ~= nil and cl.pushLayer ~= nil then
+                cl:pushLayer('SelectMapLayer')
+              end
             end
-          end
-        end)
-        __wjjhlog('WJJH_AUTOSTART: push SelectMapLayer ok=' .. tostring(ok3) .. ' err=' .. __ts(err3))
+          end)
+          __wjjhlog('WJJH_AUTOSTART: push SelectMapLayer ok=' .. tostring(ok3) .. ' err=' .. __ts(err3))
+          return
+        end
+        -- gh170: 进关卡——「进入关卡」按钮的处理就是 SelectMapModel:entryMap()（纯数据层）
+        if navTicks == 44 then
+          local ok4, err4 = pcall(function()
+            local M = package.loaded['app.models.map.SelectMapModel']
+            if M == nil then M = require('app.models.map.SelectMapModel') end
+            if M ~= nil and M.entryMap ~= nil then M:entryMap() end
+          end)
+          __wjjhlog('WJJH_AUTOSTART: entryMap fired ok=' .. tostring(ok4) .. ' err=' .. __ts(err4))
+          __wjjh_autoRoleTick = function() end
+        end
       end
     end
   end
