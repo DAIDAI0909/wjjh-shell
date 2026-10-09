@@ -31,6 +31,7 @@ HDR_CANDIDATES = [
 ]
 
 # 模块聚合源（freetype 官方"每模块一编译单元"清单；不存在的自动跳过）
+# 注：2.5.5 的 CID 聚合文件叫 type1cid.c（不是 cid.c）；cache 模块也要带上。
 MODULE_FILES = [
     'src/base/ftsystem.c', 'src/base/ftinit.c', 'src/base/ftdebug.c',
     'src/base/ftbase.c', 'src/base/ftbbox.c', 'src/base/ftglyph.c',
@@ -39,13 +40,13 @@ MODULE_FILES = [
     'src/base/ftmm.c', 'src/base/ftotval.c', 'src/base/ftpatent.c',
     'src/base/ftpfr.c', 'src/base/fttype1.c', 'src/base/ftwinfnt.c',
     'src/base/ftbdf.c', 'src/base/ftcid.c', 'src/base/fthash.c',
-    'src/autofit/autofit.c', 'src/bdf/bdf.c', 'src/cff/cff.c', 'src/cid/cid.c',
-    'src/pcf/pcf.c', 'src/pfr/pfr.c', 'src/psaux/psaux.c',
-    'src/pshinter/pshinter.c', 'src/psnames/psnames.c', 'src/raster/raster.c',
-    'src/sdf/sdf.c', 'src/sfnt/sfnt.c', 'src/smooth/smooth.c',
-    'src/truetype/truetype.c', 'src/type1/type1.c', 'src/type42/type42.c',
-    'src/winfonts/winfnt.c', 'src/gzip/ftgzip.c', 'src/lzw/ftlzw.c',
-    'src/bzip2/ftbzip2.c',
+    'src/autofit/autofit.c', 'src/bdf/bdf.c', 'src/cache/ftcache.c',
+    'src/cff/cff.c', 'src/cid/type1cid.c', 'src/pcf/pcf.c', 'src/pfr/pfr.c',
+    'src/psaux/psaux.c', 'src/pshinter/pshinter.c', 'src/psnames/psnames.c',
+    'src/raster/raster.c', 'src/sdf/sdf.c', 'src/sfnt/sfnt.c',
+    'src/smooth/smooth.c', 'src/truetype/truetype.c', 'src/type1/type1.c',
+    'src/type42/type42.c', 'src/winfonts/winfnt.c', 'src/gzip/ftgzip.c',
+    'src/lzw/ftlzw.c', 'src/bzip2/ftbzip2.c',
 ]
 
 
@@ -134,6 +135,7 @@ def main():
         objs = []
         cfiles = [f for f in MODULE_FILES if os.path.exists(os.path.join(root, f))]
         print('[ft-src] 编译 %d 个模块编译单元' % len(cfiles))
+        skipped = []
         for cf in cfiles:
             src = os.path.join(root, cf)
             obj = os.path.join(WORK, cf.replace('/', '_')[:-2] + '.o')
@@ -144,11 +146,15 @@ def main():
                      '-Wno-deprecated-declarations', '-Wno-unused-function',
                      '-Wno-incompatible-pointer-types', '-Wno-int-conversion'])
             if r.returncode != 0:
+                # 单文件失败不再整车放弃：跳过并记录（末尾 nm 校验会把关）
                 err = (r.stderr or '') + (r.stdout or '')
-                print('[ft-src] compile %s failed (head): %s' % (cf, err[:900]))
-                print('[ft-src] keep original freetype')
-                return 0
+                first = err.strip().splitlines()[:2]
+                print('[ft-src] compile %s FAILED, skip: %s' % (cf, ' / '.join(first)[:300]))
+                skipped.append(cf)
+                continue
             objs.append(obj)
+        if skipped:
+            print('[ft-src] 跳过 %d 个编译单元: %r' % (len(skipped), skipped))
         out = os.path.join(WORK, 'libfreetype_new.a')
         if os.path.exists(out):
             os.remove(out)
@@ -156,12 +162,19 @@ def main():
         if r.returncode != 0:
             print('[ft-src] ar failed: %s' % (r.stderr or '')[-300:])
             return 0
-        # 保险：新库必须含核心符号（FT_Init_FreeType 等），否则保留原库
-        nm = run(['nm', '-g', out])
+        # 保险：新库必须含核心符号 + 各驱动/模块类（模块类指针正是老库崩的那批），
+        # 否则保留原库（宁可链接期报错，也不带病上线）
+        nm = run(['nm', out])
         syms = nm.stdout or ''
-        need = ['_FT_Init_FreeType', '_FT_New_Memory_Face', '_FT_Load_Glyph',
-                '_FT_Set_Char_Size', '_FT_Done_FreeType']
-        miss = [s for s in need if s not in syms]
+        need_global = ['_FT_Init_FreeType', '_FT_New_Memory_Face', '_FT_Load_Glyph',
+                       '_FT_Set_Char_Size', '_FT_Done_FreeType',
+                       '_FT_New_Face', '_FT_Get_Char_Index']
+        miss = [s for s in need_global if s not in syms]
+        # 模块类符号（本地符号也要有）：tt/cff/psnames/autofit/raster/smooth
+        mod_keys = ['tt_driver_class', 'cff_driver_class', 'psnames_module_class',
+                    'autofit_module_class', 'ft_raster1_renderer_class',
+                    'ft_smooth_renderer_class', 'sfnt_module_class']
+        miss += [k for k in mod_keys if k not in syms]
         if miss:
             print('[ft-src] 新库缺符号 %r, 保留原库' % miss)
             return 0
