@@ -1054,6 +1054,42 @@ local function __wjjh_autoRoleTick()
             if M ~= nil and M.entryMap ~= nil then M:entryMap() end
           end)
           __wjjhlog('WJJH_AUTOSTART: entryMap fired ok=' .. tostring(ok4) .. ' err=' .. __ts(err4))
+          return
+        end
+        -- gh172: 进图后转储房间出口图 + 自动走一步（房间 UI 出口按钮就是
+        -- MapLayer:entryRoom(fromRoomId, toRoomId, direction)；entryRoomByDirection 已被上游禁用）
+        if navTicks == 130 then
+          local ok5, err5 = pcall(function()
+            local CL = package.loaded['app.views.layer.ControllLayer']
+            local layer = CL and CL:getInstance() and CL:getInstance():getLayer('MapLayer')
+            if layer == nil then
+              __wjjhlog('WJJH_AUTOSTART: MapLayer nil, skip walk')
+              return
+            end
+            local room = layer._currRoom
+            local map = layer._currMap
+            if room == nil then
+              __wjjhlog('WJJH_AUTOSTART: _currRoom nil, skip walk')
+              return
+            end
+            __wjjhlog('WJJH_AUTOSTART: room id=' .. __ts(room.id) .. ' name=' ..
+                      __ts(room.name) .. ' mapId=' .. __ts(map and map.id))
+            local firstDir, firstTo = nil, nil
+            if type(room.link) == 'table' then
+              local names = {}
+              for d, rid in pairs(room.link) do
+                names[#names + 1] = tostring(d) .. '->' .. tostring(rid) .. '(' ..
+                                    __ts(map and map.getRoomNameById and map:getRoomNameById(rid)) .. ')'
+                if firstDir == nil then firstDir, firstTo = d, rid end
+              end
+              __wjjhlog('WJJH_AUTOSTART: exits [' .. table.concat(names, ', ') .. ']')
+            end
+            if firstTo ~= nil and layer.entryRoom ~= nil then
+              layer:entryRoom(room.id, firstTo, firstDir)
+              __wjjhlog('WJJH_AUTOSTART: walked room ' .. __ts(room.id) .. ' -> ' .. __ts(firstTo))
+            end
+          end)
+          __wjjhlog('WJJH_AUTOSTART: walk step done ok=' .. tostring(ok5) .. ' err=' .. __ts(err5))
           __wjjh_autoRoleTick = function() end
         end
       end
