@@ -1028,7 +1028,23 @@ local function __wjjh_autoRoleTick()
         end
       end)
       __wjjhlog('WJJH_AUTOSTART: hide create-role dialog ok=' .. tostring(ok2) .. ' err=' .. __ts(err2))
-      __wjjh_autoRoleTick = function() end
+      -- gh169: 主界面探路——再等 ~8s，把「江湖」(SelectMapLayer) 层推出来，
+      -- 看选地图/进场景链路需要什么（纯探索，CI 门控；真机包不跑）。
+      local navTicks = 0
+      __wjjh_autoRoleTick = function()
+        navTicks = navTicks + 1
+        if navTicks ~= 16 then return end
+        local ok3, err3 = pcall(function()
+          local CL = package.loaded['app.views.layer.ControllLayer']
+          if CL ~= nil then
+            local cl = CL:getInstance()
+            if cl ~= nil and cl.pushLayer ~= nil then
+              cl:pushLayer('SelectMapLayer')
+            end
+          end
+        end)
+        __wjjhlog('WJJH_AUTOSTART: push SelectMapLayer ok=' .. tostring(ok3) .. ' err=' .. __ts(err3))
+      end
     end
   end
 end
