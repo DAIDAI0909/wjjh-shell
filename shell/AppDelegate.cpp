@@ -470,9 +470,17 @@ local __wjjh_skelPeerFull = function()
   peer.setToSetupPose = function(self) end
   return peer
 end
+-- gh185: 骨骼 peer 也加"未知方法自动 no-op"兜底（FightLayer:2138 调 playAnim 就是缺它）
+local function __wjjh_peer_of(peerTbl)
+  return setmetatable(peerTbl, {__index = function(tt, k)
+    local f = function() return nil end
+    rawset(tt, k, f)
+    return f
+  end})
+end
 local __mkSkel = function(...)
   local sk = cc.Node:create()
-  tolua.setpeer(sk, __wjjh_skelPeerFull())
+  tolua.setpeer(sk, __wjjh_peer_of(__wjjh_skelPeerFull()))
   return sk
 end
 -- ===== gh164/166: 骨骼工厂（哑节点版）=====
