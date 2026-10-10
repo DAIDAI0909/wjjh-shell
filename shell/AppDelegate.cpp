@@ -1139,8 +1139,17 @@ local function __wjjh_autoRoleTick()
                 __wjjh_goalWait = 0
               end
               __wjjh_goalWait = __wjjh_goalWait + 1
-              if __wjjh_goalWait % 8 == 1 then
-                __wjjhlog('WJJH_GOAL: waiting for map layer (t=' .. __wjjh_goalWait .. ')')
+              if __wjjh_goalWait % 4 == 1 then
+                local mc = _G.MainControllLayer
+                local mcOK = (mc ~= nil)
+                local mcRoom = 'n/a'
+                if mcOK and mc.getLayer ~= nil then
+                  local okL2, l2 = pcall(function() return mc:getLayer('MapLayer') end)
+                  mcRoom = tostring(okL2) .. ':' .. tostring(l2) ..
+                           ':' .. tostring(l2 and l2._currRoom)
+                end
+                __wjjhlog('WJJH_GOAL: waiting(t=' .. __wjjh_goalWait .. ') layer=' .. tostring(layer) ..
+                          ' MainCL=' .. tostring(mcOK) .. ' mcGetLayer=' .. mcRoom)
               end
               return
             end
