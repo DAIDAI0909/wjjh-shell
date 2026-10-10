@@ -432,7 +432,10 @@ end
 -- (gh191 实锤 AnimFightLayer:1227 rolePopNumber 每回合炸一次 → 战斗卡在首回合)。
 -- 修=create 直接透传第一个参数(真 action),放弃缓动只保流程;Easing 枚举常量(安卓引擎注册的
 -- 全局数字)一并补齐,防别处 nil 引用。
-YXEaseAction.create = function(action, easing) return action end
+-- ★gh193: gh192 的透传签名写错了——游戏是冒号调用 YXEaseAction:create(action, easing),
+-- 第一个参数是 self(类表),gh192 返回的其实是 self → runAction(类表) 仍 invalid arguments
+-- (gh192 实锤只剩 2 次报错但同点)。正确签名=function(_self, action, easing)。
+YXEaseAction.create = function(_self, action, easing) return action end
 for _, c in ipairs({'Sine_EaseIn','Sine_EaseInOut','Sine_EaseOut','Quad_EaseIn','Quad_EaseInOut','Quad_EaseOut','Cubic_EaseIn','Cubic_EaseInOut','Cubic_EaseOut','Quart_EaseIn','Quart_EaseInOut','Quart_EaseOut','Quint_EaseIn','Quint_EaseInOut','Quint_EaseOut','Expo_EaseIn','Expo_EaseInOut','Expo_EaseOut','Circ_EaseIn','Circ_EaseInOut','Circ_EaseOut','Back_EaseIn','Back_EaseInOut','Back_EaseOut','Bounce_EaseIn','Bounce_EaseInOut','Bounce_EaseOut','Elastic_EaseIn','Elastic_EaseInOut','Elastic_EaseOut'}) do
   if _G[c] == nil then _G[c] = 1 end
 end
