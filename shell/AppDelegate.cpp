@@ -1224,11 +1224,20 @@ local function __wjjh_autoRoleTick()
         end
         -- gh180: 目标驱动的探索——每到一间房：逐 NPC 算动作表（createMapRoleFuncList），
         -- 发现「切磋/挑战/动手/比试/攻击/战斗」直接触发（走 observe 层路径），否则继续走。
-        if navTicks > 70 and navTicks <= 86 and (navTicks - 70) % 4 == 0 then
+        if navTicks > 60 and navTicks <= 110 and navTicks % 4 == 0 and not __wjjh_fightFired then
           local okG, errG = pcall(function()
             local CL = package.loaded['app.views.layer.ControllLayer']
             local layer = CL and CL:getInstance() and CL:getInstance():getLayer('MapLayer')
-            if layer == nil or layer._currRoom == nil then return end
+            if layer == nil or layer._currRoom == nil then
+              if __wjjh_goalWait == nil then
+                __wjjh_goalWait = 0
+              end
+              __wjjh_goalWait = __wjjh_goalWait + 1
+              if __wjjh_goalWait % 8 == 1 then
+                __wjjhlog('WJJH_GOAL: waiting for map layer (t=' .. __wjjh_goalWait .. ')')
+              end
+              return
+            end
             local room = layer._currRoom
             local map = layer._currMap
             __walkVisited = __walkVisited or {}
