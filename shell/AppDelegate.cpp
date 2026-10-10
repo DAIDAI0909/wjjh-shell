@@ -389,6 +389,20 @@ if debug and debug.setmetatable then
   })
   __wjjhlog('WJJH_BOOT: function-metatable indexable=' .. tostring(okFm))
 end
+-- gh191: 桩 peer 的"结构方法"白名单——LifeCycleSupport.resume 对树上每个节点
+-- pairs(self:getChildren())（gh190 实锤堆栈：stub 节点 getChildren 命中 peer 自动
+-- no-op 返回 nil → TableProxy:65 rawget(nil) 炸 → MainLayer push 链断 → 地图永不
+-- 就绪）。cocos tolua 的 class_index_event 对 uservalue(peer) 用 lua_gettable：
+-- peer 的 mt __index 先于原生命中且直接返回，所以必须让白名单先于自动 no-op。
+local __wjjh_structMethods = {
+  getChildren = function() return {} end,
+  getChildrenCount = function() return 0 end,
+}
+local __wjjh_structOr = function(k, fallback)
+  local m = __wjjh_structMethods[k]
+  if m ~= nil then return m end
+  return fallback
+end
 local __stubClass = function(name)
   if _G[name] then return _G[name] end
   local t = {}
@@ -396,7 +410,7 @@ local __stubClass = function(name)
     local node = cc.Node:create()
     if tolua and tolua.setpeer then
       local peer = {}
-      setmetatable(peer, {__index = function(tt, k) local f = function() return nil end; rawset(tt, k, f); return f end})
+      setmetatable(peer, {__index = function(tt, k) local f = __wjjh_structOr(k, function() return nil end); rawset(tt, k, f); return f end})
       tolua.setpeer(node, peer)
       for k, v in pairs(t) do if k ~= 'create' then peer[k] = v end end
     end
@@ -420,7 +434,7 @@ local __stubClassChain = function(name)
     local node = cc.Node:create()
     if tolua and tolua.setpeer then
       local peer = {}
-      setmetatable(peer, {__index = function(tt, k) local f = function() return __chain end; rawset(tt, k, f); return f end})
+      setmetatable(peer, {__index = function(tt, k) local f = __wjjh_structOr(k, function() return __chain end); rawset(tt, k, f); return f end})
       tolua.setpeer(node, peer)
       for k, v in pairs(t) do if k ~= 'create' then peer[k] = v end end
     end
@@ -473,7 +487,7 @@ end
 -- gh185: 骨骼 peer 也加"未知方法自动 no-op"兜底（FightLayer:2138 调 playAnim 就是缺它）
 local function __wjjh_peer_of(peerTbl)
   return setmetatable(peerTbl, {__index = function(tt, k)
-    local f = function() return nil end
+    local f = __wjjh_structOr(k, function() return nil end)
     rawset(tt, k, f)
     return f
   end})
@@ -1101,7 +1115,14 @@ local function __wjjh_autoRoleTick()
             local layer = CL and CL:getInstance() and CL:getInstance():getLayer('MapLayer')
             if layer == nil then
               __wjjhlog('WJJH_AUTOSTART: MapLayer nil, skip walk')
-              -- gh190: 层在但没房间时，探测 _currMap 并尝试主动催熟（setMap 一次即可）
+              return
+            end
+            local room = layer._currRoom
+            local map = layer._currMap
+            if room == nil then
+              __wjjhlog('WJJH_AUTOSTART: _currRoom nil, skip walk')
+              -- gh191: gh190 的 nudge 写错了分支（放进了 layer==nil，永远不跑还索引 nil self）。
+              -- 真正意图=层在但没房间：探测 _currMap 并主动催熟一次（setMap 只催一次）。
               if not __wjjh_mapNudged then
                 __wjjh_mapNudged = true
                 local mc = layer._currMap
@@ -1113,12 +1134,6 @@ local function __wjjh_autoRoleTick()
                             ' currRoom=' .. __ts(layer._currRoom))
                 end
               end
-              return
-            end
-            local room = layer._currRoom
-            local map = layer._currMap
-            if room == nil then
-              __wjjhlog('WJJH_AUTOSTART: _currRoom nil, skip walk')
               return
             end
             __wjjhlog('WJJH_AUTOSTART: room id=' .. __ts(room.id) .. ' name=' ..
