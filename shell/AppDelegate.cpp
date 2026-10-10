@@ -380,6 +380,15 @@ __wjjh_chain_mt = {
   __call = function(self, ...) return self end,
 }
 __chain = setmetatable({}, __wjjh_chain_mt)
+-- gh183: 关键平衡——游戏里同一字段可能被当"函数"（type 检查 ✓）也可能被"当表索引"
+-- （LifeCycleSupport:35 实测）。Lua 5.1 函数类型共享一张元表：给它加 __index，
+-- 于是"函数被索引"不再报错、而是拿到宽松表；同时 type(x) 仍是 function ✓。
+if debug and debug.setmetatable then
+  local okFm = pcall(debug.setmetatable, function() end, {
+    __index = function(f, k) return __chain end,
+  })
+  __wjjhlog('WJJH_BOOT: function-metatable indexable=' .. tostring(okFm))
+end
 local __stubClass = function(name)
   if _G[name] then return _G[name] end
   local t = {}
@@ -393,8 +402,11 @@ local __stubClass = function(name)
     end
     return node
   end
-  setmetatable(t, {__index = function(tt, k) rawset(tt, k, __chain); return __chain end,
-                  __call = function(self2, ...) return __chain end})
+  setmetatable(t, {__index = function(tt, k)
+    local f = function() return __chain end
+    rawset(tt, k, f)
+    return f
+  end})
   _G[name] = t
   return t
 end
@@ -408,13 +420,13 @@ local __stubClassChain = function(name)
     local node = cc.Node:create()
     if tolua and tolua.setpeer then
       local peer = {}
-      setmetatable(peer, {__index = function(tt, k) rawset(tt, k, __chain); return __chain end, __call = function(self3, ...) return __chain end})
+      setmetatable(peer, {__index = function(tt, k) local f = function() return __chain end; rawset(tt, k, f); return f end})
       tolua.setpeer(node, peer)
       for k, v in pairs(t) do if k ~= 'create' then peer[k] = v end end
     end
     return node
   end
-  setmetatable(t, {__index = function(tt, k) rawset(tt, k, __chain); return __chain end, __call = function(self4, ...) return __chain end})
+  setmetatable(t, {__index = function(tt, k) local f = function() return __chain end; rawset(tt, k, f); return f end})
   _G[name] = t
   return t
 end
