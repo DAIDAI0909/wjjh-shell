@@ -689,6 +689,11 @@ local __wjjh_flowSpecs = {
   ['app.views.ui.MainUI'] = { { 'init' }, { 'create' }, { 'updataSkinAnim', 'hot' } },
   ['app.views.layer.PopLayer.WaitingLayer'] = { { 'createInRunningScene' }, { 'hideAndStopAction' }, { 'hideAndRemoveSelf' } },
   ['third.http.Request'] = { { 'send' } },
+  -- gh194: 战斗不推进诊断——gh193 战斗页停在「开始战斗」(开场文字动画的 endFunc 没执行
+  -- → fight:start() 没被调 → 回合循环永不启动)。探针:开场链每一步 + 坏 delay 侦测。
+  ['app.views.layer.FightLayer.FightLayer'] = { { 'startMapFight' }, { 'afterSetPlayer' }, { 'beforeStartFightAmin' }, { 'playFightBeginAnim' }, { 'initRoleAnim' } },
+  ['app.models.fight.Fight'] = { { 'start' }, { 'ready' }, { 'pause' }, { 'getLargestStartanimTime' } },
+  ['app.models.fight.FightRole'] = { { 'getStartAminNeedTime' } },
 }
 local function __ts(v)
   if v == nil then return 'nil' end
@@ -710,6 +715,39 @@ local function __wjjh_instrument(name, M)
         __wjjhlog('WJJH_AUTOSTART: MenuLayer captured')
         return o
       end
+    end
+  end
+  if name == 'app.views.layer.FightLayer.FightLayer' then
+    -- gh194: playFightBeginAnim 的 endFunc 是战斗回合循环(fight:start)的唯一启动点。
+    -- 包住 endFunc,确认它有没有被开场文字动画的 CallFunc 调到。
+    -- ★yield-safe:enter 日志+直接 return,不 pcall 不构造表(endFunc 包装仅闭包赋值)。
+    local op = M.playFightBeginAnim
+    if type(op) == 'function' then
+      M.playFightBeginAnim = function(self, endFunc, ...)
+        __wjjhlog('WJJH_FIGHT: playFightBeginAnim enter endFunc=' .. __ts(endFunc))
+        if type(endFunc) == 'function' then
+          local oe = endFunc
+          endFunc = function(...)
+            __wjjhlog('WJJH_FIGHT: playFightBeginAnim ENDFUNC CALLED -> fight:start next')
+            return oe(...)
+          end
+        end
+        return op(self, endFunc, ...)
+      end
+    end
+  end
+  if name == 'app.extends.NodeEx' then
+    -- gh194: 坏 delay 侦测——Node:delayFunc 对非数字 delay(nil 分支=立即执行;字符串/表=
+    -- cc.DelayTime:create(坏值) 行为未定)。怀疑 getLargestStartanimTime 链返回坏值。
+    local od = Node and Node.delayFunc
+    if type(od) == 'function' then
+      Node.delayFunc = function(self, delay, func, ...)
+        if delay ~= nil and type(delay) ~= 'number' then
+          __wjjhlog('WJJH_DELAY: bad delay type=' .. type(delay) .. ' val=' .. __ts(delay))
+        end
+        return od(self, delay, func, ...)
+      end
+      __wjjhlog('WJJH_MOD: Node.delayFunc bad-delay probe installed')
     end
   end
   if __wjjh_flowSpecs[name] then
@@ -921,6 +959,11 @@ local __wjjh_targets = {
   ['app.views.ui.MainUI'] = true,
   ['app.views.layer.PopLayer.WaitingLayer'] = true,
   ['third.http.Request'] = true,
+  -- gh194: 战斗诊断
+  ['app.views.layer.FightLayer.FightLayer'] = true,
+  ['app.models.fight.Fight'] = true,
+  ['app.models.fight.FightRole'] = true,
+  ['app.extends.NodeEx'] = true,
 }
 local __origRequire = require
 require = function(name)
