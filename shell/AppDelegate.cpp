@@ -1241,6 +1241,21 @@ local function __wjjh_autoRoleTick()
                   end
                   __wjjhlog('WJJH_GOAL: at ' .. __ts(room.id) .. ' npc ' .. __ts(nm) ..
                             ' actions [' .. table.concat(names, ', ') .. '] ok=' .. tostring(okL))
+                  -- gh184: pairs(nil) 侦察（TableProxy 覆盖了 pairs，喂 nil 时会自己报错并打断
+                  -- 切磋流程；包一层记录调用点，找出是谁把 nil 传进来）。装在此处=游戏已加载完。
+                  if __WJJH_AUTOSTART and not __wjjh_pairs_wrapped then
+                    __wjjh_pairs_wrapped = true
+                    local op = pairs
+                    _G.pairs = function(tt, ...)
+                      if tt == nil then
+                        __wjjhlog('WJJH_PAIRS: pairs(nil) from ' ..
+                                  tostring(debug.traceback('', 2)):gsub('%c', ' | '):sub(1, 500))
+                        return function() return nil end
+                      end
+                      return op(tt, ...)
+                    end
+                    __wjjhlog('WJJH_PAIRS: wrapper installed')
+                  end
                   if okL and type(fl) == 'table' then
                     for j, v in ipairs(fl) do
                       local an = tostring(v.btnName or '')
