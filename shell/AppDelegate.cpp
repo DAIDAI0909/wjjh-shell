@@ -691,9 +691,10 @@ local __wjjh_flowSpecs = {
   ['third.http.Request'] = { { 'send' } },
   -- gh194: 战斗不推进诊断——gh193 战斗页停在「开始战斗」(开场文字动画的 endFunc 没执行
   -- → fight:start() 没被调 → 回合循环永不启动)。探针:开场链每一步 + 坏 delay 侦测。
+  -- gh194 结果:ENDFUNC ✓ Fight.start ✓ 但画面仍停「开始战斗」→ 帧循环驱动待查(gh195)。
   ['app.views.layer.FightLayer.FightLayer'] = { { 'startMapFight' }, { 'afterSetPlayer' }, { 'beforeStartFightAmin' }, { 'playFightBeginAnim' }, { 'initRoleAnim' } },
-  ['app.models.fight.Fight'] = { { 'start' }, { 'ready' }, { 'pause' }, { 'getLargestStartanimTime' } },
-  ['app.models.fight.FightRole'] = { { 'getStartAminNeedTime' } },
+  ['app.models.fight.Fight'] = { { 'start' }, { 'ready' }, { 'pause' }, { 'getLargestStartanimTime' }, { 'updateFrame', 'hot' }, { 'playFrame', 'hot' } },
+  ['app.models.fight.FightRole'] = { { 'getStartAminNeedTime' }, { 'updateFrame' } },
 }
 local function __ts(v)
   if v == nil then return 'nil' end
