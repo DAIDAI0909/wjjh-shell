@@ -427,6 +427,16 @@ end
 for _, n in ipairs({'ExtRichText','ExtRichTextScroll','ExtPageView','YXShaderSprite','YXMotionStreak','YXEaseAction','YXHelper','encrypt','LogManager'}) do
   __stubClass(n)
 end
+-- gh192: YXEaseAction 是安卓魔改引擎的缓动动作类(游戏 31 个文件 176 处调用,战斗/UI 动画全用)。
+-- 官方 3.15.1 没有它 → 桩 create 原返回 cc.Node → runAction(cc.Node) = invalid arguments
+-- (gh191 实锤 AnimFightLayer:1227 rolePopNumber 每回合炸一次 → 战斗卡在首回合)。
+-- 修=create 直接透传第一个参数(真 action),放弃缓动只保流程;Easing 枚举常量(安卓引擎注册的
+-- 全局数字)一并补齐,防别处 nil 引用。
+YXEaseAction.create = function(action, easing) return action end
+for _, c in ipairs({'Sine_EaseIn','Sine_EaseInOut','Sine_EaseOut','Quad_EaseIn','Quad_EaseInOut','Quad_EaseOut','Cubic_EaseIn','Cubic_EaseInOut','Cubic_EaseOut','Quart_EaseIn','Quart_EaseInOut','Quart_EaseOut','Quint_EaseIn','Quint_EaseInOut','Quint_EaseOut','Expo_EaseIn','Expo_EaseInOut','Expo_EaseOut','Circ_EaseIn','Circ_EaseInOut','Circ_EaseOut','Back_EaseIn','Back_EaseInOut','Back_EaseOut','Bounce_EaseIn','Bounce_EaseInOut','Bounce_EaseOut','Elastic_EaseIn','Elastic_EaseInOut','Elastic_EaseOut'}) do
+  if _G[c] == nil then _G[c] = 1 end
+end
+__wjjhlog('WJJH_BOOT: YXEaseAction passthrough installed')
 local __stubClassChain = function(name)
   if _G[name] then return _G[name] end
   local t = {}
