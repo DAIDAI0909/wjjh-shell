@@ -364,26 +364,6 @@ end
 
 -- ===== C/D 桩工厂 =====
 local __noop = function() return nil end
-local __stubClass = function(name)
-  if _G[name] then return _G[name] end
-  local t = {}
-  t.create = function(...)
-    local node = cc.Node:create()
-    if tolua and tolua.setpeer then
-      local peer = {}
-      setmetatable(peer, {__index = function(tt, k) local f = function() return nil end; rawset(tt, k, f); return f end})
-      tolua.setpeer(node, peer)
-      for k, v in pairs(t) do if k ~= 'create' then peer[k] = v end end
-    end
-    return node
-  end
-  setmetatable(t, {__index = function(tt, k) local f = __noop; rawset(tt, k, f); return f end})
-  _G[name] = t
-  return t
-end
-for _, n in ipairs({'ExtRichText','ExtRichTextScroll','ExtPageView','YXShaderSprite','YXMotionStreak','YXEaseAction','YXHelper','encrypt','LogManager'}) do
-  __stubClass(n)
-end
 -- gh168/181: 链式桩的"万能返回体"——此前 __chain 未定义，链式桩方法全返回 nil，
 -- 游戏里 `X:getInstance():removeAnimCache(...)` 这类写法就崩（MainLayer.lua:123）。
 -- gh181: 实测"字段访问返回函数"仍会崩（LifeCycleSupport.lua:35 把字段当表索引：
@@ -400,6 +380,27 @@ __wjjh_chain_mt = {
   __call = function(self, ...) return self end,
 }
 __chain = setmetatable({}, __wjjh_chain_mt)
+local __stubClass = function(name)
+  if _G[name] then return _G[name] end
+  local t = {}
+  t.create = function(...)
+    local node = cc.Node:create()
+    if tolua and tolua.setpeer then
+      local peer = {}
+      setmetatable(peer, {__index = function(tt, k) local f = function() return nil end; rawset(tt, k, f); return f end})
+      tolua.setpeer(node, peer)
+      for k, v in pairs(t) do if k ~= 'create' then peer[k] = v end end
+    end
+    return node
+  end
+  setmetatable(t, {__index = function(tt, k) rawset(tt, k, __chain); return __chain end,
+                  __call = function(self2, ...) return __chain end})
+  _G[name] = t
+  return t
+end
+for _, n in ipairs({'ExtRichText','ExtRichTextScroll','ExtPageView','YXShaderSprite','YXMotionStreak','YXEaseAction','YXHelper','encrypt','LogManager'}) do
+  __stubClass(n)
+end
 local __stubClassChain = function(name)
   if _G[name] then return _G[name] end
   local t = {}
@@ -407,13 +408,13 @@ local __stubClassChain = function(name)
     local node = cc.Node:create()
     if tolua and tolua.setpeer then
       local peer = {}
-      setmetatable(peer, {__index = function(tt, k) local f = function() return __chain end; rawset(tt, k, f); return f end})
+      setmetatable(peer, {__index = function(tt, k) rawset(tt, k, __chain); return __chain end, __call = function(self3, ...) return __chain end})
       tolua.setpeer(node, peer)
       for k, v in pairs(t) do if k ~= 'create' then peer[k] = v end end
     end
     return node
   end
-  setmetatable(t, {__index = function(tt, k) local f = function() return __chain end; rawset(tt, k, f); return f end})
+  setmetatable(t, {__index = function(tt, k) rawset(tt, k, __chain); return __chain end, __call = function(self4, ...) return __chain end})
   _G[name] = t
   return t
 end
