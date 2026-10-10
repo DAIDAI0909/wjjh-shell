@@ -1101,6 +1101,18 @@ local function __wjjh_autoRoleTick()
             local layer = CL and CL:getInstance() and CL:getInstance():getLayer('MapLayer')
             if layer == nil then
               __wjjhlog('WJJH_AUTOSTART: MapLayer nil, skip walk')
+              -- gh190: 层在但没房间时，探测 _currMap 并尝试主动催熟（setMap 一次即可）
+              if not __wjjh_mapNudged then
+                __wjjh_mapNudged = true
+                local mc = layer._currMap
+                __wjjhlog('WJJH_GOAL: nudge try, _currMap=' .. __ts(mc) ..
+                          ' entryRoom1=' .. __ts(mc and mc.entryRoom1))
+                if mc ~= nil and layer.setMap ~= nil then
+                  local okN, errN = pcall(function() layer:setMap(mc) end)
+                  __wjjhlog('WJJH_GOAL: nudge setMap ok=' .. tostring(okN) .. ' err=' .. __ts(errN) ..
+                            ' currRoom=' .. __ts(layer._currRoom))
+                end
+              end
               return
             end
             local room = layer._currRoom
