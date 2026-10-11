@@ -836,6 +836,35 @@ local function __wjjh_instrument(name, M)
       end
     end
   end
+  if name == 'app.views.ui.FightUI.FightUI' then
+    -- gh208: 胜利/失败面板自动点击(仅 CI)——BaseMap 的 FIGHT_FINISH 分支把结算+回图
+    -- 绑在 Panel_fightEndTextArea 的 release 回调上(设计=等玩家点「退出战斗」,gh207
+    -- 截图实锤胜利面板悬停)。CI 无点击:绑定时预约 ~2 秒(10 渲染帧)后自动触发一次。
+    local orf = M.setFightEndTextAreaReleaseFunc
+    if type(orf) == 'function' then
+      M.setFightEndTextAreaReleaseFunc = function(self, releaseFunc, ...)
+        __wjjhlog('WJJH_FIGHT: end panel release func bound')
+        if __WJJH_AUTOSTART and type(releaseFunc) == 'function' then
+          local sc = cc.Director:getInstance():getRunningScene()
+          if sc and sc.schedule then
+            local ticks = 0
+            local fired = false
+            sc:schedule(function()
+              if fired then return end
+              ticks = ticks + 1
+              if ticks >= 10 then
+                fired = true
+                __wjjhlog('WJJH_FIGHT: auto-clicking end panel (CI)')
+                local ok, err = pcall(releaseFunc)
+                __wjjhlog('WJJH_FIGHT: end panel release ok=' .. tostring(ok) .. ' err=' .. __ts(err))
+              end
+            end, 0)
+          end
+        end
+        return orf(self, releaseFunc, ...)
+      end
+    end
+  end
   if name == 'app.extends.NodeEx' then
     -- gh194: 坏 delay 侦测——Node:delayFunc 对非数字 delay(nil 分支=立即执行;字符串/表=
     -- cc.DelayTime:create(坏值) 行为未定)。怀疑 getLargestStartanimTime 链返回坏值。
@@ -1064,6 +1093,9 @@ local __wjjh_targets = {
   ['app.models.fight.Fight'] = true,
   ['app.models.fight.FightRole'] = true,
   ['app.extends.NodeEx'] = true,
+  -- gh208: 胜利面板自动点击(CI)——BaseMap 的 FIGHT_FINISH 分支把结算+回图绑在
+  -- 胜利面板 release 回调上(等玩家点「退出战斗」),CI 需要自动触发。
+  ['app.views.ui.FightUI.FightUI'] = true,
 }
 local __origRequire = require
 require = function(name)
