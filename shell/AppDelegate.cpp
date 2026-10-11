@@ -789,6 +789,19 @@ local function __wjjh_instrument(name, M)
         return osmf(self, ...)
       end
     end
+    -- gh202: onRunaway 前后探针——gh201 里 fl:onRunaway() 被调用但战斗未暂停未结束,
+    -- 内部某步静默断(被 NodeEx:235 的 pcall 吞)。enter+done 两点定位。
+    -- ★yield-safe:enter/done 日志+直接 return。
+    local orn = M.onRunaway
+    if type(orn) == 'function' then
+      M.onRunaway = function(self, ...)
+        __wjjhlog('WJJH_FIGHT: onRunaway enter fight=' .. __ts(self._fight) ..
+                  ' state=' .. __ts(self._fight and self._fight._state))
+        local r = orn(self, ...)
+        __wjjhlog('WJJH_FIGHT: onRunaway done paused=' .. __ts(self._fight and self._fight:isPaused()))
+        return r
+      end
+    end
     -- gh194: playFightBeginAnim 的 endFunc 是战斗回合循环(fight:start)的唯一启动点。
     -- 包住 endFunc,确认它有没有被开场文字动画的 CallFunc 调到。
     -- ★yield-safe:enter 日志+直接 return,不 pcall 不构造表(endFunc 包装仅闭包赋值)。
