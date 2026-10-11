@@ -258,11 +258,21 @@ endforeach()
 #   icon.png  552x536 灰度白底黑字（App 图标，与开发版同一份 md5）
 #   splash.jpg 540x960 无字水墨城墙+满月（启动图，已扩到 1290x2796）
 # 产物：shell/Assets.xcassets/{AppIcon.appiconset, LaunchSplash.imageset}
+# 注意：实测 CMake 4.x 的 Xcode 生成器不会自动把 .xcassets 编进包
+#       （gh216 跑完 Assets.car 缺失、CFBundleIcons 也没有），所以改成
+#       由 POST_BUILD 显式 xcrun actool 编出 Assets.car 落进 .app（见下方）。
 set(APP_ASSETS "${CMAKE_SOURCE_DIR}/shell/Assets.xcassets")
 if(EXISTS "${APP_ASSETS}")
-    # .xcassets 作为源加入目标 → Xcode 生成器会调 actool 编出 Assets.car
-    list(APPEND GAME_RES_FILES "${APP_ASSETS}")
     message(STATUS "gh216: asset catalog found -> ${APP_ASSETS}")
+    if(CMAKE_OSX_SYSROOT MATCHES "iphonesimulator")
+        set(SPINE_ACTOOL_PLATFORM "iphonesimulator")
+    else()
+        set(SPINE_ACTOOL_PLATFORM "iphoneos")
+    endif()
+    execute_process(COMMAND xcrun --sdk ${SPINE_ACTOOL_PLATFORM} --show-sdk-path
+        OUTPUT_VARIABLE SPINE_SDK_PATH OUTPUT_STRIP_TRAILING_WHITESPACE)
+    message(STATUS "gh216: actool platform=${SPINE_ACTOOL_PLATFORM} sdk=${SPINE_SDK_PATH}")
+    set(WJJH_HAS_ASSETS ON)
 else()
     message(WARNING "gh216: Assets.xcassets missing, app icon will stay default")
 endif()
@@ -548,3 +558,13 @@ add_custom_command(TARGET WJJH POST_BUILD
     COMMAND sh -c "echo '== WJJH bundle diag =='; ls -la '$<TARGET_BUNDLE_DIR:WJJH>' | head -20; echo '-- binary:'; file '$<TARGET_FILE:WJJH>'; otool -hv '$<TARGET_FILE:WJJH>'; echo '-- build-version:'; otool -l '$<TARGET_FILE:WJJH>' | grep -A5 LC_BUILD_VERSION || true; echo '-- frameworks:'; ls '$<TARGET_BUNDLE_DIR:WJJH>/Frameworks' 2>/dev/null | head -5 || true; echo '-- assets (gh216):'; ls -la '$<TARGET_BUNDLE_DIR:WJJH>/Assets.car' '$<TARGET_BUNDLE_DIR:WJJH>/Info.plist' 2>&1 || true; echo '-- icon keys in Info.plist (gh216):'; /usr/libexec/PlistBuddy -c 'Print :CFBundleIcons' '$<TARGET_BUNDLE_DIR:WJJH>/Info.plist' 2>&1 || true; echo '-- launch screen (gh216):'; /usr/libexec/PlistBuddy -c 'Print :UILaunchScreen' '$<TARGET_BUNDLE_DIR:WJJH>/Info.plist' 2>&1 || true"
     COMMENT "WJJH bundle/binary diagnostics"
     VERBATIM)
+
+# ★ gh216b: 显式把 .xcassets 编成 Assets.car（CMake 4.x 的 Xcode 生成器不自动编，
+#   见上方说明）。用 sh -c 包一层 + 末尾 echo，使 actool 失败也**不阻断**构建——
+#   仅是图标缺失，验证轮仍可跑完；diag 会确认 Assets.car 是否落进包。
+if(WJJH_HAS_ASSETS)
+add_custom_command(TARGET WJJH POST_BUILD
+    COMMAND sh -c "xcrun actool --output-format human-readable-text --notices --warnings --errors --platform ${SPINE_ACTOOL_PLATFORM} --minimum-deployment-target 13.0 --target-device iphone --target-device ipad --compile '$<TARGET_BUNDLE_DIR:WJJH>/Assets.car' '${APP_ASSETS}' --app-icon AppIcon --sdk '${SPINE_SDK_PATH}' --product-type com.apple.product-type.application --development-region en --enable-on-demand-resources NO; echo \"[actool rc=$?]\"; ls -la '$<TARGET_BUNDLE_DIR:WJJH>/Assets.car' 2>&1 || true"
+    COMMENT "gh216b: compile Assets.xcassets -> Assets.car"
+    VERBATIM)
+endif()
