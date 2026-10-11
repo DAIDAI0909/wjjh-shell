@@ -253,6 +253,20 @@ foreach(f ${LUA_FILES})
     list(APPEND GAME_RES_FILES ${f})
 endforeach()
 
+# ---- gh216: App 图标 + 启动图（美术直接取自安卓单机版 v26）----
+# 源：安卓《我叫江湖-单机离线版v26》APK 的 res/drawable-hdpi/{icon.png,splash.jpg}
+#   icon.png  552x536 灰度白底黑字（App 图标，与开发版同一份 md5）
+#   splash.jpg 540x960 无字水墨城墙+满月（启动图，已扩到 1290x2796）
+# 产物：shell/Assets.xcassets/{AppIcon.appiconset, LaunchSplash.imageset}
+set(APP_ASSETS "${CMAKE_SOURCE_DIR}/shell/Assets.xcassets")
+if(EXISTS "${APP_ASSETS}")
+    # .xcassets 作为源加入目标 → Xcode 生成器会调 actool 编出 Assets.car
+    list(APPEND GAME_RES_FILES "${APP_ASSETS}")
+    message(STATUS "gh216: asset catalog found -> ${APP_ASSETS}")
+else()
+    message(WARNING "gh216: Assets.xcassets missing, app icon will stay default")
+endif()
+
 # ---- cocos2d-x 3.15 core sources ----
 file(GLOB_RECURSE COCOS_SRC
     ${ENGINE}/cocos/*.cpp
@@ -364,10 +378,12 @@ set_target_properties(WJJH PROPERTIES
     MACOSX_BUNDLE_GUI_IDENTIFIER "com.wjjh.ios"
     MACOSX_BUNDLE_BUNDLE_NAME "WJJH"
     MACOSX_BUNDLE_INFO_PLIST ${CMAKE_SOURCE_DIR}/shell/Info.plist.in
-    XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED "NO"
-    XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY ""
-    XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2"
-    XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET "13.0"
+        XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED "NO"
+        XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY ""
+        XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2"
+        XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET "13.0"
+        # gh216：告诉 actool 用 AppIcon 这套图当 App 图标
+        XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME "AppIcon"
 )
 
 target_include_directories(WJJH PRIVATE
@@ -526,7 +542,9 @@ endif()
 
 # ---- 模拟器安装诊断(gh121):安装失败"Failed to get FD to bundle executable",
 #      在构建期把 bundle 内容/主可执行文件类型打到 build 日志 ----
+# ★ gh216 追加：把 Assets.car / Info.plist 图标键一起 dump —— actool 若没把
+#   .xcassets 编进包，这里会直接看不到 Assets.car，立刻定位。
 add_custom_command(TARGET WJJH POST_BUILD
-    COMMAND sh -c "echo '== WJJH bundle diag =='; ls -la '$<TARGET_BUNDLE_DIR:WJJH>' | head -20; echo '-- binary:'; file '$<TARGET_FILE:WJJH>'; otool -hv '$<TARGET_FILE:WJJH>'; echo '-- build-version:'; otool -l '$<TARGET_FILE:WJJH>' | grep -A5 LC_BUILD_VERSION || true; echo '-- frameworks:'; ls '$<TARGET_BUNDLE_DIR:WJJH>/Frameworks' 2>/dev/null | head -5 || true"
+    COMMAND sh -c "echo '== WJJH bundle diag =='; ls -la '$<TARGET_BUNDLE_DIR:WJJH>' | head -20; echo '-- binary:'; file '$<TARGET_FILE:WJJH>'; otool -hv '$<TARGET_FILE:WJJH>'; echo '-- build-version:'; otool -l '$<TARGET_FILE:WJJH>' | grep -A5 LC_BUILD_VERSION || true; echo '-- frameworks:'; ls '$<TARGET_BUNDLE_DIR:WJJH>/Frameworks' 2>/dev/null | head -5 || true; echo '-- assets (gh216):'; ls -la '$<TARGET_BUNDLE_DIR:WJJH>/Assets.car' '$<TARGET_BUNDLE_DIR:WJJH>/Info.plist' 2>&1 || true; echo '-- icon keys in Info.plist (gh216):'; /usr/libexec/PlistBuddy -c 'Print :CFBundleIcons' '$<TARGET_BUNDLE_DIR:WJJH>/Info.plist' 2>&1 || true; echo '-- launch screen (gh216):'; /usr/libexec/PlistBuddy -c 'Print :UILaunchScreen' '$<TARGET_BUNDLE_DIR:WJJH>/Info.plist' 2>&1 || true"
     COMMENT "WJJH bundle/binary diagnostics"
     VERBATIM)
