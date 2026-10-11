@@ -5,3 +5,11 @@ res_patch.zip
 shell_secret.zip
 build/
 *.log
+
+# Python 缓存与字节码
+__pycache__/
+*.py[cod]
+
+# 本地调试残留（禁止提交；推送时请精确 add，不要 git add -A）
+scripts/_dbg*.py
+scripts/*_dbg*.py

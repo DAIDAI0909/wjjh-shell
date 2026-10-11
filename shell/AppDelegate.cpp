@@ -1355,6 +1355,88 @@ local function __wjjh_autoRoleTick()
           end)
           __wjjhlog('WJJH_AUTOSTART: walk step done ok=' .. tostring(ok5) .. ' err=' .. __ts(err5))
         end
+        -- ===== gh215: 商店探针（CI only；真机包不编译此段）=====
+        -- 走 Store:initStore（Store.lua:355）的同一条客户端接口
+        --   HttpManagerEx:getMerchantStoreList —— 不依赖 UI 导航，不受商人位置影响。
+        -- 断言三件事：①服务端返回 status=200/errcode=0 且 goodsList 非空；
+        --   ②每件 goodsId 都能被 GoodsHelper:getGoodsResClass 解析
+        --     （GoodsHelper.lua:34 查不到会 error() ⇒ 这是商店崩的唯一路径）；
+        --   ③价格非 0 且量纲 sane。
+        -- 节奏：autoRoleTick 每 0.5s 一跳（scheduleScriptFunc 0.5），故 navTicks≈2/s；
+        --       取 navTicks 56..160 每 8 跳打一个，最多 4 个商户，约 40s 内跑完。
+        if navTicks >= 56 and navTicks <= 160 and navTicks % 8 == 0
+           and __wjjh_storeIdx == nil then
+          __wjjh_storeIdx = 0
+        end
+        if navTicks >= 56 and navTicks <= 160 and navTicks % 8 == 0
+           and __wjjh_storeIdx ~= nil and __wjjh_storeIdx < 4 then
+          if __wjjh_storeIds == nil then
+            local okM, conf = pcall(function()
+              return require('script.store.storeConfig')['Sheet1']
+            end)
+            local ids = {}
+            if okM and conf ~= nil then
+              for k, v in pairs(conf) do
+                if type(v) == 'table' then ids[#ids + 1] = tostring(k) end
+              end
+              table.sort(ids)
+            end
+            __wjjh_storeIds = ids
+            __wjjhlog('WJJH_STORE: storeConfig loaded ok=' .. tostring(okM) ..
+                      ' merchants=' .. #ids)
+          end
+          if #__wjjh_storeIds > 0 then
+            __wjjh_storeIdx = __wjjh_storeIdx + 1
+            local mid = __wjjh_storeIds[__wjjh_storeIdx]
+            local okH, HM = pcall(require, 'app.models.Store.GoodsHelper')
+            local okS, errS = pcall(function()
+              if HttpManagerEx == nil or HttpManagerEx.getMerchantStoreList == nil then
+                __wjjhlog('WJJH_STORE: HttpManagerEx nil, skip')
+                return
+              end
+              HttpManagerEx:getMerchantStoreList(mid, false, 0, 0,
+                function(status, errcode, errmsg, data, isEncrypted)
+                  local okC, errC = pcall(function()
+                    local n, pmin, pmax, unres = 0, nil, nil, 0
+                    local sample, badg = {}, {}
+                    if data ~= nil and data.goodsList ~= nil then
+                      for _, g in ipairs(data.goodsList) do
+                        n = n + 1
+                        local gid = tostring(g.goodsId or g.goods_id or '?')
+                        local pr = tonumber(g.price)
+                        if pr ~= nil then
+                          if pmin == nil or pr < pmin then pmin = pr end
+                          if pmax == nil or pr > pmax then pmax = pr end
+                        end
+                        if n <= 4 then
+                          sample[#sample + 1] = gid .. '@' .. tostring(pr)
+                        end
+                        if okH and HM ~= nil and HM.getGoodsResClass ~= nil then
+                          local okR, r = pcall(HM.getGoodsResClass, HM, gid)
+                          if not okR or r == nil then
+                            unres = unres + 1
+                            badg[#badg + 1] = gid
+                          end
+                        end
+                      end
+                    end
+                    __wjjhlog('WJJH_STORE: m=' .. mid .. ' status=' .. tostring(status) ..
+                              ' errcode=' .. tostring(errcode) .. ' enc=' .. tostring(isEncrypted) ..
+                              ' goods=' .. n .. ' price=' .. tostring(pmin) .. '~' .. tostring(pmax) ..
+                              ' unresolvable=' .. unres ..
+                              ' sample=[' .. table.concat(sample, ', ') .. ']' ..
+                              (#badg > 0 and (' bad=[' .. table.concat(badg, ', ') .. ']') or ''))
+                  end)
+                  if not okC then
+                    __wjjhlog('WJJH_STORE: callback err=' .. __ts(errC))
+                  end
+                end, false)
+            end)
+            __wjjhlog('WJJH_STORE: probe#' .. __wjjh_storeIdx .. ' m=' .. mid ..
+                      ' ok=' .. tostring(okS) .. ' err=' .. __ts(errS) ..
+                      ' goodshelper=' .. tostring(okH))
+          end
+        end
         -- gh180: 目标驱动的探索——每到一间房：逐 NPC 算动作表（createMapRoleFuncList），
         -- 发现「切磋/挑战/动手/比试/攻击/战斗」直接触发（走 observe 层路径），否则继续走。
         if navTicks > 60 and navTicks <= 400 and navTicks % 4 == 0 and not __wjjh_fightFired then
