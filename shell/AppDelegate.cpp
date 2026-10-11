@@ -740,14 +740,24 @@ local function __wjjh_instrument(name, M)
               for _ = 1, 12 do
                 self:updateFrame()
               end
-              -- gh198: CI 自动逃跑——600 帧后触发 runaway 并每 600 帧重试(逃跑有成功率),
+              -- gh198: CI 自动逃跑——600 帧后触发并每 600 帧重试(逃跑有成功率),
               -- 刻意走「fightEnd→结算→回地图」链验证收尾,不用等打死。
+              -- gh199: 改走 FightLayer:onRunaway() 正规 UI 路径(无参→btnType=nil→跳过
+              -- 80% 失败分支;内部 runRole:runAway() 判定,失败会进 CD→下个 600 帧重试)。
+              -- gh198 直调 Fight:runaway() 静默无效(绕过了 pause+事件+executeBuff 流程)。
               if __WJJH_AUTOSTART then
                 self.__wjjh_frames = (self.__wjjh_frames or 0) + 12
                 if self.__wjjh_frames >= (self.__wjjh_nextRunaway or 600) then
                   self.__wjjh_nextRunaway = (self.__wjjh_nextRunaway or 600) + 600
-                  __wjjhlog('WJJH_FIGHT: auto-runaway fired at frame ' .. self.__wjjh_frames)
-                  self:runaway()
+                  local CL = package.loaded['app.views.layer.ControllLayer']
+                  local fl = CL and CL:getInstance() and CL:getInstance():getLayer('FightLayer')
+                  __wjjhlog('WJJH_FIGHT: auto-runaway at frame ' .. self.__wjjh_frames ..
+                            ' fl=' .. __ts(fl) .. ' onRunaway=' .. __ts(fl and fl.onRunaway))
+                  if fl and fl.onRunaway then
+                    fl:onRunaway()
+                  else
+                    self:runaway()
+                  end
                 end
               end
             end, 0)
