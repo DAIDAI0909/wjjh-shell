@@ -573,12 +573,14 @@ add_custom_command(TARGET WJJH POST_BUILD
     COMMENT "WJJH bundle/binary diagnostics"
     VERBATIM)
 
-# ★ gh216b: 显式把 .xcassets 编成 Assets.car（CMake 4.x 的 Xcode 生成器不自动编，
+# ★ gh216b/gh217b: 显式把 .xcassets 编成 Assets.car（CMake 4.x 的 Xcode 生成器不自动编，
 #   见上方说明）。用 sh -c 包一层 + 末尾 echo，使 actool 失败也**不阻断**构建——
 #   仅是图标缺失，验证轮仍可跑完；diag 会确认 Assets.car 是否落进包。
+# ★ gh217b 修正：gh217 把 --sdk 传给了 actool（actool 不认该参数 → rc=1 → 无 Assets.car）。
+#   --sdk 是 xcrun 的参数：改回 `xcrun --sdk <platform> actool ...`。
 if(WJJH_HAS_ASSETS)
 add_custom_command(TARGET WJJH POST_BUILD
-    COMMAND sh -c "xcrun actool --output-format human-readable-text --notices --warnings --errors --platform ${SPINE_ACTOOL_PLATFORM} --minimum-deployment-target 13.0 --target-device iphone --target-device ipad --compile '$<TARGET_BUNDLE_DIR:WJJH>/Assets.car' '${APP_ASSETS}' --app-icon AppIcon --sdk '${SPINE_SDK_PATH}' --product-type com.apple.product-type.application --development-region en --enable-on-demand-resources NO; echo \"[actool rc=$?]\"; ls -la '$<TARGET_BUNDLE_DIR:WJJH>/Assets.car' 2>&1 || true"
+    COMMAND sh -c "xcrun --sdk ${SPINE_ACTOOL_PLATFORM} actool --output-format human-readable-text --notices --warnings --errors --platform ${SPINE_ACTOOL_PLATFORM} --minimum-deployment-target 13.0 --target-device iphone --target-device ipad --compile '$<TARGET_BUNDLE_DIR:WJJH>/Assets.car' '${APP_ASSETS}' --app-icon AppIcon --product-type com.apple.product-type.application --development-region en --enable-on-demand-resources NO; echo \"[actool rc=$?]\"; ls -la '$<TARGET_BUNDLE_DIR:WJJH>/Assets.car' 2>&1 || true"
     COMMENT "gh216b: compile Assets.xcassets -> Assets.car"
     VERBATIM)
 endif()
