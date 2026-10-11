@@ -737,6 +737,17 @@ local function __wjjh_instrument(name, M)
             -- gh198: 提到 12 帧(≈60fps 逻辑,2x 快进)——gh197 打了 20+ 击仍未分胜负。
             -- 战斗结束(state≠RUNNING)后 updateFrame 早退,空转开销可忽略。
             sc:schedule(function()
+              -- gh209: 战斗结束后彻底停手——FIGHT_STATE_END 是**未定义全局(=nil)**(Definition.lua
+              -- 只有 NONE0/IDLE1/READY2/START3/RUNNING4/PAUSE5/COMPLETE6),Fight 结束时 _state 被置
+              -- nil(1799 行);且我们兜底逃跑后 state 仍=4。哨兵:state~=4 或已发过兜底 → 不推帧、
+              -- 不发事件(gh208 实锤:战斗结束 30 秒后兜底逃跑仍在已销毁的战斗上发事件,污染状态)。
+              if self.__wjjh_done or self._state ~= (_G.FIGHT_STATE_RUNNING or 4) then
+                if not self.__wjjh_stopLogged then
+                  self.__wjjh_stopLogged = true
+                  __wjjhlog('WJJH_FIGHT: hook idle-stop state=' .. __ts(self._state))
+                end
+                return
+              end
               for _ = 1, 12 do
                 self:updateFrame()
               end
@@ -778,6 +789,7 @@ local function __wjjh_instrument(name, M)
                 -- (fightEnd WIN 分支与逃跑同一事件机制,BaseMap 的 FIGHT_FINISH 分支结算)。
                 if self.__wjjh_frames >= (self.__wjjh_nextRunaway or 2600) then
                   self.__wjjh_nextRunaway = (self.__wjjh_nextRunaway or 2600) + 600
+                  self.__wjjh_done = true
                   __wjjhlog('WJJH_FIGHT: runaway via fight events at frame ' .. self.__wjjh_frames)
                   self:runaway()
                   self:callEventListener(4)
