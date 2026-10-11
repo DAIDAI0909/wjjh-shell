@@ -733,8 +733,13 @@ local function __wjjh_instrument(name, M)
           self.__wjjh_frameHook = true
           local sc = cc.Director:getInstance():getRunningScene()
           if sc and sc.schedule then
+            -- gh197: 每渲染帧推 6 帧 ≈ 30fps 逻辑帧率(gh196 实测渲染 tick ~5fps)——
+            -- 战斗以 ~1x 速度推进,90s CI 窗口够打完一场,观测 fightEnd→结算→回地图。
+            -- 战斗结束(state≠RUNNING)后 updateFrame 早退,空转开销可忽略。
             sc:schedule(function()
-              self:updateFrame()
+              for _ = 1, 6 do
+                self:updateFrame()
+              end
             end, 0)
             __wjjhlog('WJJH_FIGHT: frame-drive hooked on running scene (interval=0)')
           else
