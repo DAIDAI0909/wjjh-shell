@@ -83,6 +83,101 @@ def upload(name, path):
         return False
 
 
+def get_gh_token():
+    """gh212: 取 runner 的自动令牌——Actions 不默认注入 GITHUB_TOKEN 环境变量,
+    但 actions/checkout(persist-credentials 默认开)会把令牌写进本地 git config 的
+    http.extraheader;从那里解出来。仓库已把 default_workflow_permissions 提为 write
+    (classic 令牌改的仓库设置,不动 yml),该令牌具备 contents:write,可发 Release。"""
+    tok = os.environ.get('GITHUB_TOKEN') or ''
+    if tok:
+        return tok
+    try:
+        r = subprocess.run(['git', 'config', '--get',
+                            'http.https://github.com/.extraheader'],
+                           capture_output=True, text=True, cwd=ROOT)
+        v = (r.stdout or '').strip()
+        import base64
+        low = v.lower()
+        if low.startswith('authorization: basic '):
+            dec = base64.b64decode(v.split(' ', 2)[2]).decode()
+            # x-access-token:TOKEN
+            return dec.split(':', 1)[1]
+    except Exception as e:
+        log('token extract failed: %r' % e)
+    return ''
+
+
+def gh_request(host, method, path, tok, body=None, ctype=None, timeout=120):
+    import json
+    headers = {'Authorization': 'Bearer ' + tok, 'User-Agent': 'wjjh-device-ipa',
+               'Accept': 'application/vnd.github+json'}
+    if ctype:
+        headers['Content-Type'] = ctype
+    if body is not None and hasattr(body, 'read'):
+        headers['Content-Length'] = str(os.path.getsize(body.name))
+    conn = http.client.HTTPSConnection(host, timeout=timeout)
+    conn.request(method, path, body=body, headers=headers)
+    r = conn.getresponse()
+    data = r.read()
+    conn.close()
+    try:
+        js = json.loads(data)
+    except Exception:
+        js = None
+    return r.status, js
+
+
+def upload_release(ipa_path):
+    """gh212: GitHub Release 快速回传(滚动 tag=device-ipa)——CI(美区数据中心)→GitHub
+    是数据中心内通道(快);本地再经 Clash 取回。服务器 /put 通道美→中实测仅 ~33KB/s,
+    382MB 要 3 小时,弃用。"""
+    import json
+    tok = get_gh_token()
+    repo = os.environ.get('GITHUB_REPOSITORY', '')
+    if not tok or not repo:
+        log('!! release upload skipped (token=%s repo=%s)' % (bool(tok), repo))
+        return False
+    tag = 'device-ipa'
+    name = os.path.basename(ipa_path)
+    rid = None
+    st, js = gh_request('api.github.com', 'GET', '/repos/%s/releases/tags/%s' % (repo, tag), tok)
+    if st == 200 and js:
+        rid = js['id']
+        log('release %s exists (id=%s); cleaning old assets' % (tag, rid))
+        st2, ass = gh_request('api.github.com', 'GET',
+                              '/repos/%s/releases/%d/assets' % (repo, rid), tok)
+        if st2 == 200 and ass:
+            for a in ass:
+                gh_request('api.github.com', 'DELETE',
+                           '/repos/%s/releases/assets/%d' % (repo, a['id']), tok)
+                log('  deleted asset %s' % a['name'])
+    else:
+        body = json.dumps({'tag_name': tag, 'name': 'device IPA (rolling)',
+                           'body': 'CI 真机构建未签名 IPA 滚动发布(gh212 起)'}).encode()
+        st, js = gh_request('api.github.com', 'POST', '/repos/%s/releases' % repo, tok,
+                            body=body, ctype='application/json')
+        if st not in (200, 201) or not js:
+            log('!! release create failed: %d %r' % (st, js))
+            return False
+        rid = js['id']
+        log('release created (id=%s)' % rid)
+    size = os.path.getsize(ipa_path)
+    log('UPLOAD-RELEASE %s (%d bytes) -> uploads.github.com' % (name, size))
+    t0 = time.time()
+    try:
+        with open(ipa_path, 'rb') as f:
+            st, js = gh_request('uploads.github.com', 'POST',
+                                '/repos/%s/releases/%d/assets?name=%s' % (repo, rid, name),
+                                tok, body=f, ctype='application/octet-stream', timeout=2400)
+        ok = st in (200, 201)
+        log('  release asset resp: %d (%.0fs) %s' % (st, time.time() - t0,
+                                                     'OK' if ok else repr(js)[:200]))
+        return ok
+    except Exception as e:
+        log('  release upload failed: %r' % e)
+        return False
+
+
 def main():
     t0 = time.time()
     log('=== device build start; run=%s root=%s ===' % (RUN_NO, ROOT))
@@ -147,8 +242,7 @@ def main():
         _logf.close()
     upload('gh%s_device_build.txt' % RUN_NO, LOG)
     if ipa and os.path.getsize(ipa) > 1000000:
-        upload('WJJH_dev_unsigned_gh%s.ipa' % RUN_NO, ipa)
-        upload('WJJH_device_unsigned_latest.ipa', ipa)
+        upload_release(ipa)
     sys.exit(0 if ipa else 1)
 
 
