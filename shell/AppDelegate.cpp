@@ -740,6 +740,20 @@ local function __wjjh_instrument(name, M)
               for _ = 1, 12 do
                 self:updateFrame()
               end
+              -- gh207: CI 专测「打死」路径——开战首帧把对手血量压到 10,让随后正常一击必杀,
+              -- 观察 roleDie→playWinAnim→fightEnd(WIN)→BaseMap FIGHT_FINISH 结算→回地图。
+              -- ★仅 CI(__WJJH_AUTOSTART=false 的真机包不跑);正常伤害链不变,只改起点血量。
+              if __WJJH_AUTOSTART and not self.__wjjh_nerfed then
+                local foe = self:getRoleByTeamIdAndInTeamId(2, 1)
+                if foe ~= nil and foe.addAttr ~= nil and foe.getAttr ~= nil then
+                  local q = foe:getAttr("qi")
+                  if q ~= nil and q > 10 then
+                    foe:addAttr("qi", -(q - 10))
+                    self.__wjjh_nerfed = true
+                    __wjjhlog('WJJH_FIGHT: CI nerf foe qi ' .. __ts(q) .. ' -> 10 (KO path test)')
+                  end
+                end
+              end
               -- gh200: 实证探针——gh199 里 auto-runaway 一次没触发(updateFrame 却有 1591 次),
               -- 不明。每 60 帧打一条 hook 心跳,直接看回调死活/frames 累计/auto 标志值。
               self.__wjjh_frames = (self.__wjjh_frames or 0) + 12
