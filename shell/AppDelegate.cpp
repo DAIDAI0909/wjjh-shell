@@ -757,11 +757,11 @@ local function __wjjh_instrument(name, M)
               if __WJJH_AUTOSTART then
                 if self.__wjjh_frames >= (self.__wjjh_nextRunaway or 600) then
                   self.__wjjh_nextRunaway = (self.__wjjh_nextRunaway or 600) + 600
-                  local CL = package.loaded['app.views.layer.ControllLayer']
-                  local fl = CL and CL:getInstance() and CL:getInstance():getLayer('FightLayer')
+                  -- gh201: 用 startMapFight 时抓的实例(getLayer('FightLayer') 会 assert error)
+                  local fl = __WJJH_FIGHT_LAYER
                   __wjjhlog('WJJH_FIGHT: auto-runaway at frame ' .. self.__wjjh_frames ..
                             ' fl=' .. __ts(fl) .. ' onRunaway=' .. __ts(fl and fl.onRunaway))
-                  if fl and fl.onRunaway then
+                  if fl and fl.onRunaway and fl._fight == self then
                     fl:onRunaway()
                   else
                     self:runaway()
@@ -779,6 +779,16 @@ local function __wjjh_instrument(name, M)
     end
   end
   if name == 'app.views.layer.FightLayer.FightLayer' then
+    -- gh201: 抓 FightLayer 实例——getLayer('FightLayer') 会 assert error(_layers 里注册名
+    -- 不是这个短名,gh200 实锤 error:FightLayer)。startMapFight 时把 self 存全局。
+    local osmf = M.startMapFight
+    if type(osmf) == 'function' then
+      M.startMapFight = function(self, ...)
+        __WJJH_FIGHT_LAYER = self
+        __wjjhlog('WJJH_FIGHT: FightLayer captured')
+        return osmf(self, ...)
+      end
+    end
     -- gh194: playFightBeginAnim 的 endFunc 是战斗回合循环(fight:start)的唯一启动点。
     -- 包住 endFunc,确认它有没有被开场文字动画的 CallFunc 调到。
     -- ★yield-safe:enter 日志+直接 return,不 pcall 不构造表(endFunc 包装仅闭包赋值)。
