@@ -734,11 +734,21 @@ local function __wjjh_instrument(name, M)
           local sc = cc.Director:getInstance():getRunningScene()
           if sc and sc.schedule then
             -- gh197: 每渲染帧推 6 帧 ≈ 30fps 逻辑帧率(gh196 实测渲染 tick ~5fps)——
-            -- 战斗以 ~1x 速度推进,90s CI 窗口够打完一场,观测 fightEnd→结算→回地图。
+            -- gh198: 提到 12 帧(≈60fps 逻辑,2x 快进)——gh197 打了 20+ 击仍未分胜负。
             -- 战斗结束(state≠RUNNING)后 updateFrame 早退,空转开销可忽略。
             sc:schedule(function()
-              for _ = 1, 6 do
+              for _ = 1, 12 do
                 self:updateFrame()
+              end
+              -- gh198: CI 自动逃跑——600 帧后触发 runaway 并每 600 帧重试(逃跑有成功率),
+              -- 刻意走「fightEnd→结算→回地图」链验证收尾,不用等打死。
+              if __WJJH_AUTOSTART then
+                self.__wjjh_frames = (self.__wjjh_frames or 0) + 12
+                if self.__wjjh_frames >= (self.__wjjh_nextRunaway or 600) then
+                  self.__wjjh_nextRunaway = (self.__wjjh_nextRunaway or 600) + 600
+                  __wjjhlog('WJJH_FIGHT: auto-runaway fired at frame ' .. self.__wjjh_frames)
+                  self:runaway()
+                end
               end
             end, 0)
             __wjjhlog('WJJH_FIGHT: frame-drive hooked on running scene (interval=0)')
@@ -1246,7 +1256,7 @@ local function __wjjh_autoRoleTick()
         end
         -- gh180: 目标驱动的探索——每到一间房：逐 NPC 算动作表（createMapRoleFuncList），
         -- 发现「切磋/挑战/动手/比试/攻击/战斗」直接触发（走 observe 层路径），否则继续走。
-        if navTicks > 60 and navTicks <= 220 and navTicks % 4 == 0 and not __wjjh_fightFired then
+        if navTicks > 60 and navTicks <= 400 and navTicks % 4 == 0 and not __wjjh_fightFired then
           local okG, errG = pcall(function()
             local CL = package.loaded['app.views.layer.ControllLayer']
             local layer = CL and CL:getInstance() and CL:getInstance():getLayer('MapLayer')
