@@ -718,6 +718,33 @@ local function __wjjh_instrument(name, M)
       end
     end
   end
+  if name == 'app.models.fight.Fight' then
+    -- gh196: 战斗帧循环提速。gh195 实锤:updateFrame 在跑但仅 ~2.5fps(设计 30fps)——
+    -- cocos 渲染 tick 在 CI 模拟器只有 ~5-15fps,FightLayer:schedule(0.033) 的 elapsed
+    -- 累积(每渲染帧+1/60)要 2 渲染帧才触发一次 → 战斗慢动作 30 倍,90s 窗口打不完一击。
+    -- Game 主循环(15.8fps 实测)就是 newScene:schedule(fn,0) 同款——把 updateFrame 挂到
+    -- 运行场景 interval=0,与主循环同权。原 33ms 调度保留(双驱动无害,state 守卫防战后误推)。
+    -- ★yield-safe:回调内容=原 schedule 回调同款(updateFrame),等价迁移,不 pcall 不构造表。
+    local ost = M.start
+    if type(ost) == 'function' then
+      M.start = function(self, ...)
+        __wjjhlog('WJJH_FIGHT: Fight.start enter (frame-drive hook)')
+        if not self.__wjjh_frameHook then
+          self.__wjjh_frameHook = true
+          local sc = cc.Director:getInstance():getRunningScene()
+          if sc and sc.schedule then
+            sc:schedule(function()
+              self:updateFrame()
+            end, 0)
+            __wjjhlog('WJJH_FIGHT: frame-drive hooked on running scene (interval=0)')
+          else
+            __wjjhlog('WJJH_FIGHT: no running scene, no hook')
+          end
+        end
+        return ost(self, ...)
+      end
+    end
+  end
   if name == 'app.views.layer.FightLayer.FightLayer' then
     -- gh194: playFightBeginAnim 的 endFunc 是战斗回合循环(fight:start)的唯一启动点。
     -- 包住 endFunc,确认它有没有被开场文字动画的 CallFunc 调到。
