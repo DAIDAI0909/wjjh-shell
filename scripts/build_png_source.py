@@ -52,7 +52,12 @@ def main():
             import shutil
             shutil.copyfile(pre, conf)
 
-        sdk = run(['xcrun', '-sdk', 'iphonesimulator', '-show-sdk-path']).stdout.strip()
+        # gh211: 真机构建(WJJH_DEVICE=1 由 CMake 以 cmake -E env 传入)切 iphoneos
+        _dev = os.environ.get('WJJH_DEVICE') == '1'
+        _sdkname = 'iphoneos' if _dev else 'iphonesimulator'
+        _triple = 'arm64-apple-ios13.0' if _dev else 'arm64-apple-ios13.0-simulator'
+        print('[png-src] target: %s (%s)' % (_triple, _sdkname))
+        sdk = run(['xcrun', '-sdk', _sdkname, '-show-sdk-path']).stdout.strip()
         cfiles = ['png.c', 'pngerror.c', 'pngget.c', 'pngmem.c', 'pngpread.c',
                   'pngread.c', 'pngrio.c', 'pngrtran.c', 'pngrutil.c', 'pngset.c',
                   'pngtrans.c', 'pngwio.c', 'pngwrite.c', 'pngwtran.c', 'pngwutil.c']
@@ -61,7 +66,7 @@ def main():
             src = os.path.join(root, cf)
             obj = os.path.join(WORK, cf[:-2] + '.o')
             r = run(['clang', '-c', src, '-o', obj,
-                     '-isysroot', sdk, '-target', 'arm64-apple-ios13.0-simulator',
+                     '-isysroot', sdk, '-target', _triple,
                      '-I', root, '-O2', '-fno-objc-arc',
                      '-DPNG_ARM_NEON_OPT=0'])
             if r.returncode != 0:

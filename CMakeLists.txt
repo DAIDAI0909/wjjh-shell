@@ -11,6 +11,25 @@ if(WJJH_ARM64)
     message(STATUS "== WJJH_ARM64=ON: forcing arm64 simulator build ==")
 endif()
 
+# ---- gh211: 真机(iOS device)构建直通车——用仓库标记文件开关,不碰 yml ----
+# yml 无 workflow scope 改不了。约定:仓库根存在 DEVICE_BUILD_ON 文件 => 本轮 CI 变成
+# "真机构建专列":模拟器侧 configure 在此提前返回(只挂一个 ALL 目标),build 阶段由
+# scripts/build_device_ipa.py 跑完整的 iphoneos 构建并打包 unsigned .ipa 回传自有服务器。
+# WJJH_DEVICE=ON 只由 build_device_ipa.py 以 -D 传入,同样不经过 yml。
+option(WJJH_DEVICE "Build for real iOS device (iphoneos) instead of simulator" OFF)
+if(EXISTS ${CMAKE_SOURCE_DIR}/DEVICE_BUILD_ON AND NOT WJJH_DEVICE)
+    message(STATUS "== DEVICE_BUILD_ON marker found: sim pass becomes device-build orchestrator ==")
+    add_custom_target(wjjh_device_ipa ALL
+        COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/build_device_ipa.py
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        VERBATIM)
+    return()
+endif()
+if(WJJH_DEVICE)
+    set(CMAKE_OSX_ARCHITECTURES "arm64" CACHE STRING "" FORCE)
+    message(STATUS "== WJJH_DEVICE=ON: building for real device (iphoneos) ==")
+endif()
+
 # CI 诊断日志路径：app 的 stderr/stdout 会 freopen 到这个文件（由各 CI 的 yaml 传入）
 set(WJJH_LAUNCH_LOG "" CACHE STRING "CI launch log path for app stderr redirect")
 
@@ -50,12 +69,17 @@ if(NOT EXISTS ${ENGINE}/external/luajit/include/lua.h)
     if(WJJH_ARM64)
         find_program(PY3B_EXE python3)
         if(PY3B_EXE)
-            execute_process(COMMAND ${PY3B_EXE} ${CMAKE_SOURCE_DIR}/scripts/build_png_source.py ${ENGINE}
+            # gh211: 真机构建时把 WJJH_DEVICE=1 传给两个源编脚本(切 iphoneos SDK/三元组)
+            set(WJJH_DEV_ENV)
+            if(WJJH_DEVICE)
+                set(WJJH_DEV_ENV ${CMAKE_COMMAND} -E env WJJH_DEVICE=1)
+            endif()
+            execute_process(COMMAND ${WJJH_DEV_ENV} ${PY3B_EXE} ${CMAKE_SOURCE_DIR}/scripts/build_png_source.py ${ENGINE}
                             RESULT_VARIABLE png_r OUTPUT_VARIABLE png_out ERROR_VARIABLE png_out
                             TIMEOUT 420)
             message(STATUS "png-source-build:\n${png_out}")
             # gh158: freetype 同样源码现编（2017 库在真加载字体时模块指针崩）
-            execute_process(COMMAND ${PY3B_EXE} ${CMAKE_SOURCE_DIR}/scripts/build_freetype_source.py ${ENGINE}
+            execute_process(COMMAND ${WJJH_DEV_ENV} ${PY3B_EXE} ${CMAKE_SOURCE_DIR}/scripts/build_freetype_source.py ${ENGINE}
                             RESULT_VARIABLE ft_r OUTPUT_VARIABLE ft_out ERROR_VARIABLE ft_out
                             TIMEOUT 600)
             message(STATUS "freetype-source-build:\n${ft_out}")
@@ -67,7 +91,12 @@ if(NOT EXISTS ${ENGINE}/external/luajit/include/lua.h)
     if(WJJH_ARM64)
         find_program(PY3_EXE python3)
         if(PY3_EXE)
-            execute_process(COMMAND ${PY3_EXE} ${CMAKE_SOURCE_DIR}/scripts/fix_prebuilts.py ${ENGINE}
+            # gh211: 真机构建时改成重建为 platform=2(ios device)
+            set(WJJH_FP_ARGS)
+            if(WJJH_DEVICE)
+                set(WJJH_FP_ARGS --platform 2)
+            endif()
+            execute_process(COMMAND ${PY3_EXE} ${CMAKE_SOURCE_DIR}/scripts/fix_prebuilts.py ${ENGINE} ${WJJH_FP_ARGS}
                             RESULT_VARIABLE fp_r OUTPUT_VARIABLE fp_out ERROR_VARIABLE fp_out
                             TIMEOUT 300)
             if(NOT fp_r EQUAL 0)
@@ -100,16 +129,22 @@ if(NOT EXISTS ${ENGINE}/external/luajit/include/lua.h)
         if(NOT ljclone_r EQUAL 0)
             message(FATAL_ERROR "luajit clone failed after retries")
         endif()
-        execute_process(COMMAND xcrun -sdk iphonesimulator -show-sdk-path
-                        OUTPUT_VARIABLE SIM_SDK OUTPUT_STRIP_TRAILING_WHITESPACE)
+        # gh211: 真机构建走 iphoneos SDK + 设备三元组;模拟器保持原样
+        if(WJJH_DEVICE)
+            execute_process(COMMAND xcrun -sdk iphoneos -show-sdk-path
+                            OUTPUT_VARIABLE SIM_SDK OUTPUT_STRIP_TRAILING_WHITESPACE)
+            set(LJ_TARCH "arm64-apple-ios13.0")
+        else()
+            execute_process(COMMAND xcrun -sdk iphonesimulator -show-sdk-path
+                            OUTPUT_VARIABLE SIM_SDK OUTPUT_STRIP_TRAILING_WHITESPACE)
+            set(LJ_TARCH "arm64-apple-ios13.0-simulator")
+        endif()
         if(WJJH_ARM64)
             set(LJ_TARGET arm64)
-            set(LJ_TARCH "arm64-apple-ios13.0-simulator")
             # LuaJIT arm64 强制 GC64 布局(lj_arch.h),显式声明保两侧一致
             set(LJ_EXTRA_FLAGS "-DLUAJIT_ENABLE_GC64")
         else()
             set(LJ_TARGET x86_64)
-            set(LJ_TARCH "x86_64-apple-ios13.0-simulator")
             set(LJ_EXTRA_FLAGS "-DLUAJIT_ENABLE_GC64 -DLUAJIT_USE_SYSMALLOC")
         endif()
         set(LJ_TFLAGS "-target ${LJ_TARCH} -isysroot ${SIM_SDK}")

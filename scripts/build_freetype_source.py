@@ -131,7 +131,12 @@ def main():
             open(opt, 'w', encoding='utf-8', newline='\n').write(txt)
             print('[ft-src] 已关闭 USE_ZLIB/USE_BZIP2/USE_LZW @ %s' % opt)
 
-        sdk = run(['xcrun', '-sdk', 'iphonesimulator', '-show-sdk-path']).stdout.strip()
+        # gh211: 真机构建(WJJH_DEVICE=1)切 iphoneos
+        _dev = os.environ.get('WJJH_DEVICE') == '1'
+        _sdkname = 'iphoneos' if _dev else 'iphonesimulator'
+        _triple = 'arm64-apple-ios13.0' if _dev else 'arm64-apple-ios13.0-simulator'
+        print('[ft-src] target: %s (%s)' % (_triple, _sdkname))
+        sdk = run(['xcrun', '-sdk', _sdkname, '-show-sdk-path']).stdout.strip()
         objs = []
         cfiles = [f for f in MODULE_FILES if os.path.exists(os.path.join(root, f))]
         print('[ft-src] 编译 %d 个模块编译单元' % len(cfiles))
@@ -140,7 +145,7 @@ def main():
             src = os.path.join(root, cf)
             obj = os.path.join(WORK, cf.replace('/', '_')[:-2] + '.o')
             r = run(['clang', '-c', src, '-o', obj,
-                     '-isysroot', sdk, '-target', 'arm64-apple-ios13.0-simulator',
+                     '-isysroot', sdk, '-target', _triple,
                      '-I', os.path.join(root, 'include'),
                      '-DFT2_BUILD_LIBRARY', '-O2', '-fno-objc-arc',
                      '-Wno-deprecated-declarations', '-Wno-unused-function',

@@ -21,6 +21,10 @@ TGZ = os.path.join(BUILD_DIR, 'Python-iOS-support.tar.gz')
 
 SIM = 'Python.xcframework/ios-arm64_x86_64-simulator'
 
+# gh211: 真机构建(--device 或 WJJH_DEVICE=1)用 ios-arm64(设备)切片;缺省模拟器切片
+DEVICE = ('--device' in sys.argv) or (os.environ.get('WJJH_DEVICE') == '1')
+LEAF = 'ios-arm64' if DEVICE else 'ios-arm64_x86_64-simulator'
+
 
 def fail(msg):
     print('[py-ios] FATAL:', msg, flush=True)
@@ -50,10 +54,11 @@ def setup_py_ios(xcfw):
     os.makedirs(OUT, exist_ok=True)
 
     # 1) Python.framework（dylib + Info.plist + Headers）→ OUT/Python.framework
-    sim_fw = os.path.join(xcfw, 'ios-arm64_x86_64-simulator', 'Python.framework')
-    if not os.path.isdir(sim_fw):
-        fail('Python.framework not found: ' + sim_fw)
-    shutil.copytree(sim_fw, os.path.join(OUT, 'Python.framework'))
+    fw = os.path.join(xcfw, LEAF, 'Python.framework')
+    if not os.path.isdir(fw):
+        fail('Python.framework not found: ' + fw)
+    print('[py-ios] framework leaf: %s' % LEAF, flush=True)
+    shutil.copytree(fw, os.path.join(OUT, 'Python.framework'))
 
     # 2) 纯 py 标准库 → OUT/pyhome/lib/python3.14/
     #    PYTHONHOME=pyhome 时 getpath 自动找 $prefix/lib/python3.14 ✓
@@ -63,18 +68,22 @@ def setup_py_ios(xcfw):
     shutil.copytree(stdlib_src, os.path.join(OUT, 'pyhome', 'lib', 'python3.14'))
 
     # 3) lib-dynload（C 扩展 .so）→ pyhome/lib/python3.14/lib-dynload/
-    #    gh72 arm64 路线：优先 lib-arm64（arm64 模拟器原生），缺失才回退 lib-x86_64
+    #    gh72 arm64 路线：优先 lib-arm64（arm64 模拟器原生），缺失才回退 lib-x86_64；
+    #    gh211: 真机用 ios-arm64 切片下的 lib-arm64（iphoneos .so）
+    if DEVICE:
+        variants = ['lib-arm64']
+    else:
+        variants = ['lib-arm64', 'lib-x86_64']
     dynload = None
-    for variant in ('lib-arm64', 'lib-x86_64'):
-        cand = os.path.join(xcfw, 'ios-arm64_x86_64-simulator',
-                            variant, 'python3.14', 'lib-dynload')
+    for variant in variants:
+        cand = os.path.join(xcfw, LEAF, variant, 'python3.14', 'lib-dynload')
         if os.path.isdir(cand):
             dynload = cand
             print('[py-ios] lib-dynload variant: %s (%d files)' %
                   (variant, len(os.listdir(cand))), flush=True)
             break
     if dynload is None:
-        fail('lib-dynload not found in simulator leaf (lib-arm64/lib-x86_64 both missing)')
+        fail('lib-dynload not found in %s leaf (lib-arm64 missing)' % LEAF)
     shutil.copytree(dynload,
                     os.path.join(OUT, 'pyhome', 'lib', 'python3.14', 'lib-dynload'))
 

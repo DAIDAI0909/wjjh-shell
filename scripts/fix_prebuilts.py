@@ -35,6 +35,10 @@ LC_VERSION_MIN_MACOSX = 0x24
 LC_VERSION_MIN_IPHONEOS = 0x25
 LC_DATA_IN_CODE = 0x29
 PLATFORM_IOS_SIMULATOR = 7
+PLATFORM_IOS_DEVICE = 2
+# gh211: 目标平台可切换(--platform 2 = 真机)；默认模拟器(7)
+TARGET_PLATFORM = PLATFORM_IOS_SIMULATOR
+LD_PLATFORM_NAME = 'ios-simulator'
 
 FAIL_LOG = None
 
@@ -222,7 +226,7 @@ def rebuild_member(body, lc_off):
     for cmd, cs, cpp in kept:
         new_lc += new[cpp:cpp+cs]
     new_lc += struct.pack('<IIIIII',
-        LC_BUILD_VERSION, 24, PLATFORM_IOS_SIMULATOR,
+        LC_BUILD_VERSION, 24, TARGET_PLATFORM,
         0x000D0000,
         0x00110500,
         0)
@@ -427,7 +431,7 @@ def rebuild_member_clean(body, lc_off):
         struct.pack_into('<III', sec, 64, sflags, res1, res2)
         lc_blob += sec
     # BUILD
-    lc_blob += struct.pack('<IIIIII', 0x32, 24, 7, 0x000D0000, 0x00110500, 0)
+    lc_blob += struct.pack('<IIIIII', 0x32, 24, TARGET_PLATFORM, 0x000D0000, 0x00110500, 0)
     # SYMTAB
     symoff_n, nsyms, stroff_n, strsize = symtab
     symtab_at = len(lc_blob)  # 记录 SYMTAB 命令在 lc_blob 内的真实位置
@@ -597,9 +601,9 @@ def ld_r_normalize(member_bytes, workdir, idx):
         os.remove(dst)
     global _ldr_logged, _ldr_listed
     attempts = [
-        ['-platform_version', 'ios-simulator', '13.0', '18.2', '-no_compact_unwind'],
-        ['-platform_version', 'ios-simulator', '13.0', '18.2'],
-        ['-platform_version', '7', '13.0', '18.2'],
+        ['-platform_version', LD_PLATFORM_NAME, '13.0', '18.2', '-no_compact_unwind'],
+        ['-platform_version', LD_PLATFORM_NAME, '13.0', '18.2'],
+        ['-platform_version', str(TARGET_PLATFORM), '13.0', '18.2'],
         [],
     ]
     for att in attempts:
@@ -936,8 +940,13 @@ def process_archive(path):
 
 
 def main():
-    global FAIL_LOG
+    global FAIL_LOG, TARGET_PLATFORM, LD_PLATFORM_NAME
     root = sys.argv[1]
+    # gh211: --platform 2 = 真机(iOS device)重建;缺省 7 = 模拟器
+    if '--platform' in sys.argv:
+        TARGET_PLATFORM = int(sys.argv[sys.argv.index('--platform') + 1])
+        LD_PLATFORM_NAME = 'ios' if TARGET_PLATFORM == PLATFORM_IOS_DEVICE else 'ios-simulator'
+        print('[prebuilt-fix] target platform = %d (%s)' % (TARGET_PLATFORM, LD_PLATFORM_NAME))
     FAIL_LOG = os.path.join(os.getcwd(), 'patch_failures.txt')
     if os.path.exists(FAIL_LOG):
         os.remove(FAIL_LOG)
