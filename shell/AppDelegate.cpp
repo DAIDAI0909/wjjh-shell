@@ -5,6 +5,7 @@
 #include "cocos2d.h"
 #include "WjjhJM.h"
 #include "WjjhXHR.h"
+#include "WJJHSpine38.h"
 #include <os/log.h>
 #include <sys/time.h>
 #include <unistd.h>
@@ -120,6 +121,10 @@ bool AppDelegate::applicationDidFinishLaunching()
     // 漏了会报 "SimpleAudioEngine is nil"
     lua_State* L = engine->getLuaStack()->getLuaState();
     lua_module_register(L);
+
+    // gh217/A3: 注册 spine 3.8.75 真运行时桥（wjjh_spine38_*），必须在 Lua boot chunk 之前
+    wjjh_spine38_register(L);
+    wjjh_bootlog("WJJH_BOOT: spine38 real bridge registered");
 
     // Lua 侧诊断出口：print 重定向到 __wjjhlog（stderr + os_log）
     lua_register(L, "__wjjhlog", wjjh_lua_log);
@@ -510,35 +515,83 @@ local __mkSkel = function(...)
   tolua.setpeer(sk, __wjjh_peer_of(__wjjh_skelPeerFull()))
   return sk
 end
--- ===== gh164/166: 骨骼工厂（哑节点版）=====
--- YXSkeletonAnimation/spine38 是安卓魔改引擎的 C++ 全局，官方 3.15.1 没有。
--- 旧链式桩的 createWithFile 恒返回 nil（__chain 未定义）——资产补全后流程走到
--- HeadView:__initEffectAnimView → Resource:getSkAnim 就断言"动画初始化出错"。
--- gh164 曾试"真实现优先"用 cocos 自带 sp.SkeletonAnimation：**实测崩**
--- （spAtlas_create→spAtlas_dispose，因为游戏 .atlas/.skel 是 spine 3.8 格式，
---   官方 3.15.1 的运行时是 3.5/3.6，解析不了）→ gh166 回到哑节点。
--- 真 3.8 渲染留作后续项（需要 3.8 运行时）。
-local __wjjh_mkSpine = function(skel, atlas, scale)
-  return __mkSkel()
-end
-local __wjjhYXSkel = {}
-__wjjhYXSkel.createWithFile = function(self, skel, atlas, scale) return __wjjh_mkSpine(skel, atlas, scale) end
-__wjjhYXSkel.createWithBinaryFile = function(self, skel, atlas, scale) return __wjjh_mkSpine(skel, atlas, scale) end
-__wjjhYXSkel.create = function(self, skel, atlas, scale) return __wjjh_mkSpine(skel, atlas, scale) end
-setmetatable(__wjjhYXSkel, {__index = function(tt, k)
-  local f = function() return __mkSkel() end
-  rawset(tt, k, f)
-  return f
-end})
-_G['YXSkeletonAnimation'] = __wjjhYXSkel
-
-spine38 = setmetatable({}, {__index = function(t, k)
-  if k == 'NewSkeletonAnimation' then
-    return { createWithBinaryFile = __wjjh_mkSpine, createWithFile = __wjjh_mkSpine, create = __wjjh_mkSpine }
+-- ===== gh217/A3: 骨骼工厂 v3（真 spine 3.8.75 优先，失败回退哑节点）=====
+-- YXSkeletonAnimation/spine38 是安卓魔改引擎的 C++ 全局，官方 3.15.1 没有；
+-- 官方自带 spine 3.5/3.6 解析不了游戏的 3.8 .skel（gh164 用 cocos sp.SkeletonAnimation
+-- 实测崩：spAtlas_create→dispose）→ 一直用哑节点(__mkSkel)。gh217 把 spine-runtimes 3.8
+-- 编进 App（third_party/spine-3.8.75），C 桥见 WJJHSpine38.cpp：createBinary 返回
+-- (容器 cc.Node, spine 指针)。★真节点 peer 只挂显式 spine/YX 方法，不挂 catch-all ——
+-- 免得遮住 cc.Node 原生方法（tolua 的 peer __index 优先于原生命中）。
+-- 开关：__WJJH_SPINE38_REAL（默认 true；置 false 一键退回哑节点）。
+do
+  local S = {}
+  S.real = (rawget(_G, '__WJJH_SPINE38_REAL') ~= false)
+    and type(rawget(_G, 'wjjh_spine38_createBinary')) == 'function'
+  S.normLoop = function(loop)
+    if loop == nil then return false end
+    if type(loop) == 'number' then return loop ~= 0 end
+    return loop ~= false
   end
-  return nil
-end})
-__wjjhlog('WJJH_BOOT: C/D stubs + skeleton factory v2 (real-spine-first) installed')
+  S.peerOf = function(skelptr)
+    return {
+      setAnimation = function(self, ti, name, loop) return wjjh_spine38_setAnimation(skelptr, ti or 0, name, S.normLoop(loop)) end,
+      addAnimation = function(self, ti, name, loop, delay) return wjjh_spine38_addAnimation(skelptr, ti or 0, name, S.normLoop(loop), delay or 0) end,
+      setTimeScale = function(self, s) return wjjh_spine38_setTimeScale(skelptr, s or 1) end,
+      setSpeedScale = function(self, s) return wjjh_spine38_setTimeScale(skelptr, s or 1) end,
+      setTrackTime = function(self, ti, t) return wjjh_spine38_setTrackTime(skelptr, ti or 0, t or 0) end,
+      getAnimDuration = function(self, name) return wjjh_spine38_getAnimDuration(skelptr, name) end,
+      getAnimEvents = function(self, name) return wjjh_spine38_getAnimEvents(skelptr, name) end,
+      getBoneSetupPosePosition = function(self, a, b) return wjjh_spine38_getBoneSetupPosePosition(skelptr, a, b) end,
+      setSlotsToSetupPose = function(self) return wjjh_spine38_setSlotsToSetupPose(skelptr) end,
+      setBonesToSetupPose = function(self) return wjjh_spine38_setBonesToSetupPose(skelptr) end,
+      setToSetupPose = function(self) return wjjh_spine38_setToSetupPose(skelptr) end,
+      updateWorldTransform = function(self) return wjjh_spine38_updateWorldTransform(skelptr) end,
+      setAttachment = function(self, slot, name) return wjjh_spine38_setAttachment(skelptr, slot, name) end,
+      -- YX 专有（非关键：暂空实现，避免 call nil / 崩溃）
+      setSlotColor = function(self, slot, color) end,
+      resetAnimState = function(self) end,
+      setBackwards = function(self, b) end,
+      setStartTime = function(self, t) end,
+      setEndTime = function(self, t) end,
+      setCompleteListener = function(self, cb) end,
+      setEventCallback = function(self, cb) end,
+      registerScriptHandler = function(self, cb) end,
+      runActionWithName = function(self, name, action) if action then self:runAction(action) end end,
+    }
+  end
+  S.mkSpine = function(a, b, c, d)
+    -- 兼容冒号调用(self, skel, atlas, scale) 与点调用(skel, atlas, scale)
+    local skel, atlas, scale
+    if type(a) == 'string' then skel, atlas, scale = a, b, c else skel, atlas, scale = b, c, d end
+    if S.real and skel ~= nil and atlas ~= nil then
+      local ok, node, skelptr = pcall(wjjh_spine38_createBinary, skel, atlas, scale or 1)
+      if ok and node ~= nil and skelptr ~= nil then
+        tolua.setpeer(node, S.peerOf(skelptr))
+        return node
+      end
+      if not ok then __wjjhlog('WJJH_SPINE38: createBinary error -> fallback: ' .. tostring(node)) end
+    end
+    return __mkSkel()
+  end
+  local YX = {}
+  YX.createWithFile = function(self, skel, atlas, scale) return S.mkSpine(skel, atlas, scale) end
+  YX.createWithBinaryFile = function(self, skel, atlas, scale) return S.mkSpine(skel, atlas, scale) end
+  YX.create = function(self, skel, atlas, scale) return S.mkSpine(skel, atlas, scale) end
+  setmetatable(YX, {__index = function(tt, k)
+    local f = function() return __mkSkel() end
+    rawset(tt, k, f)
+    return f
+  end})
+  _G['YXSkeletonAnimation'] = YX
+
+  spine38 = setmetatable({}, {__index = function(t, k)
+    if k == 'NewSkeletonAnimation' then
+      return { createWithBinaryFile = S.mkSpine, createWithFile = S.mkSpine, create = S.mkSpine }
+    end
+    return nil
+  end})
+  __wjjhlog('WJJH_BOOT: skeleton factory v3 (spine38-real=' .. tostring(S.real) .. ') installed')
+end
 
 -- ===== cpp.Game 桩 =====
 if not cpp then

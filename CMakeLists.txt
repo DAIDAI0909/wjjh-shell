@@ -305,6 +305,17 @@ file(GLOB_RECURSE COCOS_EXT_SRC
     ${ENGINE}/cocos/editor-support/spine/*.cpp
 )
 
+# ---- gh217/A3: spine 3.8.75 真运行时（third_party/spine-3.8.75）----
+# 官方 3.15.1 自带 editor-support/spine 是 3.5/3.6，解析不了游戏的 3.8 .skel。
+# 这里把 spine-runtimes 3.8 分支编进 App。命名空间已重命名为 spine38，避免与 cocos
+# 自带 spine(namespace spine) 撞重复符号。头文件布局已规整为 <spine/...>（含 v3/v4）。
+file(GLOB_RECURSE SPINE38_SRC
+    ${CMAKE_SOURCE_DIR}/third_party/spine-3.8.75/spine-cpp/src/spine/*.cpp
+    ${CMAKE_SOURCE_DIR}/third_party/spine-3.8.75/cocos2dx/*.cpp
+)
+list(LENGTH SPINE38_SRC _spine38_n)
+message(STATUS "gh217 spine38: ${_spine38_n} source files")
+
 # ---- extensions/ 源码（lua_cocos2dx_extension_auto 引用其符号，不编则链接期 undefined）----
 file(GLOB EX_SRC
     ${ENGINE}/extensions/*.cpp
@@ -374,7 +385,7 @@ file(GLOB SHELL_SRC
 )
 
 add_executable(WJJH MACOSX_BUNDLE
-    ${COCOS_SRC} ${COCOS_EXT_SRC} ${EX_SRC} ${UTIL_SRC} ${OBJC_SRC} ${LUA_BIND_SRC} ${SHELL_SRC} ${GAME_RES_FILES}
+    ${COCOS_SRC} ${COCOS_EXT_SRC} ${SPINE38_SRC} ${EX_SRC} ${UTIL_SRC} ${OBJC_SRC} ${LUA_BIND_SRC} ${SHELL_SRC} ${GAME_RES_FILES}
 )
 
 # ---- cocos 2017 代码是 MRC：所有引擎 .mm/.m 关 ARC ----
@@ -422,6 +433,9 @@ target_include_directories(WJJH PRIVATE
     ${ENGINE}/external/unzip
     ${ENGINE}/external/convertUTF
     ${ENGINE}/external/edtaa3func
+    # gh217/A3: spine 3.8.75（spine-cpp 核心头 <spine/...> + cocos 包装头）
+    ${CMAKE_SOURCE_DIR}/third_party/spine-3.8.75/spine-cpp/include
+    ${CMAKE_SOURCE_DIR}/third_party/spine-3.8.75/cocos2dx
 )
 
 # ---- 穷举 external 头文件目录（两级），省得一个个追 ----
