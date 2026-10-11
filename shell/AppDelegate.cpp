@@ -757,22 +757,14 @@ local function __wjjh_instrument(name, M)
               if __WJJH_AUTOSTART then
                 if self.__wjjh_frames >= (self.__wjjh_nextRunaway or 600) then
                   self.__wjjh_nextRunaway = (self.__wjjh_nextRunaway or 600) + 600
-                  -- gh201: 用 startMapFight 时抓的实例(getLayer('FightLayer') 会 assert error)
-                  local fl = __WJJH_FIGHT_LAYER
-                  -- gh203: 两个分支都打日志——gh202 的 onRunaway 探针一条没打而调用"发生"了,
-                  -- 怀疑 fl._fight == self 不成立走了 else(直调 runaway 静默无效路径)。
-                  local sameFight = (fl ~= nil and fl._fight ~= nil and fl._fight == self)
-                  __wjjhlog('WJJH_FIGHT: auto-runaway at frame ' .. self.__wjjh_frames ..
-                            ' fl=' .. __ts(fl) .. ' flfight=' .. __ts(fl and fl._fight) ..
-                            ' self=' .. __ts(self) .. ' same=' .. __ts(sameFight))
-                  if fl and fl.onRunaway and sameFight then
-                    __wjjhlog('WJJH_FIGHT: calling fl:onRunaway()')
-                    fl:onRunaway()
-                    __wjjhlog('WJJH_FIGHT: fl:onRunaway() returned')
-                  else
-                    __wjjhlog('WJJH_FIGHT: calling self:runaway() fallback')
-                    self:runaway()
-                  end
+                  -- gh204: 不再依赖 FightLayer 实例——gh203 实锤 fl._fight 读回 nil
+                  -- (userdata peer 字段不可靠),走了静默无效的 fallback。
+                  -- normalRunaway 的核心三步直接在 Fight 模型侧执行:
+                  --   pause + runaway + FIGHT_RUNAWAY 事件(=4,BaseMap:3448 消费→结算→回地图)。
+                  __wjjhlog('WJJH_FIGHT: runaway via fight events at frame ' .. self.__wjjh_frames)
+                  self:pause()
+                  self:runaway()
+                  self:callEventListener(4)
                 end
               end
             end, 0)
