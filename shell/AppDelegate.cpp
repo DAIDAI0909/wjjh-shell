@@ -761,10 +761,13 @@ local function __wjjh_instrument(name, M)
                   -- (userdata peer 字段不可靠),走了静默无效的 fallback。
                   -- normalRunaway 的核心三步直接在 Fight 模型侧执行:
                   --   pause + runaway + FIGHT_RUNAWAY 事件(=4,BaseMap:3448 消费→结算→回地图)。
+                  -- gh205: ★顺序修正——pause 置 _isPaused 后 updateFrame 直接早退,
+                  -- _eventListenerFM:callFunctions()(在 updateFrame 尾部)永不执行=事件卡死
+                  -- (gh204 实锤:逃跑事件发了 4 次无人消费)。改为 runaway→事件→最后 pause。
                   __wjjhlog('WJJH_FIGHT: runaway via fight events at frame ' .. self.__wjjh_frames)
-                  self:pause()
                   self:runaway()
                   self:callEventListener(4)
+                  self:pause()
                 end
               end
             end, 0)
