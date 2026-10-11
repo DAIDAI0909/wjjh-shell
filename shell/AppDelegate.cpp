@@ -740,13 +740,21 @@ local function __wjjh_instrument(name, M)
               for _ = 1, 12 do
                 self:updateFrame()
               end
+              -- gh200: 实证探针——gh199 里 auto-runaway 一次没触发(updateFrame 却有 1591 次),
+              -- 不明。每 60 帧打一条 hook 心跳,直接看回调死活/frames 累计/auto 标志值。
+              self.__wjjh_frames = (self.__wjjh_frames or 0) + 12
+              self.__wjjh_hookTicks = (self.__wjjh_hookTicks or 0) + 1
+              if self.__wjjh_frames % 60 == 0 then
+                __wjjhlog('WJJH_FIGHT: tick frames=' .. __ts(self.__wjjh_frames) ..
+                          ' ticks=' .. __ts(self.__wjjh_hookTicks) ..
+                          ' auto=' .. __ts(__WJJH_AUTOSTART))
+              end
               -- gh198: CI 自动逃跑——600 帧后触发并每 600 帧重试(逃跑有成功率),
               -- 刻意走「fightEnd→结算→回地图」链验证收尾,不用等打死。
               -- gh199: 改走 FightLayer:onRunaway() 正规 UI 路径(无参→btnType=nil→跳过
               -- 80% 失败分支;内部 runRole:runAway() 判定,失败会进 CD→下个 600 帧重试)。
               -- gh198 直调 Fight:runaway() 静默无效(绕过了 pause+事件+executeBuff 流程)。
               if __WJJH_AUTOSTART then
-                self.__wjjh_frames = (self.__wjjh_frames or 0) + 12
                 if self.__wjjh_frames >= (self.__wjjh_nextRunaway or 600) then
                   self.__wjjh_nextRunaway = (self.__wjjh_nextRunaway or 600) + 600
                   local CL = package.loaded['app.views.layer.ControllLayer']
