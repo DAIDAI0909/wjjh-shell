@@ -387,6 +387,10 @@ char *SkeletonBinary::readString(DataInput *input) {
 	int length = readVarint(input, true);
 	char *string;
 	if (length == 0) return NULL;
+	// gh218 安全补丁：clamp 到剩余字节，防越界 memcpy（损坏/非标准 .skel）
+	int remaining = (int) (input->end - input->cursor);
+	if (length - 1 > remaining) length = remaining + 1;
+	if (length <= 1) return NULL;
 	string = SpineExtension::alloc<char>(length, __FILE__, __LINE__);
 	memcpy(string, input->cursor, length - 1);
 	input->cursor += length - 1;
@@ -413,7 +417,8 @@ float SkeletonBinary::readFloat(DataInput *input) {
 }
 
 unsigned char SkeletonBinary::readByte(DataInput *input) {
-	return *input->cursor++;
+    // gh218 安全补丁：越界读返回 0（防损坏/非标准 .skel 读出界 → 崩）
+    return input->cursor >= input->end ? 0 : *input->cursor++;
 }
 
 signed char SkeletonBinary::readSByte(DataInput *input) {
