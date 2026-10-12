@@ -66,12 +66,25 @@ Skeleton::Skeleton(SkeletonData *skeletonData) :
 		_scaleY(1),
 		_x(0),
 		_y(0) {
+	// gh221: SkeletonBinary::readSkeletonData 读取失败时返回 NULL（例如附件在 atlas 里找不到
+	//   → newRegionAttachment 返回 NULL → setError → readSkeletonData 返回 NULL）。
+	//   而 SkeletonRenderer::initWithBinaryFile 里的 CCASSERT 在 Release 下是 no-op，
+	//   NULL 会被原样交给本构造函数 → 这里解引用 _data 立刻 SIGSEGV（run 220 实测）。
+	//   现在遇到 NULL 就构造一个"空骨架"：容器保持为空，getData() 仍然返回 NULL，
+	//   调用方（C 桥 wjjh_spine38_createBinary）据此判定失败并回退哑节点。
+	if (_data == NULL) {
+		printf("WJJH_SPINE38: Skeleton ctor got NULL SkeletonData -> empty skeleton\n");
+		return;
+	}
+
 	_bones.ensureCapacity(_data->getBones().size());
 	for (size_t i = 0; i < _data->getBones().size(); ++i) {
 		BoneData *data = _data->getBones()[i];
+		if (data == NULL) break; // 损坏/截断数据：无法建骨骼，停止（调用方另有兜底）
 
 		Bone *bone;
-		if (data->getParent() == NULL) {
+		// gh221: 父骨索引越界（损坏/截断数据）时当作根骨骼处理，避免 _bones[野索引] 崩溃。
+		if (data->getParent() == NULL || (size_t)data->getParent()->getIndex() >= _bones.size()) {
 			bone = new(__FILE__, __LINE__) Bone(*data, *this, NULL);
 		} else {
 			Bone *parent = _bones[data->getParent()->getIndex()];
@@ -86,8 +99,12 @@ Skeleton::Skeleton(SkeletonData *skeletonData) :
 	_drawOrder.ensureCapacity(_data->getSlots().size());
 	for (size_t i = 0; i < _data->getSlots().size(); ++i) {
 		SlotData *data = _data->getSlots()[i];
+		if (data == NULL || _bones.size() == 0) break;
 
-		Bone *bone = _bones[data->getBoneData().getIndex()];
+		// gh221: 插槽的骨骼索引越界时钳到最后一根骨骼，同样避免野指针解引用。
+		size_t boneIndex = (size_t)data->getBoneData().getIndex();
+		if (boneIndex >= _bones.size()) boneIndex = _bones.size() - 1;
+		Bone *bone = _bones[boneIndex];
 		Slot *slot = new(__FILE__, __LINE__) Slot(*data, *bone);
 
 		_slots.add(slot);

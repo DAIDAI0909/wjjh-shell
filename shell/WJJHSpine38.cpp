@@ -26,12 +26,17 @@
 
 #include "spine38/SkeletonAnimation.h"
 #include "spine38/spine.h"
+#include "spine38/Atlas.h"
+#include "spine38/AtlasAttachmentLoader.h"
+#include "spine38/SkeletonBinary.h"
+#include "spine38/SkeletonData.h"
 
 extern "C" {
 #include "lauxlib.h"
 }
 
 #include <string>
+#include <set>
 
 USING_NS_CC;
 
@@ -48,6 +53,53 @@ inline const char* cstr_of(const spine38::String& s) {
     return b ? b : "";
 }
 
+// ---- gh221 干跑（dry run）----
+// 只解析 SkeletonData，**不构造 Skeleton**（构造才是 run 220 SIGSEGV 的地方），因此绝对安全。
+// 目的有二：
+//   1) 诊断：readSkeletonData 到底返回 NULL 还是有效数据？失败原因（binary.getError()）是什么？
+//   2) 兜底门闸：createBinary 先干跑，失败就直接回退哑节点，绝不进入会崩的构造路径。
+// 返回 true 表示"可以安全构造 Skeleton"，msg 里带完整诊断串。
+bool wjjh_spine38_dry_run(const char* skel, const char* atlas, std::string& msg) {
+    auto* fu = FileUtils::getInstance();
+    const bool skelOk = fu->isFileExist(skel);
+    const bool atlasOk = fu->isFileExist(atlas);
+
+    msg = "skel=" + std::string(skel) + "(exists=" + (skelOk ? "1" : "0") + ")"
+        + " atlas=" + std::string(atlas) + "(exists=" + (atlasOk ? "1" : "0") + ")";
+    if (!skelOk || !atlasOk) {
+        msg += " -> SKIP missing file";
+        return false;
+    }
+
+    // 不带 textureLoader / 不建纹理：只解析 .atlas 文本，拿到 region 表。
+    // 路径解析走 Cocos2dExtension::_readFile -> FileUtils，与真实加载完全一致。
+    spine38::Atlas probeAtlas(spine38::String(atlas), NULL, false);
+    msg += " atlasPages=" + std::to_string(probeAtlas.getPages().size());
+    msg += " atlasRegions=" + std::to_string(probeAtlas.getRegions().size());
+
+    spine38::AtlasAttachmentLoader loader(&probeAtlas);
+    spine38::SkeletonBinary binary(&loader);
+    spine38::SkeletonData* data = binary.readSkeletonDataFile(spine38::String(skel));
+
+    if (data == NULL) {
+        const char* err = binary.getError().buffer();
+        msg += " -> readSkeletonData=NULL err=";
+        msg += (err && *err) ? err : "(empty)";
+        return false;
+    }
+
+    msg += " -> OK bones=" + std::to_string(data->getBones().size());
+    msg += " slots=" + std::to_string(data->getSlots().size());
+    msg += " skins=" + std::to_string(data->getSkins().size());
+    msg += " defaultSkin=" + std::string(data->getDefaultSkin() ? "1" : "0");
+    msg += " anims=" + std::to_string(data->getAnimations().size());
+    const char* v = data->getVersion().buffer();
+    msg += " version=";
+    msg += (v && *v) ? v : "?";
+    delete data;
+    return true;
+}
+
 // ---- createBinary(skel, atlas, scale) -> node(cc.Node), skelptr(lightuserdata) ----
 // 失败只返回 nil（Lua 侧回退哑节点）。
 int l_createBinary(lua_State* L) {
@@ -55,13 +107,18 @@ int l_createBinary(lua_State* L) {
     const char* atlas = luaL_checkstring(L, 2);
     float scale = (float)luaL_optnumber(L, 3, 1.0);
 
-    // 先验存在性：initWithBinaryFile 里 CCASSERT 在 Release(COCOS2D_DEBUG=0) 是 no-op，
-    // 缺 .skel 时 skeletonData 为 null，initialize() 里 _skeleton->getData() 会直接崩。
-    auto* fu = FileUtils::getInstance();
-    if (!fu->isFileExist(skel) || !fu->isFileExist(atlas)) {
-        CCLOG("WJJH_SPINE38: asset missing (skel=%s atlas=%s) -> fallback dummy", skel, atlas);
-        lua_pushnil(L);
-        return 1;
+    // 先验存在性 + 干跑门闸：
+    //   initWithBinaryFile 里 CCASSERT 在 Release(COCOS2D_DEBUG=0) 是 no-op，
+    //   readSkeletonData 失败返回 NULL 时会被原样送进 new Skeleton(NULL) → SIGSEGV（run 220）。
+    //   这里先干跑一遍，读不出来就直接回退哑节点。
+    {
+        std::string msg;
+        if (!wjjh_spine38_dry_run(skel, atlas, msg)) {
+            CCLOG("WJJH_SPINE38: dry-run failed (%s) -> fallback dummy", msg.c_str());
+            lua_pushnil(L);
+            return 1;
+        }
+        CCLOG("WJJH_SPINE38: dry-run ok (%s)", msg.c_str());
     }
 
     spine38::SkeletonAnimation* sk = nullptr;
@@ -71,7 +128,7 @@ int l_createBinary(lua_State* L) {
         sk = nullptr;
     }
     if (sk == nullptr || sk->getSkeleton() == nullptr || sk->getSkeleton()->getData() == nullptr) {
-        CCLOG("WJJH_SPINE38: create failed (skel=%s) -> fallback dummy", skel);
+        CCLOG("WJJH_SPINE38: create failed (skel=%s atlas=%s) -> fallback dummy", skel, atlas);
         lua_pushnil(L);
         return 1;
     }
@@ -242,10 +299,32 @@ int l_setAttachment(lua_State* L) {
     return 0;
 }
 
+// ---- probe(skel, atlas) -> string|nil —— gh221 干跑诊断 ----
+// 每个 (skel,atlas) 组合只跑一次（最多 24 组），避免每帧刷屏 / 拖慢。
+int l_probe(lua_State* L) {
+    const char* skel = luaL_optstring(L, 1, "");
+    const char* atlas = luaL_optstring(L, 2, "");
+
+    static std::set<std::string> probed;
+    std::string key = std::string(skel) + "|" + atlas;
+    if (probed.count(key) || probed.size() >= 24) {
+        lua_pushnil(L);
+        return 1;
+    }
+    probed.insert(key);
+
+    std::string msg;
+    const bool ok = wjjh_spine38_dry_run(skel, atlas, msg);
+    CCLOG("WJJH_SPINE38 PROBE ok=%d %s", ok ? 1 : 0, msg.c_str());
+    lua_pushstring(L, msg.c_str());
+    return 1;
+}
+
 } // namespace
 
 void wjjh_spine38_register(lua_State* L) {
     lua_register(L, "wjjh_spine38_createBinary", l_createBinary);
+    lua_register(L, "wjjh_spine38_probe", l_probe);
     lua_register(L, "wjjh_spine38_setAnimation", l_setAnimation);
     lua_register(L, "wjjh_spine38_addAnimation", l_addAnimation);
     lua_register(L, "wjjh_spine38_setTimeScale", l_setTimeScale);

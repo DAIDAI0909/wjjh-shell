@@ -87,6 +87,13 @@ SkeletonRenderer* SkeletonRenderer::createWithFile (const std::string& skeletonD
 }
 
 void SkeletonRenderer::initialize () {
+	// gh221: 数据读取失败时 _skeleton 为 nullptr，这里必须提前退出，
+	//   否则 _skeleton->setToSetupPose() 会崩（正是 run 220 崩溃后的下一个雷）。
+	if (_skeleton == nullptr) {
+		CCLOG("WJJH_SPINE38: SkeletonRenderer::initialize skipped (no skeleton)");
+		return;
+	}
+
 	_clipper = new (__FILE__, __LINE__) SkeletonClipping();
 
 	_blendFunc = BlendFunc::ALPHA_PREMULTIPLIED;
@@ -136,32 +143,40 @@ void SkeletonRenderer::setSkeletonData (SkeletonData *skeletonData, bool ownsSke
 }
 
 SkeletonRenderer::SkeletonRenderer ()
-	: _atlas(nullptr), _attachmentLoader(nullptr), _timeScale(1), _debugSlots(false), _debugBones(false), _debugMeshes(false), _debugBoundingRect(false), _effect(nullptr), _startSlotIndex(0), _endSlotIndex(std::numeric_limits<int>::max()) {
+	: _atlas(nullptr), _attachmentLoader(nullptr), _timeScale(1), _debugSlots(false), _debugBones(false), _debugMeshes(false), _debugBoundingRect(false), _effect(nullptr), _startSlotIndex(0), _endSlotIndex(std::numeric_limits<int>::max())
+	, _skeleton(nullptr), _ownsSkeleton(false), _ownsSkeletonData(false), _ownsAtlas(false), _clipper(nullptr) {
 }
 
 SkeletonRenderer::SkeletonRenderer(Skeleton* skeleton, bool ownsSkeleton, bool ownsSkeletonData, bool ownsAtlas)
-	: _atlas(nullptr), _attachmentLoader(nullptr), _timeScale(1), _debugSlots(false), _debugBones(false), _debugMeshes(false), _debugBoundingRect(false), _effect(nullptr), _startSlotIndex(0), _endSlotIndex(std::numeric_limits<int>::max()) {
+	: _atlas(nullptr), _attachmentLoader(nullptr), _timeScale(1), _debugSlots(false), _debugBones(false), _debugMeshes(false), _debugBoundingRect(false), _effect(nullptr), _startSlotIndex(0), _endSlotIndex(std::numeric_limits<int>::max())
+	, _skeleton(nullptr), _ownsSkeleton(false), _ownsSkeletonData(false), _ownsAtlas(false), _clipper(nullptr) {
 	initWithSkeleton(skeleton, ownsSkeleton, ownsSkeletonData, ownsAtlas);
 }
 
 SkeletonRenderer::SkeletonRenderer (SkeletonData *skeletonData, bool ownsSkeletonData)
-	: _atlas(nullptr), _attachmentLoader(nullptr), _timeScale(1), _debugSlots(false), _debugBones(false), _debugMeshes(false), _debugBoundingRect(false), _effect(nullptr), _startSlotIndex(0), _endSlotIndex(std::numeric_limits<int>::max()) {
+	: _atlas(nullptr), _attachmentLoader(nullptr), _timeScale(1), _debugSlots(false), _debugBones(false), _debugMeshes(false), _debugBoundingRect(false), _effect(nullptr), _startSlotIndex(0), _endSlotIndex(std::numeric_limits<int>::max())
+	, _skeleton(nullptr), _ownsSkeleton(false), _ownsSkeletonData(false), _ownsAtlas(false), _clipper(nullptr) {
 	initWithData(skeletonData, ownsSkeletonData);
 }
 
 SkeletonRenderer::SkeletonRenderer (const std::string& skeletonDataFile, Atlas* atlas, float scale)
-	: _atlas(nullptr), _attachmentLoader(nullptr), _timeScale(1), _debugSlots(false), _debugBones(false), _debugMeshes(false), _debugBoundingRect(false), _effect(nullptr), _startSlotIndex(0), _endSlotIndex(std::numeric_limits<int>::max()) {
+	: _atlas(nullptr), _attachmentLoader(nullptr), _timeScale(1), _debugSlots(false), _debugBones(false), _debugMeshes(false), _debugBoundingRect(false), _effect(nullptr), _startSlotIndex(0), _endSlotIndex(std::numeric_limits<int>::max())
+	, _skeleton(nullptr), _ownsSkeleton(false), _ownsSkeletonData(false), _ownsAtlas(false), _clipper(nullptr) {
 	initWithJsonFile(skeletonDataFile, atlas, scale);
 }
 
 SkeletonRenderer::SkeletonRenderer (const std::string& skeletonDataFile, const std::string& atlasFile, float scale)
-	: _atlas(nullptr), _attachmentLoader(nullptr), _timeScale(1), _debugSlots(false), _debugBones(false), _debugMeshes(false), _debugBoundingRect(false), _effect(nullptr), _startSlotIndex(0), _endSlotIndex(std::numeric_limits<int>::max()) {
+	: _atlas(nullptr), _attachmentLoader(nullptr), _timeScale(1), _debugSlots(false), _debugBones(false), _debugMeshes(false), _debugBoundingRect(false), _effect(nullptr), _startSlotIndex(0), _endSlotIndex(std::numeric_limits<int>::max())
+	, _skeleton(nullptr), _ownsSkeleton(false), _ownsSkeletonData(false), _ownsAtlas(false), _clipper(nullptr) {
 	initWithJsonFile(skeletonDataFile, atlasFile, scale);
 }
 
 SkeletonRenderer::~SkeletonRenderer () {
-	if (_ownsSkeletonData) delete _skeleton->getData();
-	if (_ownsSkeleton) delete _skeleton;
+	// gh221: _skeleton 可能为 nullptr（数据读取失败时提前退出），必须判空再解引用。
+	if (_skeleton != nullptr) {
+		if (_ownsSkeletonData) delete _skeleton->getData();
+		if (_ownsSkeleton) delete _skeleton;
+	}
 	if (_ownsAtlas && _atlas) delete _atlas;
 	if (_attachmentLoader) delete _attachmentLoader;
 	delete _clipper;
@@ -189,6 +204,14 @@ void SkeletonRenderer::initWithJsonFile (const std::string& skeletonDataFile, At
 	json.setScale(scale);
 	SkeletonData* skeletonData = json.readSkeletonDataFile(skeletonDataFile.c_str());
 	CCASSERT(skeletonData, !json.getError().isEmpty() ? json.getError().buffer() : "Error reading skeleton data.");
+	// gh221: Release 下 CCASSERT 是 no-op。读取失败必须在这里拦下，
+	//   否则 NULL 会被送进 new Skeleton(NULL)（run 220 SIGSEGV 的根因）。
+	if (skeletonData == nullptr) {
+		const char* err = json.getError().buffer();
+		CCLOG("WJJH_SPINE38: json read failed: %s err=%s -> dummy fallback",
+			skeletonDataFile.c_str(), err ? err : "");
+		return;
+	}
 
 	_ownsSkeleton = true;
 	setSkeletonData(skeletonData, true);
@@ -199,6 +222,7 @@ void SkeletonRenderer::initWithJsonFile (const std::string& skeletonDataFile, At
 void SkeletonRenderer::initWithJsonFile (const std::string& skeletonDataFile, const std::string& atlasFile, float scale) {
 	_atlas = new (__FILE__, __LINE__) Atlas(atlasFile.c_str(), &textureLoader, true);
 	CCASSERT(_atlas, "Error reading atlas file.");
+	_ownsAtlas = true;
 
 	_attachmentLoader = new (__FILE__, __LINE__) Cocos2dAtlasAttachmentLoader(_atlas);
 
@@ -206,9 +230,14 @@ void SkeletonRenderer::initWithJsonFile (const std::string& skeletonDataFile, co
 	json.setScale(scale);
 	SkeletonData* skeletonData = json.readSkeletonDataFile(skeletonDataFile.c_str());
 	CCASSERT(skeletonData, !json.getError().isEmpty() ? json.getError().buffer() : "Error reading skeleton data.");
+	if (skeletonData == nullptr) {
+		const char* err = json.getError().buffer();
+		CCLOG("WJJH_SPINE38: json read failed: %s atlas=%s err=%s -> dummy fallback",
+			skeletonDataFile.c_str(), atlasFile.c_str(), err ? err : "");
+		return;
+	}
 
 	_ownsSkeleton = true;
-	_ownsAtlas = true;
 	setSkeletonData(skeletonData, true);
 
 	initialize();
@@ -222,6 +251,12 @@ void SkeletonRenderer::initWithBinaryFile (const std::string& skeletonDataFile, 
 	binary.setScale(scale);
 	SkeletonData* skeletonData = binary.readSkeletonDataFile(skeletonDataFile.c_str());
 	CCASSERT(skeletonData, !binary.getError().isEmpty() ? binary.getError().buffer() : "Error reading skeleton data.");
+	if (skeletonData == nullptr) {
+		const char* err = binary.getError().buffer();
+		CCLOG("WJJH_SPINE38: binary read failed: %s err=%s -> dummy fallback",
+			skeletonDataFile.c_str(), err ? err : "");
+		return;
+	}
 	_ownsSkeleton = true;
 	setSkeletonData(skeletonData, true);
 
@@ -231,6 +266,7 @@ void SkeletonRenderer::initWithBinaryFile (const std::string& skeletonDataFile, 
 void SkeletonRenderer::initWithBinaryFile (const std::string& skeletonDataFile, const std::string& atlasFile, float scale) {
 	_atlas = new (__FILE__, __LINE__) Atlas(atlasFile.c_str(), &textureLoader, true);
 	CCASSERT(_atlas, "Error reading atlas file.");
+	_ownsAtlas = true;
 
 	_attachmentLoader = new (__FILE__, __LINE__) Cocos2dAtlasAttachmentLoader(_atlas);
 
@@ -238,8 +274,13 @@ void SkeletonRenderer::initWithBinaryFile (const std::string& skeletonDataFile, 
 	binary.setScale(scale);
 	SkeletonData* skeletonData = binary.readSkeletonDataFile(skeletonDataFile.c_str());
 	CCASSERT(skeletonData, !binary.getError().isEmpty() ? binary.getError().buffer() : "Error reading skeleton data.");
+	if (skeletonData == nullptr) {
+		const char* err = binary.getError().buffer();
+		CCLOG("WJJH_SPINE38: binary read failed: %s atlas=%s err=%s -> dummy fallback",
+			skeletonDataFile.c_str(), atlasFile.c_str(), err ? err : "");
+		return;
+	}
 	_ownsSkeleton = true;
-	_ownsAtlas = true;
 	setSkeletonData(skeletonData, true);
 
 	initialize();

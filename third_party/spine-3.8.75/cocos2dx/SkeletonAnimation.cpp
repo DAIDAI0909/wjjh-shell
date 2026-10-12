@@ -111,6 +111,17 @@ SkeletonAnimation* SkeletonAnimation::createWithBinaryFile (const std::string& s
 void SkeletonAnimation::initialize () {
 	super::initialize();
 
+	// gh221: 骨架读取失败时 super::initialize() 已提前退出（_skeleton==nullptr）。
+	//   此时不能构造 AnimationState（要 deref _skeleton->getData()），
+	//   保持 _state=nullptr，C 桥通过 getSkeleton()==nullptr 判定失败并回退哑节点。
+	if (_skeleton == nullptr) {
+		CCLOG("WJJH_SPINE38: SkeletonAnimation::initialize skipped (no skeleton)");
+		_state = nullptr;
+		_ownsAnimationStateData = false;
+		_firstDraw = true;
+		return;
+	}
+
 	_ownsAnimationStateData = true;
 	_updateOnlyIfVisible = false;
 	_state = new (__FILE__, __LINE__) AnimationState(new (__FILE__, __LINE__) AnimationStateData(_skeleton->getData()));
@@ -121,11 +132,18 @@ void SkeletonAnimation::initialize () {
 }
 
 SkeletonAnimation::SkeletonAnimation ()
-		: SkeletonRenderer() {
+		: SkeletonRenderer()
+		, _state(nullptr)
+		, _ownsAnimationStateData(false)
+		, _updateOnlyIfVisible(false)
+		, _firstDraw(true)
+		, _preUpdateListener(nullptr)
+		, _postUpdateListener(nullptr) {
 }
 
 SkeletonAnimation::~SkeletonAnimation () {
-	if (_ownsAnimationStateData) delete _state->getData();
+	// gh221: _state 可能为 nullptr（读取失败时未构造），判空避免崩溃。
+	if (_ownsAnimationStateData && _state != nullptr) delete _state->getData();
 	delete _state;
 }
 
@@ -133,6 +151,9 @@ void SkeletonAnimation::update (float deltaTime) {
 	if (_updateOnlyIfVisible && !isVisible()) return;
 
 	super::update(deltaTime);
+
+	// gh221: 读取失败没有 _state/_skeleton，直接跳过更新（不能 deref）。
+	if (_state == nullptr || _skeleton == nullptr) return;
 
 	deltaTime *= _timeScale;
 	if (_preUpdateListener) _preUpdateListener(this);

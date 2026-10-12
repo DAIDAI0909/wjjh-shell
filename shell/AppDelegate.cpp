@@ -522,16 +522,26 @@ end
 -- 编进 App（third_party/spine-3.8.75），C 桥见 WJJHSpine38.cpp：createBinary 返回
 -- (容器 cc.Node, spine 指针)。★真节点 peer 只挂显式 spine/YX 方法，不挂 catch-all ——
 -- 免得遮住 cc.Node 原生方法（tolua 的 peer __index 优先于原生命中）。
--- 开关：__WJJH_SPINE38_REAL（默认 false=关，回退哑节点，App 稳定不崩）。
+-- 开关：__WJJH_SPINE38_REAL（gh221 起默认 true=开；读取失败自动回退哑节点，见下方说明）。
 do
   local S = {}
-  -- gh220: 真 spine 运行时（spine38）默认关闭。
-  -- run 220 实测：readSkeletonData + 越界保护 OK，但 Skeleton::Skeleton 构造函数
-  -- 仍在应用 skin 时崩溃（frame 2: spine38::Skeleton::Skeleton(SkeletonData*)），
-  -- 对应 ep2/skeleton.skel（123 骨骼/75 插槽/126 字符串，含 non-standard 附件 type 68）。
-  -- 待修复 Skeleton 构造的越界保护后，设 __WJJH_SPINE38_REAL=true 再打开。
+  -- gh221: 真 spine 开关，默认 **开**。
+  --   gh220 的结论"游戏 .skel 含 non-standard 附件 type 68"已被证伪：
+  --   那是诊断脚本 parse_skel.py 的 bug（region 附件多读了一次 nonessential color int），
+  --   用修正后的解析器 parse_skel2.py 复算：ep2/skeleton.skel 逐字节解析到 EOF 完全吻合，
+  --   附件类型只有标准的 0(region)/2(mesh)，125 个附件在 skeleton.atlas 里全部命中，
+  --   骨骼父索引/插槽骨索引也全部合法 → 文件是标准 spine 3.8.99。
+  --   真正崩因：readSkeletonData 返回 NULL 时，SkeletonRenderer::initWithBinaryFile 里的
+  --   CCASSERT 在 Release 是 no-op，NULL 被送进 new Skeleton(NULL) → SIGSEGV。
+  --   gh221 已做两件事：① spine 源码加 NULL 保护；② createBinary 先"干跑"，
+  --   读不出数据就直接回退哑节点（绝不进入会崩的构造路径）。
+  --   要退回纯哑节点基线：设 __WJJH_SPINE38_REAL=false（或 rawset(_G,...) ）。
+  if rawget(_G, '__WJJH_SPINE38_REAL') == nil then
+    rawset(_G, '__WJJH_SPINE38_REAL', true)
+  end
   S.real = (rawget(_G, '__WJJH_SPINE38_REAL') == true)
     and type(rawget(_G, 'wjjh_spine38_createBinary')) == 'function'
+  S.probe = type(rawget(_G, 'wjjh_spine38_probe')) == 'function'
   S.normLoop = function(loop)
     if loop == nil then return false end
     if type(loop) == 'number' then return loop ~= 0 end
@@ -568,13 +578,22 @@ do
     -- 兼容冒号调用(self, skel, atlas, scale) 与点调用(skel, atlas, scale)
     local skel, atlas, scale
     if type(a) == 'string' then skel, atlas, scale = a, b, c else skel, atlas, scale = b, c, d end
-    if S.real and skel ~= nil and atlas ~= nil then
-      local ok, node, skelptr = pcall(wjjh_spine38_createBinary, skel, atlas, scale or 1)
-      if ok and node ~= nil and skelptr ~= nil then
-        tolua.setpeer(node, S.peerOf(skelptr))
-        return node
+    if skel ~= nil and atlas ~= nil then
+      if S.real then
+        local ok, node, skelptr = pcall(wjjh_spine38_createBinary, skel, atlas, scale or 1)
+        if ok and node ~= nil and skelptr ~= nil then
+          tolua.setpeer(node, S.peerOf(skelptr))
+          return node
+        end
+        if not ok then __wjjhlog('WJJH_SPINE38: createBinary error -> fallback: ' .. tostring(node)) end
+      elseif S.probe then
+        -- gh221: 真 spine 关闭时也干跑一遍，只为把"这个资产能不能读"写进日志。
+        -- 干跑只解析 SkeletonData、不构造 Skeleton，绝对安全。
+        local ok, msg = pcall(wjjh_spine38_probe, skel, atlas)
+        if ok and msg ~= nil then
+          __wjjhlog('WJJH_SPINE38 PROBE: ' .. tostring(msg))
+        end
       end
-      if not ok then __wjjhlog('WJJH_SPINE38: createBinary error -> fallback: ' .. tostring(node)) end
     end
     return __mkSkel()
   end
