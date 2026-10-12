@@ -73,9 +73,20 @@ Skeleton::Skeleton(SkeletonData *skeletonData) :
 	//   现在遇到 NULL 就构造一个"空骨架"：容器保持为空，getData() 仍然返回 NULL，
 	//   调用方（C 桥 wjjh_spine38_createBinary）据此判定失败并回退哑节点。
 	if (_data == NULL) {
-		printf("WJJH_SPINE38: Skeleton ctor got NULL SkeletonData -> empty skeleton\n");
+		fprintf(stderr, "WJJH_SPINE38: Skeleton ctor got NULL SkeletonData -> empty skeleton\n");
 		return;
 	}
+
+	// gh221 取证：ctor 逐段打点（stderr 在 main.mm 里设成行缓冲，崩溃前一定能落盘）。
+	//   只打点前 3 个骨架，避免日志被刷爆。
+	static int s_ctorTrace = 0;
+	const bool ctorTrace = s_ctorTrace < 3;
+	if (ctorTrace) s_ctorTrace++;
+	if (ctorTrace) fprintf(stderr, "WJJH_SPINE38 CTOR enter data=%p bones=%d slots=%d ik=%d tc=%d pc=%d anims=%d defaultSkin=%d\n",
+		(void *)_data, (int)_data->getBones().size(), (int)_data->getSlots().size(),
+		(int)_data->getIkConstraints().size(), (int)_data->getTransformConstraints().size(),
+		(int)_data->getPathConstraints().size(), (int)_data->getAnimations().size(),
+		_data->getDefaultSkin() != NULL ? 1 : 0);
 
 	_bones.ensureCapacity(_data->getBones().size());
 	for (size_t i = 0; i < _data->getBones().size(); ++i) {
@@ -94,6 +105,7 @@ Skeleton::Skeleton(SkeletonData *skeletonData) :
 
 		_bones.add(bone);
 	}
+	fprintf(stderr, "WJJH_SPINE38 CTOR bones-done n=%d\n", (int)_bones.size());
 
 	_slots.ensureCapacity(_data->getSlots().size());
 	_drawOrder.ensureCapacity(_data->getSlots().size());
@@ -105,11 +117,17 @@ Skeleton::Skeleton(SkeletonData *skeletonData) :
 		size_t boneIndex = (size_t)data->getBoneData().getIndex();
 		if (boneIndex >= _bones.size()) boneIndex = _bones.size() - 1;
 		Bone *bone = _bones[boneIndex];
+		if (ctorTrace) {
+			const char *attName = data->getAttachmentName().buffer();
+			fprintf(stderr, "WJJH_SPINE38 CTOR slot[%d] begin bone=%d att=%s\n",
+				(int)i, (int)boneIndex, attName ? attName : "");
+		}
 		Slot *slot = new(__FILE__, __LINE__) Slot(*data, *bone);
 
 		_slots.add(slot);
 		_drawOrder.add(slot);
 	}
+	fprintf(stderr, "WJJH_SPINE38 CTOR slots-done n=%d\n", (int)_slots.size());
 
 	_ikConstraints.ensureCapacity(_data->getIkConstraints().size());
 	for (size_t i = 0; i < _data->getIkConstraints().size(); ++i) {
@@ -138,7 +156,11 @@ Skeleton::Skeleton(SkeletonData *skeletonData) :
 		_pathConstraints.add(constraint);
 	}
 
+	fprintf(stderr, "WJJH_SPINE38 CTOR constraints-done ik=%d tc=%d pc=%d\n",
+		(int)_ikConstraints.size(), (int)_transformConstraints.size(), (int)_pathConstraints.size());
+
 	updateCache();
+	fprintf(stderr, "WJJH_SPINE38 CTOR updateCache-done -> ctor OK\n");
 }
 
 Skeleton::~Skeleton() {

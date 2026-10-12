@@ -31,6 +31,7 @@
 #include <spine38/Extension.h>
 #include <spine38/AttachmentVertices.h>
 #include <algorithm>
+#include <stdio.h>
 
 USING_NS_CC;
 
@@ -273,6 +274,13 @@ void SkeletonRenderer::initWithBinaryFile (const std::string& skeletonDataFile, 
 	SkeletonBinary binary(_attachmentLoader);
 	binary.setScale(scale);
 	SkeletonData* skeletonData = binary.readSkeletonDataFile(skeletonDataFile.c_str());
+	{
+		// gh221 取证：真实路径（带 cocos attachment loader + 真纹理）的读取结果。
+		const char* err = binary.getError().buffer();
+		fprintf(stderr, "WJJH_SPINE38 REALREAD skel=%s atlas=%s data=%p err=%s\n",
+			skeletonDataFile.c_str(), atlasFile.c_str(), (void*)skeletonData,
+			(err && *err) ? err : "(none)");
+	}
 	CCASSERT(skeletonData, !binary.getError().isEmpty() ? binary.getError().buffer() : "Error reading skeleton data.");
 	if (skeletonData == nullptr) {
 		const char* err = binary.getError().buffer();
