@@ -395,8 +395,12 @@ char *SkeletonBinary::readString(DataInput *input) {
 }
 
 char* SkeletonBinary::readStringRef(DataInput* input, SkeletonData* skeletonData) {
-	int index = readVarint(input, true);
-	return index == 0 ? NULL : skeletonData->_strings[index - 1];
+    int index = readVarint(input, true);
+    // gh218 安全补丁：游戏 .skel 是非标准 spine 格式时 index 会越界，
+    // 原实现直接 _strings[index-1] 返回垃圾指针 → 后续 String(garbage) 里 strlen 崩。
+    // 越界时返回 NULL（调用方按空串处理 → 后续多半 setError 优雅失败 → 回退哑节点）。
+    if (index <= 0 || (size_t)index > skeletonData->_strings.size()) return NULL;
+    return skeletonData->_strings[index - 1];
 }
 
 float SkeletonBinary::readFloat(DataInput *input) {

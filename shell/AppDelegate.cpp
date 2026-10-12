@@ -522,10 +522,14 @@ end
 -- 编进 App（third_party/spine-3.8.75），C 桥见 WJJHSpine38.cpp：createBinary 返回
 -- (容器 cc.Node, spine 指针)。★真节点 peer 只挂显式 spine/YX 方法，不挂 catch-all ——
 -- 免得遮住 cc.Node 原生方法（tolua 的 peer __index 优先于原生命中）。
--- 开关：__WJJH_SPINE38_REAL（默认 true；置 false 一键退回哑节点）。
+-- 开关：__WJJH_SPINE38_REAL（默认 false=关，回退哑节点；确认格式兼容后再打开）。
 do
   local S = {}
-  S.real = (rawget(_G, '__WJJH_SPINE38_REAL') ~= false)
+  -- ★gh218 实测：游戏 .skel 是非标准 spine 二进制格式（区域附件比官方 3.8 读取器多一个字段，
+  --   见 SkeletonBinary 解析），官方 spine-runtimes 3.8 运行时会 SIGSEGV（readSkeletonData）。
+  --   故真 spine 路径默认**关闭**（回退哑节点，App 稳定不崩）；待拿到与游戏匹配的 spine
+  --   运行时/格式后，显式设 __WJJH_SPINE38_REAL=true 再打开。
+  S.real = (rawget(_G, '__WJJH_SPINE38_REAL') == true)
     and type(rawget(_G, 'wjjh_spine38_createBinary')) == 'function'
   S.normLoop = function(loop)
     if loop == nil then return false end
