@@ -522,13 +522,15 @@ end
 -- 编进 App（third_party/spine-3.8.75），C 桥见 WJJHSpine38.cpp：createBinary 返回
 -- (容器 cc.Node, spine 指针)。★真节点 peer 只挂显式 spine/YX 方法，不挂 catch-all ——
 -- 免得遮住 cc.Node 原生方法（tolua 的 peer __index 优先于原生命中）。
--- 开关：__WJJH_SPINE38_REAL（默认 true=开，真 spine 优先；设 false 退回哑节点）。
+-- 开关：__WJJH_SPINE38_REAL（默认 false=关，回退哑节点，App 稳定不崩）。
 do
   local S = {}
-  -- gh218: 真 spine 运行时（spine38）默认开启（真 spine 优先）。
-  -- 已给 SkeletonBinary 加越界保护（readByte/readString/readStringRef），非标准/损坏 .skel
-  -- 会优雅失败并回退哑节点，不再崩。如需强制退回哑节点，设 __WJJH_SPINE38_REAL=false。
-  S.real = (rawget(_G, '__WJJH_SPINE38_REAL') ~= false)
+  -- gh220: 真 spine 运行时（spine38）默认关闭。
+  -- run 220 实测：readSkeletonData + 越界保护 OK，但 Skeleton::Skeleton 构造函数
+  -- 仍在应用 skin 时崩溃（frame 2: spine38::Skeleton::Skeleton(SkeletonData*)），
+  -- 对应 ep2/skeleton.skel（123 骨骼/75 插槽/126 字符串，含 non-standard 附件 type 68）。
+  -- 待修复 Skeleton 构造的越界保护后，设 __WJJH_SPINE38_REAL=true 再打开。
+  S.real = (rawget(_G, '__WJJH_SPINE38_REAL') == true)
     and type(rawget(_G, 'wjjh_spine38_createBinary')) == 'function'
   S.normLoop = function(loop)
     if loop == nil then return false end

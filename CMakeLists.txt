@@ -580,7 +580,7 @@ add_custom_command(TARGET WJJH POST_BUILD
 #   --sdk 是 xcrun 的参数：改回 `xcrun --sdk <platform> actool ...`。
 if(WJJH_HAS_ASSETS)
 add_custom_command(TARGET WJJH POST_BUILD
-    COMMAND sh -c "xcrun --sdk ${SPINE_ACTOOL_PLATFORM} actool --output-format human-readable-text --notices --warnings --errors --platform ${SPINE_ACTOOL_PLATFORM} --minimum-deployment-target 13.0 --target-device iphone --target-device ipad --compile '$<TARGET_BUNDLE_DIR:WJJH>/Assets.car' '${APP_ASSETS}' --app-icon AppIcon --product-type com.apple.product-type.application --development-region en --enable-on-demand-resources NO; echo \"[actool rc=$?]\"; ls -la '$<TARGET_BUNDLE_DIR:WJJH>/Assets.car' 2>&1 || true"
+    COMMAND sh -c "xcrun --sdk ${SPINE_ACTOOL_PLATFORM} actool --output-format human-readable-text --notices --warnings --errors --platform ${SPINE_ACTOOL_PLATFORM} --minimum-deployment-target 13.0 --target-device iphone --target-device ipad --compile '$<TARGET_BUNDLE_DIR:WJJH>' '${APP_ASSETS}' --app-icon AppIcon --product-type com.apple.product-type.application --development-region en --enable-on-demand-resources NO --output-partial-info-plist '$<TARGET_BUNDLE_DIR:WJJH>/assetcatalog_info.plist'; echo \"[actool rc=$?]\"; ls -la '$<TARGET_BUNDLE_DIR:WJJH>/Assets.car' 2>&1 || true"
     COMMENT "gh216b: compile Assets.xcassets -> Assets.car"
     VERBATIM)
 endif()
