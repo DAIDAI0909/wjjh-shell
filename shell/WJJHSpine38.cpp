@@ -215,6 +215,12 @@ int l_setAnimation(lua_State* L) {
     int track = (int)luaL_checknumber(L, 2);
     const char* name = luaL_checkstring(L, 3);
     bool loop = lua_toboolean(L, 4) != 0;
+    // gh231 取证：证明游戏确实在驱动**我们返回的**节点播动画（限 40 条，避免每帧刷屏）。
+    static int s_animLogged = 0;
+    if (s_animLogged < 40) {
+        fprintf(stderr, "WJJH_SPINE38: setAnimation track=%d name=%s loop=%d\n", track, name, loop ? 1 : 0);
+        ++s_animLogged;
+    }
     sk->setAnimation(track, std::string(name), loop);
     return 0;
 }

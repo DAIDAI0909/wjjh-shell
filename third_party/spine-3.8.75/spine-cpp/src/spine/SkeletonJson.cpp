@@ -519,6 +519,12 @@ SkeletonData *SkeletonJson::readSkeletonData(const char *json) {
 					AttachmentType type;
 					if (strcmp(typeString, "region") == 0) type = AttachmentType_Region;
 					else if (strcmp(typeString, "mesh") == 0) type = AttachmentType_Mesh;
+					// gh231: spine <3.5 把网格附件叫 "skinnedmesh"（3.5 起统一为 "mesh"）。
+					//   游戏里 res/Anim/gongfu/gongfu.json(3.0.16) 用它；不映射就会
+					//   "Unknown attachment type: skinnedmesh" → readSkeletonData=NULL → 整包回退哑节点。
+					//   两者的 JSON 结构一致（uvs/triangles/vertices/hull/edges），3.8 的
+					//   readVertices 也按权重格式解析，故语义等价、可直接映射。
+					else if (strcmp(typeString, "skinnedmesh") == 0) type = AttachmentType_Mesh;
 					else if (strcmp(typeString, "linkedmesh") == 0) type = AttachmentType_Linkedmesh;
 					else if (strcmp(typeString, "boundingbox") == 0) type = AttachmentType_Boundingbox;
 					else if (strcmp(typeString, "path") == 0) type = AttachmentType_Path;
