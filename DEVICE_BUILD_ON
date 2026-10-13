@@ -1,0 +1,17 @@
+gh232+ : 打开真机(iOS device)构建开关。
+
+作用：CMakeLists 顶部约定 —— 仓库根存在本文件时，模拟器侧的 configure 提前返回，
+并挂一个 ALL 目标调用 scripts/build_device_ipa.py，跑完整的 iphoneos 构建
+（PLATFORM=OS64 + WJJH_DEVICE=ON，独立 build_device/），打包**未签名** IPA
+并发布到 GitHub Release（滚动 tag `device-ipa`），供 Sideloadly / 爱思 重签装机。
+
+为什么现在打开：
+  * spine 3.8 真运行时已全线打通（run 232：46/46 资产加载、ctor OK、setpeer 0、
+    游戏实际在播 ep2 的 biaoti/daiji/dianji）；
+  * 上一个真机 IPA 是 `WJJH_dev_unsigned_gh212.ipa`（run 212），**早于本会话全部
+    spine 修复**，已过时；
+  * 真机像素级观感验收是本线唯一剩余待办。
+
+注意：本文件存在期间，CI 不再产出模拟器诊断（launch.log/截图）。要恢复模拟器诊断，
+删除本文件并推送即可。gh211/gh212 实测：真机构建总时长约 26min（含 res_core 18.8min），
+换 res_full 后约 31min，仍在 workflow 的 60min 上限内。
