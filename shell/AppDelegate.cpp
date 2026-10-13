@@ -581,11 +581,15 @@ do
     if skel ~= nil and atlas ~= nil then
       if S.real then
         local ok, node, skelptr = pcall(wjjh_spine38_createBinary, skel, atlas, scale or 1)
-        if ok and node ~= nil and skelptr ~= nil then
+        -- gh229: node 必须是 userdata 才能 setpeer。曾经在协程里被推到错状态，拿到的是 number，
+        --   结果 setpeer 抛 "userdata expected" 并被上层 xpcall 吞掉 → 节点到不了游戏。
+        --   这里加类型校验：不合格就回退哑节点，绝不把坏值交给 setpeer。
+        if ok and type(node) == 'userdata' and skelptr ~= nil then
           tolua.setpeer(node, S.peerOf(skelptr))
           return node
         end
-        if not ok then __wjjhlog('WJJH_SPINE38: createBinary error -> fallback: ' .. tostring(node)) end
+        __wjjhlog('WJJH_SPINE38: createBinary unusable (ok=' .. tostring(ok)
+          .. ' nodetype=' .. type(node) .. ' skelptr=' .. tostring(skelptr) .. ') -> fallback dummy')
       elseif S.probe then
         -- gh221: 真 spine 关闭时也干跑一遍，只为把"这个资产能不能读"写进日志。
         -- 干跑只解析 SkeletonData、不构造 Skeleton，绝对安全。
