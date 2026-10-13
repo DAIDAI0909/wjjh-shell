@@ -419,7 +419,14 @@ SkeletonData *SkeletonJson::readSkeletonData(const char *json) {
 			Json *attachmentsMap;
 			Json *curves;
 
-			Skin *skin = new(__FILE__, __LINE__) Skin(Json::getString(skinMap, "name", ""));
+			// gh226: spine >=3.5 的 JSON 把 skins 写成数组、每项带 "name" 字段；
+			//   而 <3.5 写成对象、**名字就是 KEY**（项内无 "name"）。原代码只读 "name" 字段，
+			//   于是 3.0 文件里 skin 名成了 ""，`_defaultSkin` 永远设不上（run 226 实测
+			//   defaultSkin=0）→ 默认皮肤为空 → 附件全部解析不出来 → 什么都不渲染。
+			//   这里在 "name" 缺失时回退到对象 KEY（数组项的 _name 为 NULL，不受影响）。
+			const char *skinName = Json::getString(skinMap, "name", skinMap->_name ? skinMap->_name : "");
+
+			Skin *skin = new(__FILE__, __LINE__) Skin(skinName);
 
 			Json *item = Json::getItem(skinMap, "bones");
 			if (item) {
@@ -474,7 +481,7 @@ SkeletonData *SkeletonJson::readSkeletonData(const char *json) {
 			}
 
 			skeletonData->_skins[skinsIndex++] = skin;
-			if (strcmp(Json::getString(skinMap, "name", ""), "default") == 0) {
+			if (strcmp(skinName, "default") == 0) {   // gh226: 用上面回退后的 skinName
 				skeletonData->_defaultSkin = skin;
 			}
 
