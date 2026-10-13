@@ -191,7 +191,19 @@ int l_createBinary(lua_State* L) {
     container->addChild(sk);
 
     // 推到 Lua：node(cc.Node) + skelptr(lightuserdata)
+    //
+    // gh229 关键修复：本函数经常在**协程**里被调用（游戏 third/coroutine 用真 Lua
+    //   coroutine.create/resume），此时 L 是**协程的** lua_State；而
+    //   LuaStack::pushObject 推到的是 LuaStack 自己的**主状态** _state。
+    //   两者不一致 ⇒ 返回值错位：node 实际变成栈上残留的参数（scale），
+    //   skelptr 才拿到 lightuserdata ⇒ 上层 tolua.setpeer(node,…) 报
+    //   「Invalid argument #1 to setpeer: userdata expected」⇒ 游戏永远拿不到我们的节点
+    //   （run 226–229 每次真 spine 创建都踩这个，之前被 xpcall 吞掉）。
+    //   修法：仍然用 pushObject（保留它正确的 cocos 对象所有权处理），
+    //   再用标准 C API lua_xmove 把刚压入的值从主状态搬到当前 L（协程间共享同一 global state）。
+    lua_State* mainL = LuaEngine::getInstance()->getLuaStack()->getLuaState();
     LuaEngine::getInstance()->getLuaStack()->pushObject(container, "cc.Node");
+    if (mainL != L) lua_xmove(mainL, L, 1);
     lua_pushlightuserdata(L, reinterpret_cast<void*>(sk));
     return 2;
 }
