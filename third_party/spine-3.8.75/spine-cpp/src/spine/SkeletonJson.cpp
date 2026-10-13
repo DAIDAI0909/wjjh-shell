@@ -149,6 +149,12 @@ SkeletonData *SkeletonJson::readSkeletonData(const char *json) {
 
 	/* Bones. */
 	bones = Json::getItem(root, "bones");
+	// gh225: 无 "bones" 时优雅失败（原代码直接 bones->_size 解引用 NULL）。
+	if (!bones) {
+		delete skeletonData;
+		setError(root, "Missing \"bones\" in skeleton JSON.", "");
+		return NULL;
+	}
 	skeletonData->_bones.setSize(bones->_size, 0);
 	int bonesCount = 0;
 	for (boneMap = bones->_child, i = 0; boneMap; boneMap = boneMap->_next, ++i) {
@@ -472,8 +478,26 @@ SkeletonData *SkeletonJson::readSkeletonData(const char *json) {
 				skeletonData->_defaultSkin = skin;
 			}
 
-			for (attachmentsMap = Json::getItem(skinMap, "attachments")->_child; attachmentsMap; attachmentsMap = attachmentsMap->_next) {
+			// gh225: spine <3.5 的 JSON 把附件**直接**挂在 skin 下（按 slot 名分组）；
+			//   >=3.5 才多包一层 "attachments"。原代码写的是
+			//     Json::getItem(skinMap, "attachments")->_child
+			//   **没有 NULL 检查** —— 3.0 文件没有 "attachments" 键，getItem 返回 NULL，
+			//   于是 NULL->_child 直接段错误（Json 布局 vptr/_next/_child，_child 偏移 0x10，
+			//   与 run 225 实测 si_addr=0x10 完全吻合）。
+			//   修法：wrapper 缺失时回退到 3.0 布局（skin 的直接子项，跳过保留键）。
+			Json *attachmentsItem = Json::getItem(skinMap, "attachments");
+			Json *attachmentsRoot = attachmentsItem ? attachmentsItem : skinMap;
+			for (attachmentsMap = attachmentsRoot->_child; attachmentsMap; attachmentsMap = attachmentsMap->_next) {
+				if (!attachmentsItem) {
+					const char *reserved = attachmentsMap->_name;
+					if (reserved && (!strcmp(reserved, "name") || !strcmp(reserved, "bones")
+						|| !strcmp(reserved, "ik") || !strcmp(reserved, "transform")
+						|| !strcmp(reserved, "path")))
+						continue;
+				}
 				SlotData* slot = skeletonData->findSlot(attachmentsMap->_name);
+				// gh225: 找不到对应 slot 时跳过该组附件（否则后面 slot->getIndex() 会崩）。
+				if (!slot) continue;
 				Json *attachmentMap;
 
 				for (attachmentMap = attachmentsMap->_child; attachmentMap; attachmentMap = attachmentMap->_next) {
