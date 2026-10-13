@@ -31,6 +31,7 @@
 #include "spine38/SkeletonBinary.h"
 #include "spine38/SkeletonJson.h"
 #include "spine38/SkeletonData.h"
+#include "spine38/Slot.h"
 
 extern "C" {
 #include "lauxlib.h"
@@ -366,6 +367,32 @@ int l_setAttachment(lua_State* L) {
     return 0;
 }
 
+// ---- setSlotColor(skelptr, slotName, r, g, b, a) ----
+// gh233: 游戏大量使用 YXSkeletonAnimation:setSlotColor(slotName, cc.c4f(r,g,b,a)) 给战斗
+//   角色染色（把 "body"/"body_back" 染成黄色等表示状态）。此前这里是空实现 → 战斗角色
+//   颜色不对。cc.c4f 返回的是普通 Lua table {r=,g=,b=,a=}（gamelua/src/cocos/cocos2d/
+//   Cocos2d.lua:288），四个分量由 Lua 侧取好再传进来；spine 的 Color::set 会自动 clamp 到 0..1。
+int l_setSlotColor(lua_State* L) {
+    spine38::SkeletonAnimation* sk = skel_of(L, 1);
+    if (!sk || !sk->getSkeleton()) return 0;
+    const char* slotName = luaL_optstring(L, 2, "");
+    const float r = (float)luaL_optnumber(L, 3, 1.0);
+    const float g = (float)luaL_optnumber(L, 4, 1.0);
+    const float b = (float)luaL_optnumber(L, 5, 1.0);
+    const float a = (float)luaL_optnumber(L, 6, 1.0);
+    spine38::Slot* slot = sk->getSkeleton()->findSlot(spine38::String(slotName));
+    if (!slot) {
+        static int s_miss = 0;
+        if (s_miss < 10) {
+            fprintf(stderr, "WJJH_SPINE38: setSlotColor slot not found: '%s'\n", slotName);
+            ++s_miss;
+        }
+        return 0;
+    }
+    slot->getColor().set(r, g, b, a);
+    return 0;
+}
+
 // ---- probe(skel, atlas) -> string|nil —— gh221 干跑诊断 ----
 // 每个 (skel,atlas) 组合只跑一次（最多 24 组），避免每帧刷屏 / 拖慢。
 int l_probe(lua_State* L) {
@@ -404,4 +431,5 @@ void wjjh_spine38_register(lua_State* L) {
     lua_register(L, "wjjh_spine38_setToSetupPose", l_setToSetupPose);
     lua_register(L, "wjjh_spine38_updateWorldTransform", l_updateWorldTransform);
     lua_register(L, "wjjh_spine38_setAttachment", l_setAttachment);
+    lua_register(L, "wjjh_spine38_setSlotColor", l_setSlotColor);
 }

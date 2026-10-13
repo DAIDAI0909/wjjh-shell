@@ -562,8 +562,16 @@ do
       setToSetupPose = function(self) return wjjh_spine38_setToSetupPose(skelptr) end,
       updateWorldTransform = function(self) return wjjh_spine38_updateWorldTransform(skelptr) end,
       setAttachment = function(self, slot, name) return wjjh_spine38_setAttachment(skelptr, slot, name) end,
-      -- YX 专有（非关键：暂空实现，避免 call nil / 崩溃）
-      setSlotColor = function(self, slot, color) end,
+      -- YX 专有
+      -- gh233: setSlotColor 实装（游戏用它给战斗角色染色，如 body/body_back 染黄）。
+      --   cc.c4f(r,g,b,a) 返回普通 table {r=,g=,b=,a=}（Cocos2d.lua:288），这里取好分量再传给 C。
+      setSlotColor = function(self, slot, c)
+        local r, g, b, a = 1, 1, 1, 1
+        if c ~= nil then
+          r = c.r or 1; g = c.g or 1; b = c.b or 1; a = c.a or 1
+        end
+        return wjjh_spine38_setSlotColor(skelptr, slot, r, g, b, a)
+      end,
       resetAnimState = function(self) end,
       setBackwards = function(self, b) end,
       setStartTime = function(self, t) end,
