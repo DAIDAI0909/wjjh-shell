@@ -38,6 +38,7 @@ extern "C" {
 
 #include <string>
 #include <set>
+#include <cstdio>
 
 USING_NS_CC;
 
@@ -154,18 +155,18 @@ int l_createBinary(lua_State* L) {
     {
         std::string msg;
         if (!wjjh_spine38_dry_run(skel, atlas, msg)) {
-            CCLOG("WJJH_SPINE38: dry-run failed (%s) -> fallback dummy", msg.c_str());
+            fprintf(stderr, "WJJH_SPINE38: dry-run failed (%s) -> fallback dummy\n", msg.c_str());
             lua_pushnil(L);
             return 1;
         }
-        CCLOG("WJJH_SPINE38: dry-run ok (%s)", msg.c_str());
+        fprintf(stderr, "WJJH_SPINE38: dry-run ok (%s)\n", msg.c_str());
     }
 
     spine38::SkeletonAnimation* sk = nullptr;
     // gh224: 按内容派发 —— 游戏资产混格式（.skel 二进制 / .json 文本），
     //   文本 JSON 必须走 createWithJsonFile，否则会被二进制读取器解析成垃圾并崩。
     const bool isJson = wjjh_spine38_looks_json(skel);
-    CCLOG("WJJH_SPINE38: dispatch skel=%s fmt=%s", skel, isJson ? "json" : "bin");
+    fprintf(stderr, "WJJH_SPINE38: dispatch skel=%s fmt=%s\n", skel, isJson ? "json" : "bin");
     try {
         if (isJson) {
             sk = spine38::SkeletonAnimation::createWithJsonFile(std::string(skel), std::string(atlas), scale);
@@ -176,7 +177,7 @@ int l_createBinary(lua_State* L) {
         sk = nullptr;
     }
     if (sk == nullptr || sk->getSkeleton() == nullptr || sk->getSkeleton()->getData() == nullptr) {
-        CCLOG("WJJH_SPINE38: create failed (skel=%s atlas=%s) -> fallback dummy", skel, atlas);
+        fprintf(stderr, "WJJH_SPINE38: create failed (skel=%s atlas=%s) -> fallback dummy\n", skel, atlas);
         lua_pushnil(L);
         return 1;
     }
@@ -363,7 +364,7 @@ int l_probe(lua_State* L) {
 
     std::string msg;
     const bool ok = wjjh_spine38_dry_run(skel, atlas, msg);
-    CCLOG("WJJH_SPINE38 PROBE ok=%d %s", ok ? 1 : 0, msg.c_str());
+    fprintf(stderr, "WJJH_SPINE38 PROBE ok=%d %s\n", ok ? 1 : 0, msg.c_str());
     lua_pushstring(L, msg.c_str());
     return 1;
 }
