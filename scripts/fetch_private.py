@@ -56,10 +56,14 @@ def main():
     fetch('res_ui.zip', 'res_ui_private.zip')
     # gh157: res 缺口资产（Anim/Font/Music/OtherImage/...）—— 从安卓 danji 包补齐；
     # 之前只搬了 res/Image，导致 getSkAnim(Anim/*.json) 断言失败、字体/音频全缺。
-    # gh167: 迭代期用精简核心包 res_core.zip（228MB；去掉了战斗骨骼 gongfu*/specialEffect/
-    # enterVictory/Cover/ep2/FightEffect 与 Music——下载省一半）。出正式包或要战斗动画时，
-    # 把下面这行换回 fetch('res_full.zip', ...)（502MB，服务器上仍在）。
-    fetch('res_core.zip', 'res_full_private.zip')
+    # gh229: 换回**完整包 res_full.zip**（502MB）—— 启用真·战斗骨骼动画
+    #   （gongfu*/specialEffect/enterVictory/Cover/ep2/FightEffect + Music 全含）。
+    #   迭代期曾用精简包 res_core.zip（228MB）省下载，但它**去掉了战斗骨骼**，
+    #   导致 getSkAnim/战斗场景的 spine 资产 exists=0（run 228 实测一批 SKIP missing file）。
+    #   实测服务器带宽 ~0.35MB/s：res_core 239.7MB≈11.3min、res_full 502MB≈23.7min，
+    #   整个 job 约 33→46min（workflow timeout-minutes=60，余量 ~14min）。
+    #   若要回退省时，把下面换回 fetch('res_core.zip', ...)（服务器上仍在）。
+    fetch('res_full.zip', 'res_full_private.zip')
     fetch('res_root.zip', 'res_root_private.zip')   # res 根目录图片（hpframe 血条等）
 
     if os.path.exists('py_ios_server'):
