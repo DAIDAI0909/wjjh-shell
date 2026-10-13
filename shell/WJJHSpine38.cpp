@@ -29,6 +29,7 @@
 #include "spine38/Atlas.h"
 #include "spine38/AtlasAttachmentLoader.h"
 #include "spine38/SkeletonBinary.h"
+#include "spine38/SkeletonJson.h"
 #include "spine38/SkeletonData.h"
 
 extern "C" {
@@ -53,10 +54,33 @@ inline const char* cstr_of(const spine38::String& s) {
     return b ? b : "";
 }
 
+// ---- gh224 格式探测：区分 spine JSON 文本 与 spine 二进制 ----
+// 背景（run 224 实测）：游戏资产是**混格式**的 ——
+//   * 239 个 .skel（二进制 3.8.99），走 createWithBinaryFile；
+//   * 另有 16 个 .json（其中 8 个**没有** .skel 兄弟文件，必须按 JSON 读），
+//     版本是 3.0.16 / 2.1.08；游戏 Resource.lua 里 maskEffect/ep2 等就指向 .json。
+// 而 Lua 侧 YXSkeletonAnimation:createWithFile 对两者都走同一个 C 入口。
+// run 224 崩溃根因：把 maskEffect/skeleton.json（文本）当**二进制**读 → 解析出垃圾
+//   （bones=9 slots=9 ik=123）→ Skeleton ctor 索引越界 → SIGSEGV。
+// 修法：按**内容**判定格式（首个非空白字节是 '{' 即 JSON），分别派发。
+bool wjjh_spine38_looks_json(const char* path) {
+    cocos2d::Data d = FileUtils::getInstance()->getDataFromFile(path);
+    if (d.isNull() || d.getSize() == 0) return false;
+    const unsigned char* p = static_cast<const unsigned char*>(d.getBytes());
+    const ssize_t n = static_cast<ssize_t>(d.getSize());
+    for (ssize_t i = 0; i < n; ++i) {
+        const unsigned char c = p[i];
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n') continue;
+        if (c == 0xEF || c == 0xBB || c == 0xBF) continue;  // UTF-8 BOM
+        return c == '{';
+    }
+    return false;
+}
+
 // ---- gh221 干跑（dry run）----
 // 只解析 SkeletonData，**不构造 Skeleton**（构造才是 run 220 SIGSEGV 的地方），因此绝对安全。
 // 目的有二：
-//   1) 诊断：readSkeletonData 到底返回 NULL 还是有效数据？失败原因（binary.getError()）是什么？
+//   1) 诊断：readSkeletonData 到底返回 NULL 还是有效数据？失败原因（getError()）是什么？
 //   2) 兜底门闸：createBinary 先干跑，失败就直接回退哑节点，绝不进入会崩的构造路径。
 // 返回 true 表示"可以安全构造 Skeleton"，msg 里带完整诊断串。
 bool wjjh_spine38_dry_run(const char* skel, const char* atlas, std::string& msg) {
@@ -78,13 +102,29 @@ bool wjjh_spine38_dry_run(const char* skel, const char* atlas, std::string& msg)
     msg += " atlasRegions=" + std::to_string(probeAtlas.getRegions().size());
 
     spine38::AtlasAttachmentLoader loader(&probeAtlas);
-    spine38::SkeletonBinary binary(&loader);
-    spine38::SkeletonData* data = binary.readSkeletonDataFile(spine38::String(skel));
+    const bool isJson = wjjh_spine38_looks_json(skel);
+    msg += isJson ? " fmt=json" : " fmt=bin";
+
+    spine38::SkeletonData* data = NULL;
+    std::string err;
+    if (isJson) {
+        spine38::SkeletonJson json(&loader);
+        data = json.readSkeletonDataFile(spine38::String(skel));
+        if (data == NULL) {
+            const char* e = json.getError().buffer();
+            err = (e && *e) ? e : "(empty)";
+        }
+    } else {
+        spine38::SkeletonBinary binary(&loader);
+        data = binary.readSkeletonDataFile(spine38::String(skel));
+        if (data == NULL) {
+            const char* e = binary.getError().buffer();
+            err = (e && *e) ? e : "(empty)";
+        }
+    }
 
     if (data == NULL) {
-        const char* err = binary.getError().buffer();
-        msg += " -> readSkeletonData=NULL err=";
-        msg += (err && *err) ? err : "(empty)";
+        msg += " -> readSkeletonData=NULL err=" + err;
         return false;
     }
 
@@ -122,8 +162,16 @@ int l_createBinary(lua_State* L) {
     }
 
     spine38::SkeletonAnimation* sk = nullptr;
+    // gh224: 按内容派发 —— 游戏资产混格式（.skel 二进制 / .json 文本），
+    //   文本 JSON 必须走 createWithJsonFile，否则会被二进制读取器解析成垃圾并崩。
+    const bool isJson = wjjh_spine38_looks_json(skel);
+    CCLOG("WJJH_SPINE38: dispatch skel=%s fmt=%s", skel, isJson ? "json" : "bin");
     try {
-        sk = spine38::SkeletonAnimation::createWithBinaryFile(std::string(skel), std::string(atlas), scale);
+        if (isJson) {
+            sk = spine38::SkeletonAnimation::createWithJsonFile(std::string(skel), std::string(atlas), scale);
+        } else {
+            sk = spine38::SkeletonAnimation::createWithBinaryFile(std::string(skel), std::string(atlas), scale);
+        }
     } catch (...) {
         sk = nullptr;
     }
