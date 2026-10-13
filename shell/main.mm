@@ -3,7 +3,24 @@
 #import <signal.h>
 #import <execinfo.h>
 #import <string.h>
-#import <ucontext.h>
+// gh222-fix: Darwin's top-level <ucontext.h> is guarded by
+//   #error The deprecated ucontext routines require _XOPEN_SOURCE to be defined
+// so `#import <ucontext.h>` breaks the build (runs 222/223: FAILED shell/main.mm.o
+// -> incomplete WJJH.app -> simctl install "Failed to get FD to bundle executable").
+// <sys/ucontext.h> is the Darwin-internal header that actually defines
+// ucontext_t / mcontext_t, with no such guard. Guard the include so that if the
+// header is unavailable the register dump simply degrades (build still succeeds).
+#if defined(__APPLE__)
+#  if defined(__has_include)
+#    if __has_include(<sys/ucontext.h>)
+#      import <sys/ucontext.h>
+#      define WJJH_HAVE_UCONTEXT 1
+#    endif
+#  endif
+#else
+#  import <ucontext.h>
+#  define WJJH_HAVE_UCONTEXT 1
+#endif
 
 // gh221: 崩溃诊断增强 —— 除了调用栈，还记录 si_addr（触发地址）与 PC/SP。
 // 关键用途：区分「空指针解引用」(si_addr 接近 0x0) 与「野指针/越界」(si_addr 为垃圾地址)。
@@ -12,8 +29,8 @@
 
 static void wjjh_dump_regs(void *uap)
 {
+#if defined(WJJH_HAVE_UCONTEXT) && defined(__APPLE__)
     if (uap == NULL) return;
-#if defined(__APPLE__)
     ucontext_t *uc = (ucontext_t *)uap;
 # if defined(__arm64__)
     fprintf(stderr, "WJJH_REGS: pc=%p lr=%p sp=%p fp=%p\n",
@@ -29,6 +46,8 @@ static void wjjh_dump_regs(void *uap)
 # else
     (void)uc;
 # endif
+#else
+    (void)uap;
 #endif
 }
 
