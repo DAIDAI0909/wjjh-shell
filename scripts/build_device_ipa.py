@@ -219,6 +219,27 @@ def main():
             rc = 1
         else:
             log('app bundle: %s' % app)
+            # gh237: iOS 16 要求任何被 dlopen 的目标（.so/.dylib）至少带 ad-hoc 签名，
+            # 否则 Python 的 C 扩展加载失败（实测 binascii.cpython-314-iphoneos.so：
+            # "mapped file has no cdhash, completely unsigned? Code has to be at least
+            # ad-hoc signed."）→ 私服 import 链断 → 游戏卡在启动界面数十秒后崩溃。
+            # Xcode 不会自动签 pyhome/ 与 server/ 下的 .so（它们是资源拷贝），
+            # 爱思/Sideloadly 重签也不保证遍历到，故在此统一补 ad-hoc 签名
+            # （codesign --sign - 无需证书，可在 CI 上执行）。
+            _signed, _failed = 0, 0
+            for _dp, _dns, _fns in os.walk(app):
+                for _fn in _fns:
+                    if _fn.endswith('.so') or _fn.endswith('.dylib'):
+                        _p = os.path.join(_dp, _fn)
+                        _r = subprocess.run(['codesign', '--force', '--sign', '-', _p],
+                                            capture_output=True, text=True)
+                        if _r.returncode == 0:
+                            _signed += 1
+                        else:
+                            _failed += 1
+                            log('!! adhoc sign FAILED: %s : %s' % (
+                                _p, (_r.stderr or '').strip()[:200]))
+            log('gh237: ad-hoc signed %d .so/.dylib files (failed=%d)' % (_signed, _failed))
             pk = os.path.join(ROOT, 'Payload')
             if os.path.exists(pk):
                 shutil.rmtree(pk)
