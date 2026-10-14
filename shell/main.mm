@@ -1,5 +1,6 @@
 #import <UIKit/UIKit.h>
 #import <stdio.h>
+#import <stdlib.h>
 #import <signal.h>
 #import <execinfo.h>
 #import <string.h>
@@ -76,16 +77,83 @@ static void wjjh_exception_handler(NSException *exc)
     fflush(stderr);
 }
 
+// 极早期探针：__attribute__((constructor)) 比 main() 更早运行（dyld 完成加载、
+// 进入静态初始化阶段后）。用途——把「崩在 main() 之前」与「崩在 main() 之后」
+// 彻底分开：
+//   * premain.log 缺失  => dyld 根本没成功加载本可执行文件/依赖库（符号缺失、
+//     arm64 平台戳不符、签名校验失败等「库/签名层」问题）；
+//   * premain.log 存在  => dyld 加载 OK，崩溃发生在 main() 之后（我们的启动代码）。
+// 纯 C 实现，不依赖 stderr（真机无调试器时 stderr 被系统丢弃），直接写沙盒。
+static const char *wjjh_sandbox_path(const char *name, char *buf, size_t n)
+{
+    const char *home = getenv("HOME");
+    if (home != NULL && home[0] != '\0')
+        snprintf(buf, n, "%s/Documents/%s", home, name);
+    else
+        snprintf(buf, n, "/tmp/%s", name);
+    return buf;
+}
+
+static void wjjh_early_signal_handler(int sig, siginfo_t *info, void *uap)
+{
+    (void)uap;
+    char path[1024];
+    wjjh_sandbox_path("premain.log", path, sizeof(path));
+    FILE *f = fopen(path, "a");
+    if (f != NULL) {
+        fprintf(f, "WJJH_EARLY_SIG: signal %d si_addr=%p\n",
+                sig, info != NULL ? info->si_addr : NULL);
+        fclose(f);
+    }
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
+__attribute__((constructor))
+static void wjjh_premain_probe(void)
+{
+    char path[1024];
+    wjjh_sandbox_path("premain.log", path, sizeof(path));
+    FILE *f = fopen(path, "a");
+    if (f != NULL) {
+        fprintf(f, "WJJH_PREMAIN: constructor ran (dyld load OK)\n");
+        fclose(f);
+    }
+    // 静态初始化阶段就装好崩溃 handler，捕获 main() 之前的信号崩溃。
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_sigaction = wjjh_early_signal_handler;
+    sa.sa_flags = SA_SIGINFO;
+    sigemptyset(&sa.sa_mask);
+    const int sigs[] = {SIGABRT, SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGTRAP};
+    for (size_t i = 0; i < sizeof(sigs) / sizeof(sigs[0]); i++)
+        sigaction(sigs[i], &sa, NULL);
+}
+
 int main(int argc, char *argv[])
 {
-    // CI 诊断：分离启动模式下 stderr/stdout 无人接收；
-    // freopen 到各 CI 传入的 launch.log（CMake 的 WJJH_LAUNCH_LOG 编译期注入）。
-    // 真机/本地无此路径时 freopen 失败，行为不变。
+    // 诊断日志落盘：CI 传入路径优先；真机/本地该路径不存在时 freopen 失败，
+    // 而 iOS 在无调试器连接时会丢弃 App 的 stderr，故回退写到 App 沙盒
+    // Documents/launch.log，这样真机崩溃诊断(WJJH_SIG/WJJH_BT/WJJH_EXC)可经
+    // 爱思文件管理从沙盒取出，不再依赖被丢弃的 stderr。
+    const char *wjjh_log_path = NULL;
 #ifdef WJJH_LAUNCH_LOG_PATH
-    if (freopen(WJJH_LAUNCH_LOG_PATH, "a", stderr))
-        setvbuf(stderr, NULL, _IOLBF, 0);
-    freopen(WJJH_LAUNCH_LOG_PATH, "a", stdout);
+    wjjh_log_path = WJJH_LAUNCH_LOG_PATH;
 #endif
+    if (wjjh_log_path == NULL || freopen(wjjh_log_path, "a", stderr) == NULL) {
+        @autoreleasepool {
+            NSArray *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,
+                                                                 NSUserDomainMask, YES);
+            if ([docs count] > 0) {
+                NSString *sb = [docs.firstObject stringByAppendingPathComponent:@"launch.log"];
+                freopen([sb UTF8String], "a", stderr);
+                freopen([sb UTF8String], "a", stdout);
+            }
+        }
+    } else {
+        freopen(wjjh_log_path, "a", stdout);
+    }
+    setvbuf(stderr, NULL, _IOLBF, 0);
 
     fprintf(stderr, "WJJH_BOOT: main entered\n");
     {
