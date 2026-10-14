@@ -7,10 +7,13 @@
 + (void)startServerWithBundlePath:(NSString *)bundlePath
                      writablePath:(NSString *)writablePath {
     @autoreleasepool {
+        // gh238: pyhome/server 改成从 Frameworks/ 下读（见 CMakeLists gh238 注释）。
+        // iOS 16 的 Library Validation 要求 bundle 内每个被 dlopen 的 .so 都与
+        // 主程序同证书签名；重签工具只遍历 Frameworks/，故运行时也放那里。
         NSString *fwPath = [bundlePath stringByAppendingPathComponent:@"Frameworks/Python.framework"];
         NSString *dylib = [fwPath stringByAppendingPathComponent:@"Python"];
-        NSString *pyHome = [bundlePath stringByAppendingPathComponent:@"pyhome"];
-        NSString *serverSrc = [bundlePath stringByAppendingPathComponent:@"server/app"];
+        NSString *pyHome = [bundlePath stringByAppendingPathComponent:@"Frameworks/pyhome"];
+        NSString *serverSrc = [bundlePath stringByAppendingPathComponent:@"Frameworks/server/app"];
         // 服务端跑在 Documents（bundle 只读；状态/存档/日志都落在可写目录）
         NSString *serverDst = [writablePath stringByAppendingPathComponent:@"jhserver"];
 

@@ -550,14 +550,18 @@ if(EXISTS ${PY_FW})
             ${PY_FW} $<TARGET_BUNDLE_DIR:WJJH>/Frameworks/Python.framework
         COMMENT "Embedding Python.framework into WJJH.app"
     )
-    # 把 pyhome（stdlib+dynload）和 server/ 也拷进 .app
+    # gh238: pyhome/server 必须放在 Frameworks/ 下。
+    # iOS 16 的 Library Validation 要求 bundle 内被 dlopen 的每个 .so 都必须与
+    # 主程序同一证书签名；爱思等重签工具只遍历 Frameworks/ 下的 Mach-O，
+    # 放在 bundle 根目录的 pyhome/ 下会漏签 → dlopen 报 "code signature invalid"。
+    # 放 Frameworks/ 下，让重签工具必然逐个签到。
     if(EXISTS ${PY_IOS_DIR}/pyhome)
         add_custom_command(TARGET WJJH POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_directory
-                ${PY_IOS_DIR}/pyhome $<TARGET_BUNDLE_DIR:WJJH>/pyhome
+                ${PY_IOS_DIR}/pyhome $<TARGET_BUNDLE_DIR:WJJH>/Frameworks/pyhome
             COMMAND ${CMAKE_COMMAND} -E copy_directory
-                ${PY_IOS_DIR}/server $<TARGET_BUNDLE_DIR:WJJH>/server
-            COMMENT "Embedding Python pyhome + server into WJJH.app"
+                ${PY_IOS_DIR}/server $<TARGET_BUNDLE_DIR:WJJH>/Frameworks/server
+            COMMENT "Embedding Python pyhome + server into WJJH.app/Frameworks (gh238)"
         )
     endif()
 else()
@@ -569,7 +573,7 @@ endif()
 # ★ gh216 追加：把 Assets.car / Info.plist 图标键一起 dump —— actool 若没把
 #   .xcassets 编进包，这里会直接看不到 Assets.car，立刻定位。
 add_custom_command(TARGET WJJH POST_BUILD
-    COMMAND sh -c "echo '== WJJH bundle diag =='; ls -la '$<TARGET_BUNDLE_DIR:WJJH>' | head -20; echo '-- binary:'; file '$<TARGET_FILE:WJJH>'; otool -hv '$<TARGET_FILE:WJJH>'; echo '-- build-version:'; otool -l '$<TARGET_FILE:WJJH>' | grep -A5 LC_BUILD_VERSION || true; echo '-- frameworks:'; ls '$<TARGET_BUNDLE_DIR:WJJH>/Frameworks' 2>/dev/null | head -5 || true; echo '-- assets (gh216):'; ls -la '$<TARGET_BUNDLE_DIR:WJJH>/Assets.car' '$<TARGET_BUNDLE_DIR:WJJH>/Info.plist' 2>&1 || true; echo '-- icon keys in Info.plist (gh216):'; /usr/libexec/PlistBuddy -c 'Print :CFBundleIcons' '$<TARGET_BUNDLE_DIR:WJJH>/Info.plist' 2>&1 || true; echo '-- launch screen (gh216):'; /usr/libexec/PlistBuddy -c 'Print :UILaunchScreen' '$<TARGET_BUNDLE_DIR:WJJH>/Info.plist' 2>&1 || true; echo '-- pyhome (gh236):'; ls '$<TARGET_BUNDLE_DIR:WJJH>/pyhome' 2>&1 | head -5; echo '-- server (gh236):'; ls '$<TARGET_BUNDLE_DIR:WJJH>/server' 2>&1 | head -5; echo '-- server/app (gh236):'; ls '$<TARGET_BUNDLE_DIR:WJJH>/server/app' 2>&1 | head -12"'
+    COMMAND sh -c "echo '== WJJH bundle diag =='; ls -la '$<TARGET_BUNDLE_DIR:WJJH>' | head -20; echo '-- binary:'; file '$<TARGET_FILE:WJJH>'; otool -hv '$<TARGET_FILE:WJJH>'; echo '-- build-version:'; otool -l '$<TARGET_FILE:WJJH>' | grep -A5 LC_BUILD_VERSION || true; echo '-- frameworks:'; ls '$<TARGET_BUNDLE_DIR:WJJH>/Frameworks' 2>/dev/null | head -5 || true; echo '-- assets (gh216):'; ls -la '$<TARGET_BUNDLE_DIR:WJJH>/Assets.car' '$<TARGET_BUNDLE_DIR:WJJH>/Info.plist' 2>&1 || true; echo '-- icon keys in Info.plist (gh216):'; /usr/libexec/PlistBuddy -c 'Print :CFBundleIcons' '$<TARGET_BUNDLE_DIR:WJJH>/Info.plist' 2>&1 || true; echo '-- launch screen (gh216):'; /usr/libexec/PlistBuddy -c 'Print :UILaunchScreen' '$<TARGET_BUNDLE_DIR:WJJH>/Info.plist' 2>&1 || true; echo '-- pyhome (gh238, now under Frameworks/):'; ls '$<TARGET_BUNDLE_DIR:WJJH>/Frameworks/pyhome' 2>&1 | head -5; echo '-- server (gh238):'; ls '$<TARGET_BUNDLE_DIR:WJJH>/Frameworks/server' 2>&1 | head -5; echo '-- server/app (gh238):'; ls '$<TARGET_BUNDLE_DIR:WJJH>/Frameworks/server/app' 2>&1 | head -12; echo '-- interpchannels .so signature (gh238):'; for f in '$<TARGET_BUNDLE_DIR:WJJH>/Frameworks/pyhome/lib/python3.14/lib-dynload/'*.so; do echo "   $f"; done | head -3"'
     COMMENT "WJJH bundle/binary diagnostics"
     VERBATIM)
 
