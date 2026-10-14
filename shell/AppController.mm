@@ -56,7 +56,10 @@ static AppDelegate s_sharedApplication;
     }];
     srvThread.qualityOfService = NSQualityOfServiceUserInitiated;
     [srvThread start];
-    [AppController waitServerPort:5];
+    // gh236: A9 老设备上 Python 首次初始化（stdlib 导入 + 动态库加载）可能远慢于 5s，
+    // 单给 5s 会导致游戏首条（不重试的）HTTP 打在尚未就绪的端口上 → 「网络错误」。
+    // waitServerPort 是「连通即返回」，正常情况仍 ~1s 返回，仅把上限放宽到 25s。
+    [AppController waitServerPort:25];
 
     // cocos 官方模板同款：App 里必须有 AppDelegate 实例（文件顶部的 s_sharedApplication），
     // 否则 Application::getInstance() 返回空指针，initGLContextAttrs 直接 SIGSEGV
