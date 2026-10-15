@@ -142,6 +142,25 @@ bool AppDelegate::applicationDidFinishLaunching()
         }
     }
 
+    // ---- gh243: 纹理内存探针（PVRTC 改造的量化验证手段）----
+    // 前面几轮反复"猜"内存去向（先后误判过 spine 桥 / 存档 / 覆盖度），
+    // 所以这次直接把 TextureCache 的真实占用定期写进 launch.log：
+    // 形如 `WJJH_MEM: #7 textures=[1234 textures, 56789012 bytes]`。
+    // 有了它就能直接看到 PVRTC 前后的纹理内存差，不必再从 JetsamEvent 反推。
+    {
+        auto* sched = Director::getInstance()->getScheduler();
+        if (sched) {
+            sched->schedule([](float) {
+                static int n = 0;
+                ++n;
+                auto* tc = Director::getInstance()->getTextureCache();
+                std::string info = tc ? tc->getCachedTextureInfo() : std::string("(no cache)");
+                fprintf(stderr, "WJJH_MEM: #%d textures=[%s]\n", n, info.c_str());
+            }, this, 20.0f, false, "wjjh_mem_probe");
+            wjjh_bootlog("WJJH_MEM: texture-cache probe scheduled (every 20s)");
+        }
+    }
+
     // 游戏资源在 bundle 的 Resources/ 下：src/ 与 res/ 由 main.lua 自己 addSearchPath
     auto engine = LuaEngine::getInstance();
     ScriptEngineManager::getInstance()->setScriptEngine(engine);

@@ -76,6 +76,15 @@ def main():
     # gh242: 必须跑在 game.zip 解压之后、CMake 打包之前。
     patch_animres_metadata_only()
 
+    # gh243: spine 图集页 → PVRTC4（运行期纹理内存降到约 1/8）。
+    #   必须在 res 已解压（fetch_private.py 已把 res_full 铺进 gamelua/）之后、
+    #   CMake 打包之前执行。脚本自带校验与回退，失败等同于"没做优化"，不会破坏构建。
+    try:
+        import pvr_compress_atlas
+        pvr_compress_atlas.main()
+    except Exception as e:                                      # noqa: BLE001
+        print('[overlay] gh243: pvr step skipped (%r)' % e, flush=True)
+
 
 if __name__ == '__main__':
     main()
