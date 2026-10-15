@@ -22,12 +22,14 @@
 	<string>1</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<!-- gh241: 去掉水墨启动图（原 1290x2796 手机竖屏比例，在 4:3 的 iPad 上会被
+	     强制裁切、显示不正；且美术取自安卓单机版 v26，与游戏无关）。
+	     改为纯深色背景（LaunchBackground, #1A1A1A），与游戏暗色调协调。
+	     LaunchSplash.imageset 已一并删除，包体省 1.7MB。 -->
 	<key>UILaunchScreen</key>
 	<dict>
-		<key>UIImageName</key>
-		<string>LaunchSplash</string>
-		<key>UIImageRespectsSafeAreaInsets</key>
-		<false/>
+		<key>UIColorName</key>
+		<string>LaunchBackground</string>
 	</dict>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>

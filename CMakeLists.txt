@@ -253,11 +253,13 @@ foreach(f ${LUA_FILES})
     list(APPEND GAME_RES_FILES ${f})
 endforeach()
 
-# ---- gh216: App 图标 + 启动图（美术直接取自安卓单机版 v26）----
-# 源：安卓《我叫江湖-单机离线版v26》APK 的 res/drawable-hdpi/{icon.png,splash.jpg}
+# ---- gh216: App 图标（美术取自安卓单机版 v26）----
+# 源：安卓《我叫江湖-单机离线版v26》APK 的 res/drawable-hdpi/icon.png
 #   icon.png  552x536 灰度白底黑字（App 图标，与开发版同一份 md5）
-#   splash.jpg 540x960 无字水墨城墙+满月（启动图，已扩到 1290x2796）
-# 产物：shell/Assets.xcassets/{AppIcon.appiconset, LaunchSplash.imageset}
+# gh241: 启动图 splash.jpg（540x960 无字水墨城墙+满月）已删除 —— 它是手机
+#   竖屏比例(1290x2796)，在 4:3 的 iPad 上会被强制裁切；LaunchScreen 改用
+#   纯色 LaunchBackground(#1A1A1A)，见 shell/Info.plist.in。
+# 产物：shell/Assets.xcassets/{AppIcon.appiconset, LaunchBackground.colorset}
 # 注意：实测 CMake 4.x 的 Xcode 生成器不会自动把 .xcassets 编进包
 #       （gh216 跑完 Assets.car 缺失、CFBundleIcons 也没有），所以改成
 #       由 POST_BUILD 显式 xcrun actool 编出 Assets.car 落进 .app（见下方）。
