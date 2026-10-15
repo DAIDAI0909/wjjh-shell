@@ -52,6 +52,47 @@ def patch_animres_metadata_only():
         print('[overlay] gh242: file size=%d' % len(raw), flush=True)
 
 
+def patch_skip_title_page():
+    """gh249: 单机版**保留标题页**，不再自动进入游戏。
+
+    背景（老板实测）：进游戏后停在"正在开始游戏"界面，**还没点「开始游戏」就自动
+    进了主界面**。代码里写得很清楚 —— `app/models/game/Game.lua`：
+        -- ★ 三世界"跳过标题页"（开发版 v57 恢复）。
+        --   单机版出包前注释掉下一行（单机版保留标题页，2026-10-04 约定）。
+        menuLayer:StartGame()
+    这是**开发版遗留**：建好 MenuLayer 后立刻调 StartGame()，等价于替玩家点了按钮。
+    按 2026-10-04 的约定，单机版必须注释掉它。
+
+    注释后的流程（这才是"重新开始建角色"该走的路）：
+        标题页等玩家点「开始游戏」
+          → GameStart:start_game() → Account:createAccount() → errcode=0
+          → __normal_start_game() → 本地无存档
+          → __download_and_start_game() → 私服也无存档
+          → __show_create_role()   ← 创建角色界面
+    """
+    p = os.path.join(DEST, 'src', 'app', 'models', 'game', 'Game.lua')
+    if not os.path.exists(p):
+        print('[overlay] gh249: WARN Game.lua not found at %s' % p, flush=True)
+        return
+    raw = open(p, 'rb').read()
+    old = b'menuLayer:StartGame()'
+    # 注意：文件按 bytes 读写，注释必须是 ASCII（bytes 字面量不能含中文）。
+    new = (b'-- gh249: offline build keeps the title page (2026-10-04 rule);\n'
+           b'-- do not auto-start, wait for the player to tap "start game".\n'
+           b'                                -- menuLayer:StartGame()')
+    n = raw.count(old)
+    if n == 1:
+        open(p, 'wb').write(raw.replace(old, new))
+        print('[overlay] gh249: Game.lua -> menuLayer:StartGame() 已注释（保留标题页）OK', flush=True)
+    else:
+        print('[overlay] gh249: WARN expected exactly 1 match for menuLayer:StartGame(),'
+              ' got %d -> file left unchanged' % n, flush=True)
+        head = raw[:24]
+        print('[overlay] gh249: file head hex=%s printable=%r'
+              % (head.hex(), ''.join(chr(b) if 32 <= b < 127 else '.' for b in head)), flush=True)
+        print('[overlay] gh249: file size=%d' % len(raw), flush=True)
+
+
 def main():
     # gamelua/src 不存在 = game.zip 还没解（CMake 配置期才解）→ 先替它解掉
     if not os.path.isdir(os.path.join(DEST, 'src')):
@@ -75,6 +116,7 @@ def main():
 
     # gh242: 必须跑在 game.zip 解压之后、CMake 打包之前。
     patch_animres_metadata_only()
+    patch_skip_title_page()
 
     # gh243: spine 图集页 → PVRTC4（运行期纹理内存降到约 1/8）。
     #   必须在 res 已解压（fetch_private.py 已把 res_full 铺进 gamelua/）之后、
