@@ -62,9 +62,25 @@ HARD_DEADLINE_S = int(os.environ.get('WJJH_PVR_HARD_S', '2700'))     # 自 check
 WORKERS = int(os.environ.get('WJJH_PVR_WORKERS', '4'))
 PROGRESS_EVERY = 100
 PVRTC4BPP_RGBA = 0x19          # cocos: PVR2TexturePixelFormat::PVRTC4BPP_RGBA
+PVRTC2BPP_RGBA = 0x18          # cocos: PVR2TexturePixelFormat::PVRTC2BPP_RGBA
 PVR_MAGIC_OFFSET = 44          # cocos PVRv2TexHeader: pvrTag 在偏移 44
 PVR_FLAG_OFFSET = 16           # flags 在偏移 16
 PVR_TYPE_MASK = 0xFF
+
+# ---- gh247: KTX 容器（Apple `TextureConverter` 的实际输出格式）----
+KTX_ID = b'\xabKTX 11\xbb\r\n\x1a\n'
+KTX2_ID = b'\xabKTX 20\xbb\r\n\x1a\n'
+# GL 枚举（Imagination PVRTC）
+GL_PVRTC_RGB_4 = 0x8C00
+GL_PVRTC_RGB_2 = 0x8C01
+GL_PVRTC_RGBA_4 = 0x8C02
+GL_PVRTC_RGBA_2 = 0x8C03
+# GL internalFormat -> (PVR2 flags, bpp)  —— 只收**带 alpha** 的
+KTX_PVRTC_MAP = {
+    GL_PVRTC_RGBA_4: (PVRTC4BPP_RGBA, 4),
+    GL_PVRTC_RGBA_2: (PVRTC2BPP_RGBA, 2),
+}
+KTX_NO_ALPHA = {GL_PVRTC_RGB_4, GL_PVRTC_RGB_2}
 
 
 def _tool_rel_paths():
@@ -307,8 +323,84 @@ def arg_modes():
     ]
 
 
+def ktx_to_pvr(ktx_path, pvr_path):
+    """把 `TextureConverter` 产出的 **KTX(PVRTC)** 重新包成 cocos 能吃的 **PVR v2**。
+
+    ★ gh247 的核心发现：`TextureConverter` 认得 texturetool 的参数风格
+    （`-f PVR -e PVRTC --bits-per-pixel-4 -o OUT IN`），也确实做了 PVRTC 压缩，
+    但**输出容器是 KTX**（实测文件头 `\\xabKTX 11\\xbb`）。而 cocos 的 KTX 路径
+    （`initWithATITCData`）**只映射 ATC 格式**，根本不认 KTX 里的 PVRTC ⇒ 会被拒。
+    解法：**压缩数据原样搬运，只换容器头**（画质与 Apple 编码器完全一致）。
+
+    只取**基础层**（mipmap 0），PVR 头写 `numMipmaps=1` ⇒ 内存最小。
+
+    返回 (ok, msg)。
+    """
+    try:
+        with open(ktx_path, 'rb') as f:
+            blob = f.read()
+    except Exception as e:                                      # noqa: BLE001
+        return False, 'ktx read fail %r' % e
+    if len(blob) < 68:
+        return False, 'ktx too short (%d)' % len(blob)
+    if blob[:12] != KTX_ID:
+        if blob[:12] == KTX2_ID:
+            return False, 'KTX 2.0 container (not supported)'
+        return False, 'not KTX (head=%r)' % blob[:12]
+    if struct.unpack_from('<I', blob, 12)[0] != 0x04030201:
+        return False, 'KTX big-endian not supported'
+
+    gl_internal = struct.unpack_from('<I', blob, 28)[0]
+    w, h, _depth, _arr, _faces, levels, kvlen = struct.unpack_from('<7I', blob, 36)
+
+    fmt = KTX_PVRTC_MAP.get(gl_internal)
+    if fmt is None:
+        if gl_internal in KTX_NO_ALPHA:
+            return False, 'KTX internal=0x%04X is PVRTC WITHOUT alpha (sprites need alpha)' % gl_internal
+        return False, 'KTX internal=0x%04X not PVRTC_RGBA (need 0x8C02)' % gl_internal
+    flag, bpp = fmt
+
+    off = 64 + kvlen
+    if off + 4 > len(blob):
+        return False, 'ktx truncated at imageSize'
+    image_size = struct.unpack_from('<I', blob, off)[0]
+    off += 4
+    need = w * h // (8 // bpp)          # 4bpp -> w*h/2 ; 2bpp -> w*h/4
+    if image_size < need or off + need > len(blob):
+        return False, ('ktx payload too small (imageSize=%d need=%d avail=%d)'
+                       % (image_size, need, len(blob) - off))
+    data = blob[off:off + need]
+
+    # ---- PVR v2 头（52B, little-endian；cocos 用 CC_SWAP_INT32_LITTLE_TO_HOST，小端即原样）----
+    hdr = bytearray(52)
+    struct.pack_into('<I', hdr, 0, 52)      # headerLength
+    struct.pack_into('<I', hdr, 4, h)       # height
+    struct.pack_into('<I', hdr, 8, w)       # width
+    struct.pack_into('<I', hdr, 12, 1)      # numMipmaps = 1（只留基础层）
+    struct.pack_into('<I', hdr, 16, flag)   # flags（0x19/0x18）
+    struct.pack_into('<I', hdr, 20, need)   # dataLength
+    struct.pack_into('<I', hdr, 24, bpp)    # bpp
+    hdr[44:48] = b'PVR!'                    # pvrTag（cocos memcmp 4 字节）
+    struct.pack_into('<I', hdr, 48, 1)      # numSurfs
+    with open(pvr_path, 'wb') as f:
+        f.write(bytes(hdr))
+        f.write(data)
+
+    ok, why = verify_pvr(pvr_path)
+    if not ok:
+        try:
+            os.remove(pvr_path)
+        except Exception:                                       # noqa: BLE001
+            pass
+        return False, 'rewrap produced invalid pvr: %s' % why
+    return True, 'ktx %dx%d int=0x%04X lv=%d -> %s' % (w, h, gl_internal, levels, why)
+
+
 def convert_one(tool, argfn, png_path):
-    """转单页 → 返回 (ok, msg)。产出 <png>.pvr 并用 verify_pvr 校验。"""
+    """转单页 → 返回 (ok, msg)。产出 <png>.pvr 并用 verify_pvr 校验。
+
+    gh247：若工具产出的是 KTX（TextureConverter 的行为），就地重包成 PVR。
+    """
     pvr = png_path[:-4] + '.pvr'
     try:
         if os.path.exists(pvr):
@@ -319,10 +411,25 @@ def convert_one(tool, argfn, png_path):
             return False, 'no output (rc=%d) %s' % (r.returncode,
                                                     (r.stderr or b'')[:400].decode('utf-8', 'replace'))
         ok, why = verify_pvr(pvr)
-        if not ok:
-            os.remove(pvr)
-            return False, why
-        return True, why
+        if ok:
+            return True, why
+        # 不是合法 PVR —— 看是不是 KTX 容器（TextureConverter 的输出）
+        try:
+            with open(pvr, 'rb') as f:
+                head = f.read(12)
+        except Exception:                                       # noqa: BLE001
+            head = b''
+        if head in (KTX_ID, KTX2_ID) or head[:7] == b'\xabKTX 20':
+            ok2, why2 = ktx_to_pvr(pvr, pvr)     # 原地重包（blob 已全读入内存，安全）
+            if ok2:
+                return True, why2
+            try:
+                os.remove(pvr)
+            except Exception:                                   # noqa: BLE001
+                pass
+            return False, why2
+        os.remove(pvr)
+        return False, why
     except Exception as e:                                      # noqa: BLE001
         try:
             if os.path.exists(pvr):

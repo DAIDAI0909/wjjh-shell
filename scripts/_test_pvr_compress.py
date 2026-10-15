@@ -326,14 +326,133 @@ def case_verify_formats():
     return allok
 
 
+# gh247：模拟 Apple TextureConverter —— 认 texturetool 参数风格，但**输出 KTX 容器**
+KTX_TOOL = r'''import sys, struct
+a = sys.argv[1:]
+out = a[a.index("-o") + 1]
+w = h = 256
+payload = b"\xAA" * (w * h // 2)          # PVRTC4 基础层大小
+hdr = bytearray(64)
+hdr[0:12] = b"\xabKTX 11\xbb\r\n\x1a\n"
+struct.pack_into("<I", hdr, 12, 0x04030201)   # little-endian
+struct.pack_into("<I", hdr, 16, 0)            # glType
+struct.pack_into("<I", hdr, 20, 1)            # glTypeSize
+struct.pack_into("<I", hdr, 24, 0)            # glFormat
+struct.pack_into("<I", hdr, 28, 0x8C02)       # glInternalFormat = PVRTC4BPP_RGBA
+struct.pack_into("<I", hdr, 32, 0x1908)       # glBaseInternalFormat = RGBA
+struct.pack_into("<I", hdr, 36, w)
+struct.pack_into("<I", hdr, 40, h)
+struct.pack_into("<I", hdr, 44, 0)            # depth
+struct.pack_into("<I", hdr, 48, 0)            # array
+struct.pack_into("<I", hdr, 52, 1)            # faces
+struct.pack_into("<I", hdr, 56, 1)            # mipmap levels
+struct.pack_into("<I", hdr, 60, 0)            # bytesOfKeyValueData
+open(out, "wb").write(bytes(hdr) + struct.pack("<I", len(payload)) + payload)
+'''
+
+
+def mk_ktx(internal, w=256, h=256, payload=None, endian=0x04030201,
+           levels=1, image_size=None, kvlen=0, truncate=0):
+    """构造一个 KTX 1.1 文件字节串（用于单测 ktx_to_pvr）。"""
+    if payload is None:
+        payload = b'\xAA' * (w * h // 2)
+    hdr = bytearray(64)
+    hdr[0:12] = P.KTX_ID
+    struct.pack_into('<I', hdr, 12, endian)
+    struct.pack_into('<I', hdr, 16, 0)
+    struct.pack_into('<I', hdr, 20, 1)
+    struct.pack_into('<I', hdr, 24, 0)
+    struct.pack_into('<I', hdr, 28, internal)
+    struct.pack_into('<I', hdr, 32, 0x1908)
+    struct.pack_into('<I', hdr, 36, w)
+    struct.pack_into('<I', hdr, 40, h)
+    struct.pack_into('<I', hdr, 44, 0)
+    struct.pack_into('<I', hdr, 48, 0)
+    struct.pack_into('<I', hdr, 52, 1)
+    struct.pack_into('<I', hdr, 56, levels)
+    struct.pack_into('<I', hdr, 60, kvlen)
+    sz = len(payload) if image_size is None else image_size
+    out = bytes(hdr) + b'\x00' * kvlen + struct.pack('<I', sz) + payload
+    return out[:-truncate] if truncate else out
+
+
+def case_ktx_rewrap():
+    """★ gh247：KTX(PVRTC) → PVR v2 重包，以及必须拒绝的边界情况。"""
+    base = tempfile.mkdtemp()
+    print('=' * 62)
+    print('用例：KTX → PVR v2 重包')
+    allok = True
+
+    # --- 正常：PVRTC4BPP_RGBA 256x256 ---
+    kp = os.path.join(base, 'a.ktx')
+    pp = os.path.join(base, 'a.pvr')
+    with open(kp, 'wb') as f:
+        f.write(mk_ktx(P.GL_PVRTC_RGBA_4))
+    ok, why = P.ktx_to_pvr(kp, pp)
+    head = open(pp, 'rb').read(52) if ok else b''
+    vok, vwhy = P.verify_pvr(pp) if ok else (False, '-')
+    checks = [
+        ('重包成功', ok),
+        ('产出通过 verify_pvr（%s）' % vwhy, vok),
+        ('headerLength=52', ok and struct.unpack_from('<I', head, 0)[0] == 52),
+        ('height=256', ok and struct.unpack_from('<I', head, 4)[0] == 256),
+        ('width=256', ok and struct.unpack_from('<I', head, 8)[0] == 256),
+        ('numMipmaps=1（只留基础层）', ok and struct.unpack_from('<I', head, 12)[0] == 1),
+        ('flags=0x19 PVRTC4BPP_RGBA', ok and struct.unpack_from('<I', head, 16)[0] == 0x19),
+        ('dataLength=32768', ok and struct.unpack_from('<I', head, 20)[0] == 32768),
+        ('pvrTag="PVR!"@44', ok and head[44:48] == b'PVR!'),
+        ('numSurfs=1', ok and struct.unpack_from('<I', head, 48)[0] == 1),
+        ('文件总长 = 52+32768', ok and os.path.getsize(pp) == 52 + 32768),
+    ]
+
+    # --- 2bpp RGBA：应接受（低画质）---
+    k2 = os.path.join(base, 'b.ktx')
+    p2 = os.path.join(base, 'b.pvr')
+    with open(k2, 'wb') as f:
+        f.write(mk_ktx(P.GL_PVRTC_RGBA_2, payload=b'\xBB' * (256 * 256 // 4)))
+    ok2, why2 = P.ktx_to_pvr(k2, p2)
+    h2 = open(p2, 'rb').read(52) if ok2 else b''
+    checks += [
+        ('2bpp RGBA 接受（%s）' % why2, ok2),
+        ('2bpp flags=0x18', ok2 and struct.unpack_from('<I', h2, 16)[0] == 0x18),
+    ]
+
+    # --- 必须拒绝 ---
+    rejects = [
+        ('RGB 版 PVRTC（无 alpha）', mk_ktx(P.GL_PVRTC_RGB_4)),
+        ('ASTC 内部格式', mk_ktx(0x93B0)),
+        ('大端 KTX', mk_ktx(P.GL_PVRTC_RGBA_4, endian=0x01020304)),
+        ('负载不足', mk_ktx(P.GL_PVRTC_RGBA_4, image_size=16)),
+        ('文件截断', mk_ktx(P.GL_PVRTC_RGBA_4, truncate=100)),
+        ('非 KTX（PNG 头）', b'\x89PNG\r\n\x1a\n' + b'x' * 200),
+    ]
+    for label, blob in rejects:
+        rp = os.path.join(base, 'r.ktx')
+        with open(rp, 'wb') as f:
+            f.write(blob)
+        rok, rwhy = P.ktx_to_pvr(rp, os.path.join(base, 'r.pvr'))
+        good = (rok is False)
+        allok = allok and good
+        print('   %s %-24s -> %s' % ('✅' if good else '❌', label,
+                                     'REJECT: %s' % rwhy if not rok else '★不该通过★'))
+
+    for label, good in checks:
+        allok = allok and good
+        print('   %s %s' % ('✅' if good else '❌', label))
+    shutil.rmtree(base, ignore_errors=True)
+    return allok
+
+
 def main():
     results = [
         ('合法 PVRTC4BPP_RGBA 工具', run_case('合法 PVRTC4BPP_RGBA 工具', GOOD_TOOL, True)),
         ('产出错误格式的工具（须整体回退）', run_case('产出错误格式的工具（须整体回退）', BAD_TOOL, False)),
+        ('★ KTX 工具（须自动重包成 PVR）', run_case('KTX 工具（须自动重包成 PVR）', KTX_TOOL, True)),
         ('截止时间刹车', case_deadline()),
         ('优先级排序', case_priority()),
         ('探针回退', case_probe_fallback()),
         ('PVR v2/v3 头部校验', case_verify_formats()),
+        ('★ KTX→PVR 重包', case_ktx_rewrap()),
     ]
     print('=' * 62)
     for name, ok in results:
