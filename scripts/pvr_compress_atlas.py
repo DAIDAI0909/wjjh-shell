@@ -47,6 +47,7 @@ import glob
 import os
 import re
 import shutil
+import signal
 import struct
 import subprocess
 import sys
@@ -59,8 +60,13 @@ BUILD_DIR = os.environ.get('CM_BUILD_DIR', os.getcwd())
 RES_ROOT = os.path.join(BUILD_DIR, 'gamelua')          # fetch_private.py 把 res_full 解到这里
 TIME_BUDGET_S = int(os.environ.get('WJJH_PVR_BUDGET_S', '900'))      # 自身预算：15 分钟
 HARD_DEADLINE_S = int(os.environ.get('WJJH_PVR_HARD_S', '2700'))     # 自 checkout 起 45 分钟
-WORKERS = int(os.environ.get('WJJH_PVR_WORKERS', '4'))
-PROGRESS_EVERY = 100
+# ★ gh248：run 247 挂死 8.5 小时 ⇒ 并发从 4 降到 2。
+#   TextureConverter 内部本身多线程（有 --disable_multithreading 开关），
+#   在 3~4 核 runner 上开 4 个并发实例会严重超订。
+WORKERS = int(os.environ.get('WJJH_PVR_WORKERS', '2'))
+TOOL_TIMEOUT_S = int(os.environ.get('WJJH_PVR_TOOL_TIMEOUT', '30'))  # 单页编码超时（正常 <1s）
+STALL_ABORT_AFTER = int(os.environ.get('WJJH_PVR_STALL_ABORT', '5')) # 连续超时几次就整体放弃
+PROGRESS_EVERY = 25
 PVRTC4BPP_RGBA = 0x19          # cocos: PVR2TexturePixelFormat::PVRTC4BPP_RGBA
 PVRTC2BPP_RGBA = 0x18          # cocos: PVR2TexturePixelFormat::PVRTC2BPP_RGBA
 PVR_MAGIC_OFFSET = 44          # cocos PVRv2TexHeader: pvrTag 在偏移 44
@@ -81,6 +87,81 @@ KTX_PVRTC_MAP = {
     GL_PVRTC_RGBA_2: (PVRTC2BPP_RGBA, 2),
 }
 KTX_NO_ALPHA = {GL_PVRTC_RGB_4, GL_PVRTC_RGB_2}
+
+# 每个线程一个工具输出日志文件（避免交错），用于超时时把 stderr 带回来
+_TL = threading.local()
+
+
+def _tool_log_path():
+    p = getattr(_TL, 'logpath', None)
+    if p is None:
+        fd, p = tempfile.mkstemp(prefix='tc_', suffix='.log')
+        os.close(fd)
+        _TL.logpath = p
+    return p
+
+
+def run_tool(argv, timeout=None):
+    """跑一次编码工具，**保证不会永久阻塞**。
+
+    ★★ gh248 的核心修正。run 247 挂死 8.5 小时的机理：
+      `subprocess.run(..., capture_output=True, timeout=N)` 在超时时会
+      `process.kill()` 然后 `process.wait()`；若子进程正卡在**不可中断**的
+      GPU/驱动调用里，这个 wait 就**永不返回**，于是整个转换循环因为
+      「在跑的任务永不结束」而出不来（截止时间只管停提交，管不了在跑的）。
+
+    这里改为：
+      * stdout/stderr 写**文件**（不是管道）⇒ 不存在 communicate() 阻塞；
+      * stdin 接 /dev/null ⇒ 工具即使想提示也不会卡在等输入；
+      * `start_new_session=True` ⇒ 可以整组 killpg；
+      * 超时后 killpg 就**直接放弃、绝不再 wait**，僵尸留给进程退出时回收。
+
+    注意 `timeout=None` 时才读模块级 `TOOL_TIMEOUT_S` —— 不能写成默认参数，
+    否则默认值在**函数定义时**就绑定死了，运行期改配置不生效（单测抓到的坑）。
+
+    返回 (rc 或 None, 错误说明或 None)。
+    """
+    if timeout is None:
+        timeout = TOOL_TIMEOUT_S
+    lg = _tool_log_path()
+    try:
+        fh = open(lg, 'wb')
+    except Exception as e:                                      # noqa: BLE001
+        return None, 'log open fail %r' % e
+    try:
+        try:
+            p = subprocess.Popen(argv, stdout=fh, stderr=fh,
+                                 stdin=subprocess.DEVNULL, start_new_session=True)
+        except Exception as e:                                  # noqa: BLE001
+            return None, 'spawn fail %r' % e
+        try:
+            rc = p.wait(timeout=timeout)
+            return rc, None
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+            except Exception:                                   # noqa: BLE001
+                try:
+                    p.kill()
+                except Exception:                               # noqa: BLE001
+                    pass
+            # ★ 关键：不再 wait()。标记 returncode 以免 Popen.__del__ 告警。
+            try:
+                p.returncode = -9
+            except Exception:                                   # noqa: BLE001
+                pass
+            tail = ''
+            try:
+                with open(lg, 'rb') as f:
+                    tail = f.read()[-200:].decode('utf-8', 'replace')
+            except Exception:                                   # noqa: BLE001
+                pass
+            return None, 'TIMEOUT>%ss (abandoned) %s' % (timeout, tail)
+    finally:
+        try:
+            fh.close()
+        except Exception:                                       # noqa: BLE001
+            pass
 
 
 def _tool_rel_paths():
@@ -237,6 +318,15 @@ def is_pot_square(w, h):
     return pot(w) and pot(h) and w == h
 
 
+def tool_log_tail(n=300):
+    """取当前线程工具日志的尾部，用于失败诊断。"""
+    try:
+        with open(_tool_log_path(), 'rb') as f:
+            return f.read()[-n:].decode('utf-8', 'replace').strip()
+    except Exception:                                           # noqa: BLE001
+        return ''
+
+
 def verify_pvr(path):
     """校验产出的 .pvr 是否为 cocos 能吃的 **带 alpha 的 PVRTC**。
 
@@ -304,22 +394,35 @@ def parse_atlas(path):
 def arg_modes():
     """候选命令行参数风格 —— 不同工具/版本参数不同，靠探针实测挑。
 
-    Apple 把 texturetool 换成了 `TextureConverter`（Xcode 13 发行说明：
-    "use Texture Converter on the command line to compress textures to all Metal
-    compressed texture formats"），但它的参数语法网上查不到 ⇒ 这里一次列全，
-    用**真实页**逐个试，能产出合法 PVR 的才算数。
+    Apple 把 texturetool 换成了 `TextureConverter`，其 `--help` 原文（run 246 日志）：
+        TextureConverter 2.0.160003
+        --compression_format=value   (默认 "None")
+        --compression_quality=value  (默认 "Production")
+        --file_format=value          (默认 "Auto")
+        --alpha_mode=value           (默认 "Ignore")
+        --disable_multithreading     ★ 它内部是多线程的
+    实测：**texturetool 的老参数风格仍被接受**（并确实做了 PVRTC 压缩），
+    但输出容器是 **KTX**（⇒ 交给 ktx_to_pvr 重包）。其它风格报 `Unsupported number of arguments!`。
+
+    ★ gh248：把带 `--disable_multithreading` 的风格放**第一位**。
+    它在 --help 里明确存在，先关掉工具内部线程能显著降低在低核 runner 上
+    把 GPU 驱动搞进不可中断状态的风险（run 247 挂死 8.5 小时的疑似元凶）。
+    探针会验证它是否真的能产出合法 PVR，不行就自动退回下一种风格。
 
     ★ 安全约束：**只收录「输出路径走显式参数」的风格**。
     绝不试 `[输入, 输出]` 这种位置参数 —— 万一工具把第 1 个参数当输出，
     就会**覆盖掉真实的 PNG**，那是不可逆的破坏。
     """
     return [
-        ('texturetool-style', lambda o, i: ['-f', 'PVR', '-e', 'PVRTC',
-                                            '--bits-per-pixel-4', '-o', o, i]),
-        ('tc-format-4bpp',    lambda o, i: ['--format', 'PVRTC_4BPP', '--output', o, i]),
-        ('tc-format-pvr',     lambda o, i: ['--format', 'PVR', '--output', o, i]),
-        ('tc-short-o',        lambda o, i: ['-o', o, i]),
-        ('tc-f-4bpp',         lambda o, i: ['-f', 'PVRTC_4BPP', '-o', o, i]),
+        ('noMT+texturetool-style', lambda o, i: ['--disable_multithreading', '-f', 'PVR',
+                                                 '-e', 'PVRTC', '--bits-per-pixel-4', '-o', o, i]),
+        ('texturetool-style',      lambda o, i: ['-f', 'PVR', '-e', 'PVRTC',
+                                                 '--bits-per-pixel-4', '-o', o, i]),
+        ('tc-format-4bpp',         lambda o, i: ['--compression_format=PVRTC4',
+                                                 '--file_format=KTX', '--output', o, i]),
+        ('tc-format-pvr',          lambda o, i: ['--compression_format=PVRTC4',
+                                                 '--file_format=PVR', '--output', o, i]),
+        ('tc-short-o',             lambda o, i: ['-o', o, i]),
     ]
 
 
@@ -400,16 +503,18 @@ def convert_one(tool, argfn, png_path):
     """转单页 → 返回 (ok, msg)。产出 <png>.pvr 并用 verify_pvr 校验。
 
     gh247：若工具产出的是 KTX（TextureConverter 的行为），就地重包成 PVR。
+    gh248：底层改用 run_tool（不可能永久阻塞）。
     """
     pvr = png_path[:-4] + '.pvr'
     try:
         if os.path.exists(pvr):
             os.remove(pvr)
         argv = list(tool) + list(argfn(pvr, png_path))
-        r = subprocess.run(argv, capture_output=True, timeout=120)
+        rc, err = run_tool(argv)
+        if err:
+            return False, err
         if not os.path.exists(pvr):
-            return False, 'no output (rc=%d) %s' % (r.returncode,
-                                                    (r.stderr or b'')[:400].decode('utf-8', 'replace'))
+            return False, 'no output (rc=%s) %s' % (rc, tool_log_tail()[:200])
         ok, why = verify_pvr(pvr)
         if ok:
             return True, why
@@ -541,6 +646,16 @@ def main():
         return
     print('[pvr] probe elapsed=%.1fs (单页含进程启动开销)' % (time.time() - t0), flush=True)
 
+    # ★ gh248：把所选工具的 --help 全文打进日志（截 6000 字符）。
+    #   run 246 就是靠这 2000 字符才拿到 TextureConverter 的真实参数表；
+    #   现在放开到 6000，把 --file_format / --compression_format 的取值也带回来。
+    try:
+        rc, _e = run_tool(list(tool) + ['--help'], timeout=60)
+        print('[pvr] --- chosen tool help ---', flush=True)
+        print(tool_log_tail(6000), flush=True)
+    except Exception as e:                                      # noqa: BLE001
+        print('[pvr] help dump failed: %r' % e, flush=True)
+
     # ---- 有界提交 + 截止时间硬约束（gh244 关键修正）----
     done = {}                 # png_path -> True/False
     converted = failed = timed_out = 0
@@ -548,13 +663,27 @@ def main():
     idx = 0
     lock = threading.Lock()
 
-    def on_done(png, ok):
+    stall = [0]            # 连续超时计数（用 list 以便闭包内修改）
+    abort = [False]
+
+    def on_done(png, ok, msg=''):
         nonlocal converted, failed
         done[png] = ok
         if ok:
             converted += 1
+            stall[0] = 0
         else:
             failed += 1
+            if 'TIMEOUT' in (msg or ''):
+                stall[0] += 1
+                print('[pvr] STALL %d: %s -> %s' % (stall[0], os.path.basename(png), msg[:160]),
+                      flush=True)
+                # ★ gh248：连续超时说明工具在这个环境里会卡死（run 247 挂 8.5h 的教训）。
+                #   立刻整体放弃，保住已转好的部分，让 CI 继续往下走。
+                if stall[0] >= STALL_ABORT_AFTER:
+                    abort[0] = True
+            else:
+                stall[0] = 0
         c = converted + failed
         if c % PROGRESS_EVERY == 0:
             el = time.time() - t0
@@ -563,6 +692,20 @@ def main():
             print('[pvr] progress %d/%d  ok=%d fail=%d  %.1f pages/s  elapsed=%.0fs  eta=%.0fs'
                   % (c, n, converted, failed, rate, el, left), flush=True)
 
+    # ★★ gh248 看门狗：即使底层出现任何"不可中断"的怪状态，也必须在
+    #   「截止时间 + 180s」内退出本步骤（run 247 挂死 8.5 小时的保险丝）。
+    wd = int(max(120, deadline - time.time() + 180))
+
+    def _on_alarm(_signum, _frame):
+        raise TimeoutError('pvr watchdog fired after %ds' % wd)
+
+    try:
+        signal.signal(signal.SIGALRM, _on_alarm)
+        signal.alarm(wd)
+        print('[pvr] watchdog armed: %ds' % wd, flush=True)
+    except Exception as e:                                      # noqa: BLE001
+        print('[pvr] watchdog unavailable: %r' % e, flush=True)
+
     import concurrent.futures as cf
     with cf.ThreadPoolExecutor(max_workers=WORKERS) as ex:
         running = {}          # future -> png
@@ -570,6 +713,10 @@ def main():
         while idx < n or running:
             # 填满 worker 槽位（提交前检查截止时间）
             while not stop and idx < n and len(running) < WORKERS:
+                if abort[0]:
+                    stop = True
+                    print('[pvr] ABORT: too many tool timeouts -> stop submitting', flush=True)
+                    break
                 if time.time() >= deadline:
                     stop = True
                     timed_out = n - idx
@@ -588,11 +735,15 @@ def main():
                 png = running.pop(fut)
                 try:
                     ok, _msg = fut.result()
-                except Exception:                               # noqa: BLE001
-                    ok = False
-                on_done(png, ok)
+                except Exception as e:                          # noqa: BLE001
+                    ok, _msg = False, 'exc %r' % e
+                on_done(png, ok, _msg)
         # with 退出时 running 已空，不会像 gh243 那样等全量跑完
 
+    try:
+        signal.alarm(0)                 # 关掉看门狗，后面是收尾工作
+    except Exception:                                           # noqa: BLE001
+        pass
     print('[pvr] converted=%d failed=%d not_attempted=%d  elapsed=%.0fs'
           % (converted, failed, timed_out, time.time() - t0), flush=True)
 

@@ -22,6 +22,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 import pvr_compress_atlas as P                                   # noqa: E402
 
 GOOD_TOOL = r'''import sys, struct
+if '--help' in sys.argv[1:] or '-h' in sys.argv[1:]:
+    print('fake tool usage'); sys.exit(0)
 a = sys.argv[1:]
 out = a[a.index("-o") + 1]
 h = bytearray(52)
@@ -34,6 +36,8 @@ open(out, "wb").write(bytes(h) + b"\x00" * 128)
 '''
 
 BAD_TOOL = r'''import sys, struct
+if '--help' in sys.argv[1:] or '-h' in sys.argv[1:]:
+    print('fake tool usage'); sys.exit(0)
 a = sys.argv[1:]
 out = a[a.index("-o") + 1]
 h = bytearray(52)
@@ -47,6 +51,8 @@ open(out, "wb").write(bytes(h) + b"\x00" * 128)
 
 # 慢工具：每页睡 0.4s，用于验证截止时间
 SLOW_TOOL = r'''import sys, struct, time
+if '--help' in sys.argv[1:] or '-h' in sys.argv[1:]:
+    print('fake tool usage'); sys.exit(0)
 time.sleep(0.4)
 a = sys.argv[1:]
 out = a[a.index("-o") + 1]
@@ -154,11 +160,11 @@ def case_deadline():
     P.BUILD_DIR = base
     P.RES_ROOT = res_root
     P.find_texturetool_candidates = lambda: [([sys.executable, tool], 'fake')]
-    P.TIME_BUDGET_S = 1          # 预算 1s（全量需 ~6.4s）
+    P.TIME_BUDGET_S = 3          # 预算 3s（全量需 ~6.4s；探针+help 先吃掉约 1.5s）
     P.WORKERS = 2
 
     print('=' * 62)
-    print('用例：截止时间刹车（预算 1s，全量需 ~6.4s）')
+    print('用例：截止时间刹车（预算 3s，全量需 ~6.4s）')
     t0 = time.time()
     P.main()
     el = time.time() - t0
@@ -172,7 +178,7 @@ def case_deadline():
             if os.path.exists(os.path.join(d, 'p%d.pvr' % pi)):
                 conv += 1
     checks = [
-        ('提前结束（elapsed=%.1fs < 4.0s）' % el, el < 4.0),
+        ('提前结束（elapsed=%.1fs < 5.0s）' % el, el < 5.0),
         ('部分转换（%d/%d 页，未跑满全量）' % (conv, total), 0 < conv < total),
         ('未转换页的 PNG 仍在', all(
             os.path.exists(os.path.join(res_root, 'res', 'Anim', 'big%d' % ai, 'p%d.png' % pi))
@@ -223,11 +229,11 @@ def case_priority():
     P.BUILD_DIR = base
     P.RES_ROOT = res_root
     P.find_texturetool_candidates = lambda: [([sys.executable, tool], 'fake')]
-    P.TIME_BUDGET_S = 1          # 只够转 ~4 页
+    P.TIME_BUDGET_S = 3          # 只够转几页（探针+help 先吃掉约 1.5s）
     P.WORKERS = 1
 
     print('=' * 62)
-    print('用例：优先级排序（预算只够转 ~4 页）')
+    print('用例：优先级排序（预算只够转几页）')
     P.main()
     huge = os.path.join(res_root, 'res', 'Anim', 'aaa_huge')
     small = os.path.join(res_root, 'res', 'Anim', 'zzz_small')
@@ -328,6 +334,8 @@ def case_verify_formats():
 
 # gh247：模拟 Apple TextureConverter —— 认 texturetool 参数风格，但**输出 KTX 容器**
 KTX_TOOL = r'''import sys, struct
+if '--help' in sys.argv[1:] or '-h' in sys.argv[1:]:
+    print('fake tool usage'); sys.exit(0)
 a = sys.argv[1:]
 out = a[a.index("-o") + 1]
 w = h = 256
@@ -443,6 +451,50 @@ def case_ktx_rewrap():
     return allok
 
 
+def case_run_tool_timeout():
+    """★ gh248 核心回归：run_tool 对**挂死**的子进程必须在超时后返回，绝不永久阻塞。
+
+    背景：run 247 挂死 8.5 小时。机理是 `subprocess.run(timeout=)` 超时后要
+    `kill()+wait()`，而子进程卡在不可中断的 GPU 调用里时那个 wait 永不返回。
+    这里直接用一个 sleep(3600) 的子进程验证新实现会放弃而不等待。
+    """
+    base = tempfile.mkdtemp()
+    print('=' * 62)
+    print('用例：run_tool 超时保护')
+    old_to = P.TOOL_TIMEOUT_S
+    P.TOOL_TIMEOUT_S = 1
+    try:
+        hang = os.path.join(base, 'hang.py')
+        with open(hang, 'w', encoding='utf-8') as f:
+            f.write('import time\ntime.sleep(3600)\n')
+        t0 = time.time()
+        rc, err = P.run_tool([sys.executable, hang])
+        el = time.time() - t0
+
+        # 子进程若试图读 stdin，必须立刻拿到 EOF（否则工具提示就会卡住 CI）
+        rd = os.path.join(base, 'readstdin.py')
+        with open(rd, 'w', encoding='utf-8') as f:
+            f.write('import sys\nsys.stdin.read()\n')
+        t1 = time.time()
+        rc2, err2 = P.run_tool([sys.executable, rd])
+        el2 = time.time() - t1
+
+        checks = [
+            ('挂死进程在超时后返回（elapsed=%.1fs）' % el, el < 8.0),
+            ('返回 TIMEOUT 说明', err is not None and 'TIMEOUT' in err),
+            ('rc 为 None（已放弃，未等待）', rc is None),
+            ('stdin 立刻 EOF 不阻塞（%.1fs）' % el2, err2 is None and el2 < 8.0),
+        ]
+    finally:
+        P.TOOL_TIMEOUT_S = old_to
+    allok = True
+    for label, ok in checks:
+        print('   %s %s' % ('✅' if ok else '❌', label))
+        allok = allok and ok
+    shutil.rmtree(base, ignore_errors=True)
+    return allok
+
+
 def main():
     results = [
         ('合法 PVRTC4BPP_RGBA 工具', run_case('合法 PVRTC4BPP_RGBA 工具', GOOD_TOOL, True)),
@@ -453,6 +505,7 @@ def main():
         ('探针回退', case_probe_fallback()),
         ('PVR v2/v3 头部校验', case_verify_formats()),
         ('★ KTX→PVR 重包', case_ktx_rewrap()),
+        ('★ run_tool 超时保护', case_run_tool_timeout()),
     ]
     print('=' * 62)
     for name, ok in results:
