@@ -50,6 +50,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -67,23 +68,30 @@ PVR_TYPE_MASK = 0xFF
 
 
 def _tool_rel_paths():
-    """texturetool 在 Xcode.app 里可能出现的位置（历史上换过）。"""
-    return (
-        'Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/bin/texturetool',
-        'Contents/Developer/usr/bin/texturetool',
-        'Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/usr/bin/texturetool',
-    )
+    """纹理编码工具在 Xcode.app 里可能出现的位置。
+
+    * `texturetool`  —— 老工具，Xcode 16 起已移除（run 244/245 实测 15 个 Xcode 全无）
+    * `TextureConverter` —— Apple 的官方替代（Xcode 13 发行说明推荐），在 `Developer/usr/bin`
+    """
+    out = []
+    for name in ('texturetool', 'TextureConverter'):
+        out += [
+            'Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/bin/%s' % name,
+            'Contents/Developer/usr/bin/%s' % name,
+            'Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/usr/bin/%s' % name,
+        ]
+    return tuple(out)
 
 
 def find_texturetool_candidates():
-    """列出候选 texturetool 调用方式，**按速度降序**。
+    """列出候选纹理编码工具（**绝对路径优先，快**），返回 [(cmd_list, 说明), ...]。
 
-    ★ gh245 关键背景：**Apple 在 Xcode 16 移除了 texturetool**（run 244 实测：
-    `xcrun -f texturetool` 解析失败、`xcrun -sdk iphoneos texturetool` 也失败 rc=72）。
-    但 GitHub 的 macOS runner 同时装了 **Xcode 15.0.1/15.1/15.2/15.3/15.4/16.1/16.2**，
-    旧版很可能仍带 texturetool ⇒ 所以这里**主动扫描 /Applications/Xcode*.app**。
-
-    返回 [(cmd_list, 说明), ...]，调用方用真实数据探针挑第一个可用的。
+    ★ 背景链：
+      - gh244：Xcode 16 已无 `texturetool` ⇒ `xcrun -f` 与 xcrun 包装都失败。
+      - gh245：扫遍 runner 上 **15 个** Xcode（15.0.1~16.2）的 3 个历史路径，
+        `texturetool` 全部 `NONE`；但**发现 Xcode 16.1 的 `Developer/usr/bin` 里有
+        `TextureConverter`** —— 正是 Apple 官方替代品。
+      - gh246：因此这里同时收录 `TextureConverter`，参数风格交给探针实测。
     """
     cands, seen = [], set()
 
@@ -93,94 +101,119 @@ def find_texturetool_candidates():
             seen.add(key)
             cands.append((cmd, how))
 
-    # 1) 当前 developer dir（最快，且若存在必是首选）
-    try:
-        r = subprocess.run(['xcrun', '-f', 'texturetool'], capture_output=True, timeout=60)
-        p = (r.stdout or b'').decode('utf-8', 'replace').strip().splitlines()
-        p = p[0].strip() if p else ''
-        if r.returncode == 0 and p and os.path.exists(p):
-            add([p], 'xcrun -f -> %s' % p)
-    except Exception:                                           # noqa: BLE001
-        pass
-
-    # 2) ★ 扫描所有已安装的 Xcode（gh245 新增）
+    # 1) 扫描所有已安装的 Xcode（texturetool 与 TextureConverter 一起找）
     for app in sorted(glob.glob('/Applications/Xcode*.app')):
         for rel in _tool_rel_paths():
             p = os.path.join(app, rel)
             if os.path.isfile(p) and os.access(p, os.X_OK):
-                add([p], 'xcode-scan %s' % p)
+                add([p], 'xcode %s/%s' % (os.path.basename(app), os.path.basename(p)))
+
+    # 2) 当前 developer dir 解析（若存在）
+    for name in ('texturetool', 'TextureConverter'):
+        try:
+            r = subprocess.run(['xcrun', '-f', name], capture_output=True, timeout=60)
+            p = (r.stdout or b'').decode('utf-8', 'replace').strip().splitlines()
+            p = p[0].strip() if p else ''
+            if r.returncode == 0 and p and os.path.exists(p):
+                add([p], 'xcrun -f %s -> %s' % (name, p))
+        except Exception:                                       # noqa: BLE001
+            pass
 
     # 3) Command Line Tools
     for rel in _tool_rel_paths():
         p = os.path.join('/Library/Developer/CommandLineTools',
                          rel.replace('Contents/Developer/', ''))
         if os.path.isfile(p) and os.access(p, os.X_OK):
-            add([p], 'commandlinetools %s' % p)
+            add([p], 'clt %s' % p)
 
     # 4) PATH 上直接有
-    w = shutil.which('texturetool')
-    if w:
-        add([w], 'PATH %s' % w)
+    for name in ('texturetool', 'TextureConverter'):
+        w = shutil.which(name)
+        if w:
+            add([w], 'PATH %s' % w)
 
     # 5) xcrun 包装（保底；慢）
-    for cmd in (['xcrun', '-sdk', 'iphoneos', 'texturetool'], ['xcrun', 'texturetool']):
-        add(cmd, 'xcrun wrapper (slow)')
-        break
-
+    add(['xcrun', '-sdk', 'iphoneos', 'TextureConverter'], 'xcrun wrapper TextureConverter')
+    add(['xcrun', '-sdk', 'iphoneos', 'texturetool'], 'xcrun wrapper texturetool')
     return cands
 
 
-def describe_tool_search():
-    """诊断用：把「装了哪些 Xcode、各自有没有 texturetool」打全，便于下次定位。
+def discover_help(cands):
+    """所有候选都失败时，把每个候选的 `--help` 打出来（截断 2000 字符）。
 
-    还会列出当前 Xcode 里名字含 tex/pvr 的可执行文件 —— 万一 Apple 只是改名了。
+    目的：一次把工具的真实用法带回本地，**避免再靠猜参数浪费一轮 43 分钟构建**。
     """
+    for cmd, how in cands:
+        for helpflag in ('--help', '-h'):
+            try:
+                r = subprocess.run(list(cmd) + [helpflag], capture_output=True, timeout=60)
+                out = ((r.stdout or b'') + (r.stderr or b'')).decode('utf-8', 'replace').strip()
+                if out:
+                    print('[pvr] --- help for %s (%s) ---' % (how, helpflag), flush=True)
+                    print(out[:2000], flush=True)
+                    break
+            except Exception as e:                              # noqa: BLE001
+                print('[pvr] help failed for %s: %r' % (how, e), flush=True)
+                break
+
+
+def describe_tool_search():
+    """诊断用：把「装了哪些 Xcode、各自有没有编码工具」打全，便于下次定位。"""
     apps = sorted(glob.glob('/Applications/Xcode*.app'))
     print('[pvr] Xcode apps installed: %d -> %s'
           % (len(apps), [os.path.basename(a) for a in apps]), flush=True)
     for app in apps:
-        hit = [rel for rel in _tool_rel_paths() if os.path.isfile(os.path.join(app, rel))]
-        print('[pvr]   %-28s texturetool=%s' % (os.path.basename(app), hit or 'NONE'), flush=True)
+        hit = [os.path.basename(rel) for rel in _tool_rel_paths()
+               if os.path.isfile(os.path.join(app, rel))]
+        print('[pvr]   %-28s tools=%s' % (os.path.basename(app), sorted(set(hit)) or 'NONE'),
+              flush=True)
     try:
         r = subprocess.run(['xcode-select', '-p'], capture_output=True, timeout=30)
         print('[pvr] active developer dir: %s'
               % (r.stdout or b'').decode('utf-8', 'replace').strip(), flush=True)
     except Exception:                                           # noqa: BLE001
         pass
-    # 当前 Xcode 的 bin 里有没有同类工具（改名/替代的可能）
-    for base in ('/Applications/Xcode*.app/Contents/Developer/Platforms/iPhoneOS.platform'
-                 '/Developer/usr/bin',
-                 '/Applications/Xcode*.app/Contents/Developer/usr/bin'):
-        for d in glob.glob(base):
-            try:
-                names = sorted(os.listdir(d))
-            except Exception:                                   # noqa: BLE001
-                continue
-            like = [n for n in names if any(k in n.lower() for k in ('tex', 'pvr', 'compress'))]
-            print('[pvr]   %s -> tex/pvr-like: %s' % (d.split('/Xcode')[1][:22], like or 'NONE'),
+    for d in sorted(glob.glob('/Applications/Xcode*.app/Contents/Developer/usr/bin')):
+        try:
+            names = sorted(os.listdir(d))
+        except Exception:                                       # noqa: BLE001
+            continue
+        like = [n for n in names if any(k in n.lower() for k in ('tex', 'pvr', 'compress'))]
+        if like:
+            print('[pvr]   %s -> %s' % (os.path.basename(os.path.dirname(os.path.dirname(d))), like),
                   flush=True)
 
 
 def probe_tool(cands, sample_png):
-    """用**真实页**试转一次，挑出第一个真正能产出合法 PVRTC4BPP_RGBA 的调用方式。
+    """用**真实页**试转一次，挑出第一个能产出合法 PVRTC 的「工具 × 参数风格」。
 
-    这比只看 `--help` 返回码可靠得多：解析出的绝对路径可能因环境缺失而编码失败。
-    探针产出的 .pvr 会删掉（主循环会重做这一页）。
+    ★ 关键安全点（gh246 新增）：**在临时目录里对副本操作**。
+    因为要试多种参数风格，其中「位置参数颠倒」那种万一被工具理解成
+    「把输出写到第 1 个参数」，就会**覆盖掉真实的 PNG**。用副本 ⇒ 零风险。
+
+    返回 (tool_cmd, argfn, label) 或 (None, None, 原因)。
     """
     if not sample_png:
-        return (cands[0] if cands else (None, 'no candidate'))
-    for cmd, how in cands:
-        ok, msg = convert_one(cmd, sample_png)
-        try:
-            pvr = sample_png[:-4] + '.pvr'
-            if os.path.exists(pvr):
-                os.remove(pvr)
-        except Exception:                                       # noqa: BLE001
-            pass
-        if ok:
-            return cmd, how
-        print('[pvr] probe failed for %s: %s' % (how, msg), flush=True)
-    return None, 'all candidates failed'
+        if cands:
+            _c, how = cands[0]
+            return cands[0][0], arg_modes()[0][1], how
+        return None, None, 'no candidate'
+    tmp = tempfile.mkdtemp(prefix='pvrprobe_')
+    try:
+        probe_png = os.path.join(tmp, 'probe.png')
+        shutil.copyfile(sample_png, probe_png)
+        for cmd, how in cands:
+            for amname, argfn in arg_modes():
+                ok, msg = convert_one(cmd, argfn, probe_png)
+                if ok:
+                    print('[pvr] probe OK: %s | %s | %s' % (how, amname, msg), flush=True)
+                    return cmd, argfn, '%s | %s' % (how, amname)
+                # 只对「工具确实存在」的候选打印详细失败，避免噪音
+                if os.path.exists(cmd[0]) or cmd[0] in ('xcrun',):
+                    print('[pvr] probe failed: %s | %s -> %s' % (how, amname, msg[:200]), flush=True)
+        return None, None, 'all combos failed'
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def is_pot_square(w, h):
@@ -189,22 +222,44 @@ def is_pot_square(w, h):
 
 
 def verify_pvr(path):
-    """校验产出的 .pvr 是否为 cocos 能吃的 PVRTC4BPP_RGBA（带 alpha）。
+    """校验产出的 .pvr 是否为 cocos 能吃的 **带 alpha 的 PVRTC**。
+
+    ★ gh246：必须同时认 **PVR v2 与 v3** 两种容器 —— 读 cocos 源码确认：
+      * v2（`PVRv2TexHeader`，52B）：魔数 `"PVR!"` 在**偏移 44**；格式在**偏移 16**，
+        `flags & 0xFF`：`0x19`=PVRTC4BPP_RGBA、`0x18`=PVRTC2BPP_RGBA。
+        v2 的 `v2_pixel_formathash` **只映射这两种**（无 RGB 变体）。
+      * v3（`PVRv3TexHeader`，52B）：魔数 `"PVR\\x03"` 在**偏移 0**；格式在**偏移 8**（8 字节），
+        `3`=PVRTC4BPP_RGBA、`1`=PVRTC2BPP_RGBA。v3 映射表覆盖全部 4 种 PVRTC。
+      * `Image::isPvr()` 的判别：v2 看 `pvrTag=="PVR!"`，v3 看 `version==0x50565203`（BE 读法）。
 
     返回 True 才允许替换；否则一律回退 PNG。
     """
     try:
         with open(path, 'rb') as f:
-            head = f.read(52)
+            head = f.read(64)
         if len(head) < 52:
             return False, 'short header'
-        if head[PVR_MAGIC_OFFSET:PVR_MAGIC_OFFSET + 4] != b'PVR!':
-            return False, 'bad magic'
-        flags = struct.unpack_from('<I', head, PVR_FLAG_OFFSET)[0]
-        fmt = flags & PVR_TYPE_MASK
-        if fmt != PVRTC4BPP_RGBA:
-            return False, 'format=0x%02X (need 0x19 PVRTC4BPP_RGBA)' % fmt
-        return True, 'ok'
+
+        # --- PVR v2 ---
+        if head[PVR_MAGIC_OFFSET:PVR_MAGIC_OFFSET + 4] == b'PVR!':
+            flags = struct.unpack_from('<I', head, PVR_FLAG_OFFSET)[0]
+            fmt = flags & PVR_TYPE_MASK
+            if fmt == 0x19:
+                return True, 'v2 PVRTC4BPP_RGBA'
+            if fmt == 0x18:
+                return True, 'v2 PVRTC2BPP_RGBA (low quality)'
+            return False, 'v2 format=0x%02X (need 0x19 PVRTC4BPP_RGBA)' % fmt
+
+        # --- PVR v3 ---
+        if head[0:4] == b'PVR\x03':
+            fmt = struct.unpack_from('<Q', head, 8)[0]
+            if fmt == 3:
+                return True, 'v3 PVRTC4BPP_RGBA'
+            if fmt == 1:
+                return True, 'v3 PVRTC2BPP_RGBA (low quality)'
+            return False, 'v3 pixelFormat=%d (need 3 PVRTC4BPP_RGBA)' % fmt
+
+        return False, 'not a PVR file (head=%r)' % head[:8]
     except Exception as e:                                      # noqa: BLE001
         return False, 'verify exception %r' % e
 
@@ -230,15 +285,36 @@ def parse_atlas(path):
     return pages
 
 
-def convert_one(tool, png_path):
+def arg_modes():
+    """候选命令行参数风格 —— 不同工具/版本参数不同，靠探针实测挑。
+
+    Apple 把 texturetool 换成了 `TextureConverter`（Xcode 13 发行说明：
+    "use Texture Converter on the command line to compress textures to all Metal
+    compressed texture formats"），但它的参数语法网上查不到 ⇒ 这里一次列全，
+    用**真实页**逐个试，能产出合法 PVR 的才算数。
+
+    ★ 安全约束：**只收录「输出路径走显式参数」的风格**。
+    绝不试 `[输入, 输出]` 这种位置参数 —— 万一工具把第 1 个参数当输出，
+    就会**覆盖掉真实的 PNG**，那是不可逆的破坏。
+    """
+    return [
+        ('texturetool-style', lambda o, i: ['-f', 'PVR', '-e', 'PVRTC',
+                                            '--bits-per-pixel-4', '-o', o, i]),
+        ('tc-format-4bpp',    lambda o, i: ['--format', 'PVRTC_4BPP', '--output', o, i]),
+        ('tc-format-pvr',     lambda o, i: ['--format', 'PVR', '--output', o, i]),
+        ('tc-short-o',        lambda o, i: ['-o', o, i]),
+        ('tc-f-4bpp',         lambda o, i: ['-f', 'PVRTC_4BPP', '-o', o, i]),
+    ]
+
+
+def convert_one(tool, argfn, png_path):
     """转单页 → 返回 (ok, msg)。产出 <png>.pvr 并用 verify_pvr 校验。"""
     pvr = png_path[:-4] + '.pvr'
     try:
         if os.path.exists(pvr):
             os.remove(pvr)
-        r = subprocess.run(tool + ['-f', 'PVR', '-e', 'PVRTC', '--bits-per-pixel-4',
-                                   '-o', pvr, png_path],
-                           capture_output=True, timeout=120)
+        argv = list(tool) + list(argfn(pvr, png_path))
+        r = subprocess.run(argv, capture_output=True, timeout=120)
         if not os.path.exists(pvr):
             return False, 'no output (rc=%d) %s' % (r.returncode,
                                                     (r.stderr or b'')[:400].decode('utf-8', 'replace'))
@@ -246,7 +322,7 @@ def convert_one(tool, png_path):
         if not ok:
             os.remove(pvr)
             return False, why
-        return True, 'ok'
+        return True, why
     except Exception as e:                                      # noqa: BLE001
         try:
             if os.path.exists(pvr):
@@ -347,13 +423,14 @@ def main():
     if not jobs:
         print('[pvr] no candidate pages -> skip', flush=True)
         return
-    tool, how = probe_tool(cands, jobs[0][2])
-    print('[pvr] texturetool chosen: %s (%s)' % (tool or 'NONE', how), flush=True)
+    tool, argfn, how = probe_tool(cands, jobs[0][2])
+    print('[pvr] encoder chosen: %s (%s)' % (tool or 'NONE', how), flush=True)
     if not tool:
-        # ★ 找不到就把环境打全（下次不用再猜）：装了哪些 Xcode、各自有没有 texturetool、
-        #   当前 Xcode 的 bin 里有没有 tex/pvr 同类工具（万一只是改名）。
+        # ★ 找不到就把环境打全 + 把候选工具的 --help 原文带回本地
+        #   （gh246：避免再靠猜参数浪费一轮 43 分钟构建）
         describe_tool_search()
-        print('[pvr] no working texturetool -> skip (keep all PNG)', flush=True)
+        discover_help(cands)
+        print('[pvr] no working encoder -> skip (keep all PNG)', flush=True)
         return
     print('[pvr] probe elapsed=%.1fs (单页含进程启动开销)' % (time.time() - t0), flush=True)
 
@@ -394,7 +471,7 @@ def main():
                     break
                 _a, _nm, png = jobs[idx]
                 idx += 1
-                running[ex.submit(convert_one, tool, png)] = png
+                running[ex.submit(convert_one, tool, argfn, png)] = png
             if not running:
                 break
             finished, _pending = cf.wait(list(running), return_when=cf.FIRST_COMPLETED, timeout=5)

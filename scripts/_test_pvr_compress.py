@@ -277,6 +277,55 @@ def case_probe_fallback():
     return allok
 
 
+def case_verify_formats():
+    """★ gh246：verify_pvr 必须同时认 PVR v2 与 v3 的带 alpha PVRTC，其余一律拒绝。"""
+    base = tempfile.mkdtemp()
+
+    def mk_v2(flags):
+        h = bytearray(64)
+        struct.pack_into('<I', h, 0, 52)
+        struct.pack_into('<I', h, 4, 256)
+        struct.pack_into('<I', h, 8, 256)
+        struct.pack_into('<I', h, 16, flags)
+        h[44:48] = b'PVR!'
+        return bytes(h)
+
+    def mk_v3(pixfmt):
+        h = bytearray(64)
+        h[0:4] = b'PVR\x03'                       # version 魔数
+        struct.pack_into('<I', h, 4, 0)           # flags
+        struct.pack_into('<Q', h, 8, pixfmt)      # pixelFormat（8 字节）
+        struct.pack_into('<I', h, 24, 256)        # height
+        struct.pack_into('<I', h, 28, 256)        # width
+        return bytes(h)
+
+    cases = [
+        ('v2 PVRTC4BPP_RGBA (0x19)', mk_v2(0x19), True),
+        ('v2 PVRTC2BPP_RGBA (0x18)', mk_v2(0x18), True),
+        ('v2 RGB565 (0x13)',         mk_v2(0x13), False),
+        ('v2 PVRTC4BPP_RGB (0x02)',  mk_v2(0x02), False),
+        ('v3 PVRTC4BPP_RGBA (3)',    mk_v3(3),    True),
+        ('v3 PVRTC2BPP_RGBA (1)',    mk_v3(1),    True),
+        ('v3 PVRTC4BPP_RGB (2)',     mk_v3(2),    False),
+        ('v3 ETC1 (6)',              mk_v3(6),    False),
+        ('垃圾数据',                  b'\x89PNG\r\n\x1a\n' + b'x' * 60, False),
+    ]
+    print('=' * 62)
+    print('用例：PVR v2/v3 头部校验')
+    allok = True
+    for label, data, expect in cases:
+        p = os.path.join(base, 't.pvr')
+        with open(p, 'wb') as f:
+            f.write(data)
+        ok, why = P.verify_pvr(p)
+        good = (ok == expect)
+        allok = allok and good
+        print('   %s %-28s -> %-7s %s' % ('✅' if good else '❌', label,
+                                          'PASS' if ok else 'REJECT', why))
+    shutil.rmtree(base, ignore_errors=True)
+    return allok
+
+
 def main():
     results = [
         ('合法 PVRTC4BPP_RGBA 工具', run_case('合法 PVRTC4BPP_RGBA 工具', GOOD_TOOL, True)),
@@ -284,6 +333,7 @@ def main():
         ('截止时间刹车', case_deadline()),
         ('优先级排序', case_priority()),
         ('探针回退', case_probe_fallback()),
+        ('PVR v2/v3 头部校验', case_verify_formats()),
     ]
     print('=' * 62)
     for name, ok in results:
