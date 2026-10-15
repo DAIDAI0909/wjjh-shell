@@ -43,8 +43,10 @@ cocos2d-x 3.15.1 侧已确认可行（读源码实证）：
   4. 任何异常都被吞掉并计数，绝不让 CI 失败（最坏情况 = 与改动前完全一致）；
   5. 有**双截止时间**，超时立刻停止（只等已在跑的几个任务结束）。
 """
+import glob
 import os
 import re
+import shutil
 import struct
 import subprocess
 import sys
@@ -64,43 +66,99 @@ PVR_FLAG_OFFSET = 16           # flags 在偏移 16
 PVR_TYPE_MASK = 0xFF
 
 
+def _tool_rel_paths():
+    """texturetool 在 Xcode.app 里可能出现的位置（历史上换过）。"""
+    return (
+        'Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/bin/texturetool',
+        'Contents/Developer/usr/bin/texturetool',
+        'Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/usr/bin/texturetool',
+    )
+
+
 def find_texturetool_candidates():
     """列出候选 texturetool 调用方式，**按速度降序**。
 
-    gh244 实测：run 243 用 `xcrun -sdk iphoneos texturetool` 包装，
-    3502 页跑了 28 分钟没跑完（≈1.94 s/页，对 256² 的 PVRTC 编码荒谬地慢）
-    —— 开销全在**每次调用都起一个 xcrun 做 SDK 解析**。
-    所以优先用 `xcrun -f` 解析出**绝对路径**，之后直接调用该二进制。
+    ★ gh245 关键背景：**Apple 在 Xcode 16 移除了 texturetool**（run 244 实测：
+    `xcrun -f texturetool` 解析失败、`xcrun -sdk iphoneos texturetool` 也失败 rc=72）。
+    但 GitHub 的 macOS runner 同时装了 **Xcode 15.0.1/15.1/15.2/15.3/15.4/16.1/16.2**，
+    旧版很可能仍带 texturetool ⇒ 所以这里**主动扫描 /Applications/Xcode*.app**。
 
-    返回 [(cmd_list, 说明), ...]，调用方会用真实数据探针挑第一个可用的。
+    返回 [(cmd_list, 说明), ...]，调用方用真实数据探针挑第一个可用的。
     """
-    cands = []
-    # 1) xcrun -f 解析绝对路径（最快）
+    cands, seen = [], set()
+
+    def add(cmd, how):
+        key = tuple(cmd)
+        if key not in seen:
+            seen.add(key)
+            cands.append((cmd, how))
+
+    # 1) 当前 developer dir（最快，且若存在必是首选）
     try:
-        r = subprocess.run(['xcrun', '-f', 'texturetool'],
-                           capture_output=True, timeout=60)
+        r = subprocess.run(['xcrun', '-f', 'texturetool'], capture_output=True, timeout=60)
         p = (r.stdout or b'').decode('utf-8', 'replace').strip().splitlines()
         p = p[0].strip() if p else ''
         if r.returncode == 0 and p and os.path.exists(p):
-            cands.append(([p], 'resolved: %s' % p))
+            add([p], 'xcrun -f -> %s' % p)
     except Exception:                                           # noqa: BLE001
         pass
-    # 2) Xcode 固定路径
-    for p in ('/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform'
-              '/Developer/usr/bin/texturetool',
-              '/Applications/Xcode.app/Contents/Developer/usr/bin/texturetool'):
-        if os.path.exists(p):
-            cands.append(([p], 'fixed path: %s' % p))
-    # 3) 退回 xcrun 包装（慢，但最保底）
+
+    # 2) ★ 扫描所有已安装的 Xcode（gh245 新增）
+    for app in sorted(glob.glob('/Applications/Xcode*.app')):
+        for rel in _tool_rel_paths():
+            p = os.path.join(app, rel)
+            if os.path.isfile(p) and os.access(p, os.X_OK):
+                add([p], 'xcode-scan %s' % p)
+
+    # 3) Command Line Tools
+    for rel in _tool_rel_paths():
+        p = os.path.join('/Library/Developer/CommandLineTools',
+                         rel.replace('Contents/Developer/', ''))
+        if os.path.isfile(p) and os.access(p, os.X_OK):
+            add([p], 'commandlinetools %s' % p)
+
+    # 4) PATH 上直接有
+    w = shutil.which('texturetool')
+    if w:
+        add([w], 'PATH %s' % w)
+
+    # 5) xcrun 包装（保底；慢）
     for cmd in (['xcrun', '-sdk', 'iphoneos', 'texturetool'], ['xcrun', 'texturetool']):
-        try:
-            r = subprocess.run(cmd + ['--help'], capture_output=True, timeout=60)
-            if r.returncode == 0 or b'texturetool' in (r.stdout + r.stderr).lower():
-                cands.append((cmd, 'xcrun wrapper (slow)'))
-                break
-        except Exception:                                       # noqa: BLE001
-            pass
+        add(cmd, 'xcrun wrapper (slow)')
+        break
+
     return cands
+
+
+def describe_tool_search():
+    """诊断用：把「装了哪些 Xcode、各自有没有 texturetool」打全，便于下次定位。
+
+    还会列出当前 Xcode 里名字含 tex/pvr 的可执行文件 —— 万一 Apple 只是改名了。
+    """
+    apps = sorted(glob.glob('/Applications/Xcode*.app'))
+    print('[pvr] Xcode apps installed: %d -> %s'
+          % (len(apps), [os.path.basename(a) for a in apps]), flush=True)
+    for app in apps:
+        hit = [rel for rel in _tool_rel_paths() if os.path.isfile(os.path.join(app, rel))]
+        print('[pvr]   %-28s texturetool=%s' % (os.path.basename(app), hit or 'NONE'), flush=True)
+    try:
+        r = subprocess.run(['xcode-select', '-p'], capture_output=True, timeout=30)
+        print('[pvr] active developer dir: %s'
+              % (r.stdout or b'').decode('utf-8', 'replace').strip(), flush=True)
+    except Exception:                                           # noqa: BLE001
+        pass
+    # 当前 Xcode 的 bin 里有没有同类工具（改名/替代的可能）
+    for base in ('/Applications/Xcode*.app/Contents/Developer/Platforms/iPhoneOS.platform'
+                 '/Developer/usr/bin',
+                 '/Applications/Xcode*.app/Contents/Developer/usr/bin'):
+        for d in glob.glob(base):
+            try:
+                names = sorted(os.listdir(d))
+            except Exception:                                   # noqa: BLE001
+                continue
+            like = [n for n in names if any(k in n.lower() for k in ('tex', 'pvr', 'compress'))]
+            print('[pvr]   %s -> tex/pvr-like: %s' % (d.split('/Xcode')[1][:22], like or 'NONE'),
+                  flush=True)
 
 
 def probe_tool(cands, sample_png):
@@ -183,7 +241,7 @@ def convert_one(tool, png_path):
                            capture_output=True, timeout=120)
         if not os.path.exists(pvr):
             return False, 'no output (rc=%d) %s' % (r.returncode,
-                                                    (r.stderr or b'')[:80].decode('utf-8', 'replace'))
+                                                    (r.stderr or b'')[:400].decode('utf-8', 'replace'))
         ok, why = verify_pvr(pvr)
         if not ok:
             os.remove(pvr)
@@ -292,6 +350,9 @@ def main():
     tool, how = probe_tool(cands, jobs[0][2])
     print('[pvr] texturetool chosen: %s (%s)' % (tool or 'NONE', how), flush=True)
     if not tool:
+        # ★ 找不到就把环境打全（下次不用再猜）：装了哪些 Xcode、各自有没有 texturetool、
+        #   当前 Xcode 的 bin 里有没有 tex/pvr 同类工具（万一只是改名）。
+        describe_tool_search()
         print('[pvr] no working texturetool -> skip (keep all PNG)', flush=True)
         return
     print('[pvr] probe elapsed=%.1fs (单页含进程启动开销)' % (time.time() - t0), flush=True)
