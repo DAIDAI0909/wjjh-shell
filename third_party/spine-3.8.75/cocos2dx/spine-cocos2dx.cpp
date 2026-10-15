@@ -31,11 +31,38 @@
 #include <spine38/Extension.h>
 #include <spine38/AttachmentVertices.h>
 
+// gh242: 诊断输出用（meta-only 模式的跳过日志）。
+#include <cstdio>
+
 USING_NS_CC;
 using namespace spine38;
 
 static void deleteAttachmentVertices (void* vertices) {
 	delete (AttachmentVertices *) vertices;
+}
+
+// ---- gh242: 元数据模式（跳过纹理加载）----------------------------------------
+// 背景：游戏的 app/FightSystem/ResourceManager/AnimResManager.lua 在**模块加载时**
+//   就调用 initAnimResInfo()，遍历 animRes 表（2138 条 / 4 个图集）为每项创建
+//   SkeletonAnimation，只为读取动画时长(getAnimDuration)、事件(getAnimEvents)、
+//   攻击距离(getBoneSetupPosePosition) —— **这些只需要 SkeletonData，不需要纹理**。
+//   但 createWithBinaryFile → Atlas(atlas, &textureLoader, true) 会把图集**全部页**
+//   载入并经 TextureCache 常驻。实测 gongfu1 一个图集就 1145 页 × 512² = 1145MB，
+//   四个图集合计远超 2GB 设备约 1.4GB 的单进程上限 ⇒ 载入到 88% 被 Jetsam 杀。
+//   （JetsamEvent-2026-10-15-132645 / 192834：name=WJJH reason=per-process-limit）
+// 方案：打开本开关后 load() 直接返回，不创建 Texture2D；元数据 API 照常可用。
+//   画质零影响 —— 真正需要渲染时（进战斗）会以正常模式重新创建。
+static bool g_wjjhSkipTextureLoad = false;
+
+namespace spine38 {
+	bool wjjhSpine38SkipTextureLoad(bool skip) {
+		bool old = g_wjjhSkipTextureLoad;
+		g_wjjhSkipTextureLoad = skip;
+		return old;
+	}
+	bool wjjhSpine38IsSkippingTextureLoad() {
+		return g_wjjhSkipTextureLoad;
+	}
 }
 
 static unsigned short quadTriangles[6] = {0, 1, 2, 2, 3, 0};
@@ -138,6 +165,17 @@ Cocos2dTextureLoader::Cocos2dTextureLoader() : TextureLoader() { }
 Cocos2dTextureLoader::~Cocos2dTextureLoader() { }
 
 void Cocos2dTextureLoader::load(AtlasPage& page, const spine38::String& path) {
+	// gh242: 元数据模式 —— 不建纹理，只让 Atlas 记住页码尺寸（spine 元数据仍完整）。
+	//   rendererObject 保持 NULL：本模式下产生的 SkeletonAnimation 只用于读
+	//   duration/events/bone-position，绝不参与渲染（渲染路径会另行正常创建）。
+	if (g_wjjhSkipTextureLoad) {
+		static int s_skipLogged = 0;
+		if (s_skipLogged < 6) {
+			fprintf(stderr, "WJJH_SPINE38: [meta-only] skip texture load: %s\n", path.buffer());
+			++s_skipLogged;
+		}
+		return;
+	}
 	Texture2D* texture = Director::getInstance()->getTextureCache()->addImage(path.buffer());
 	CCASSERT(texture != nullptr, "Invalid image");
 	if (texture) {

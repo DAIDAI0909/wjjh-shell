@@ -43,6 +43,12 @@ extern "C" {
 
 USING_NS_CC;
 
+// gh242: 定义在 third_party/spine-3.8.75/cocos2dx/spine-cocos2dx.cpp。
+//   打开后 Cocos2dTextureLoader::load 直接返回，不创建 Texture2D。
+namespace spine38 {
+    bool wjjhSpine38SkipTextureLoad(bool skip);
+}
+
 namespace {
 
 // Lua 侧传回的 spine 指针（lightuserdata）。
@@ -202,6 +208,71 @@ int l_createBinary(lua_State* L) {
     //   （run 226–229 每次真 spine 创建都踩这个，之前被 xpcall 吞掉）。
     //   修法：仍然用 pushObject（保留它正确的 cocos 对象所有权处理），
     //   再用标准 C API lua_xmove 把刚压入的值从主状态搬到当前 L（协程间共享同一 global state）。
+    lua_State* mainL = LuaEngine::getInstance()->getLuaStack()->getLuaState();
+    LuaEngine::getInstance()->getLuaStack()->pushObject(container, "cc.Node");
+    if (mainL != L) lua_xmove(mainL, L, 1);
+    lua_pushlightuserdata(L, reinterpret_cast<void*>(sk));
+    return 2;
+}
+
+// ---- gh242: createBinaryMetaOnly(skel, atlas, scale) ----
+// 与 createBinary 完全相同，唯一区别：创建期间打开"跳过纹理加载"开关。
+// 用途：游戏 AnimResManager.lua 的 initAnimResInfo() 在模块加载时遍历 animRes
+//   表（2138 条 / 4 个图集）读取元数据（时长/事件/攻击距离），却在启动期把
+//   4 个图集的**全部纹理**装载常驻。gongfu1 单图集 1145 页 × 512² 就 1145MB，
+//   合计超过 2GB 设备 ~1.4GB 单进程上限 ⇒ 载入 88% 被 Jetsam 杀。
+//   元数据 API（getAnimDuration/getAnimEvents/getBoneSetupPosePosition）只依赖
+//   SkeletonData，不依赖纹理 ⇒ 本模式可安全替代，启动期纹理占用降为 0。
+// 返回值语义与 createBinary 完全一致（node + skelptr），上层无需改动。
+static int l_createBinaryMetaOnly(lua_State* L) {
+    const char* skel = luaL_checkstring(L, 1);
+    const char* atlas = luaL_checkstring(L, 2);
+    float scale = (float)luaL_optnumber(L, 3, 1.0);
+
+    // 同 createBinary：先干跑门闸（它本身就不建纹理），失败即回退哑节点。
+    {
+        std::string msg;
+        if (!wjjh_spine38_dry_run(skel, atlas, msg)) {
+            fprintf(stderr, "WJJH_SPINE38 [meta-only]: dry-run failed (%s) -> nil\n", msg.c_str());
+            lua_pushnil(L);
+            return 1;
+        }
+    }
+
+    const bool isJson = wjjh_spine38_looks_json(skel);
+    fprintf(stderr, "WJJH_SPINE38 [meta-only]: create skel=%s fmt=%s (no texture)\n",
+            skel, isJson ? "json" : "bin");
+
+    spine38::SkeletonAnimation* sk = nullptr;
+    // ★ 打开开关：整段创建期间不加载任何图集纹理。
+    spine38::wjjhSpine38SkipTextureLoad(true);
+    try {
+        if (isJson) {
+            sk = spine38::SkeletonAnimation::createWithJsonFile(std::string(skel), std::string(atlas), scale);
+        } else {
+            sk = spine38::SkeletonAnimation::createWithBinaryFile(std::string(skel), std::string(atlas), scale);
+        }
+    } catch (...) {
+        sk = nullptr;
+    }
+    // ★ 立即复位，绝不能影响后续正常创建。
+    spine38::wjjhSpine38SkipTextureLoad(false);
+
+    if (sk == nullptr || sk->getSkeleton() == nullptr || sk->getSkeleton()->getData() == nullptr) {
+        fprintf(stderr, "WJJH_SPINE38 [meta-only]: create failed (skel=%s) -> nil\n", skel);
+        lua_pushnil(L);
+        return 1;
+    }
+    fprintf(stderr, "WJJH_SPINE38 [meta-only]: OK skel=%s\n", skel);
+
+    Node* container = Node::create();
+    if (container == nullptr) {
+        lua_pushnil(L);
+        return 1;
+    }
+    container->addChild(sk);
+
+    // 与 l_createBinary 同一套 pushObject + lua_xmove（协程安全），保证返回值语义一致。
     lua_State* mainL = LuaEngine::getInstance()->getLuaStack()->getLuaState();
     LuaEngine::getInstance()->getLuaStack()->pushObject(container, "cc.Node");
     if (mainL != L) lua_xmove(mainL, L, 1);
@@ -418,6 +489,7 @@ int l_probe(lua_State* L) {
 
 void wjjh_spine38_register(lua_State* L) {
     lua_register(L, "wjjh_spine38_createBinary", l_createBinary);
+    lua_register(L, "wjjh_spine38_createMetaOnly", l_createBinaryMetaOnly);
     lua_register(L, "wjjh_spine38_probe", l_probe);
     lua_register(L, "wjjh_spine38_setAnimation", l_setAnimation);
     lua_register(L, "wjjh_spine38_addAnimation", l_addAnimation);

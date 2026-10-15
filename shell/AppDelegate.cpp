@@ -638,10 +638,33 @@ do
     end
     return __mkSkel()
   end
+  -- gh242: 元数据模式创建 —— 与 mkSpine 同型，但走 wjjh_spine38_createMetaOnly
+  --   （创建期间不加载图集纹理）。失败同样回退哑节点，绝不把坏值交给 setpeer。
+  S.mkSpineMetaOnly = function(a, b, c, d)
+    local skel, atlas, scale
+    if type(a) == 'string' then skel, atlas, scale = a, b, c else skel, atlas, scale = b, c, d end
+    if skel ~= nil and atlas ~= nil then
+      local ok, node, skelptr = pcall(wjjh_spine38_createMetaOnly, skel, atlas, scale or 1)
+      if ok and type(node) == 'userdata' and skelptr ~= nil then
+        tolua.setpeer(node, S.peerOf(skelptr))
+        return node
+      end
+      __wjjhlog('WJJH_SPINE38: createMetaOnly unusable (ok=' .. tostring(ok)
+        .. ' nodetype=' .. type(node) .. ' skelptr=' .. tostring(skelptr) .. ') -> fallback dummy')
+    end
+    return __mkSkel()
+  end
   local YX = {}
   YX.createWithFile = function(self, skel, atlas, scale) return S.mkSpine(skel, atlas, scale) end
   YX.createWithBinaryFile = function(self, skel, atlas, scale) return S.mkSpine(skel, atlas, scale) end
   YX.create = function(self, skel, atlas, scale) return S.mkSpine(skel, atlas, scale) end
+  -- gh242: 元数据模式 —— 同一套接口，但**不加载图集纹理**。
+  --   供游戏 AnimResManager.lua 的 initAnimResInfo() 在启动期读动画时长/事件/
+  --   攻击距离用（这些只依赖 SkeletonData）。返回的对象与 createWithBinaryFile
+  --   完全同型（node + skelptr），getAnimDuration/getAnimEvents/
+  --   getBoneSetupPosePosition 等全部照常可用，只是不渲染。
+  --   ⇒ 启动期不再载入 gongfu1 等 4 个图集（>1450MB），解决 88% Jetsam 被杀。
+  YX.createMetadataOnly = function(self, skel, atlas, scale) return S.mkSpineMetaOnly(skel, atlas, scale) end
   setmetatable(YX, {__index = function(tt, k)
     local f = function() return __mkSkel() end
     rawset(tt, k, f)
@@ -651,7 +674,11 @@ do
 
   spine38 = setmetatable({}, {__index = function(t, k)
     if k == 'NewSkeletonAnimation' then
-      return { createWithBinaryFile = S.mkSpine, createWithFile = S.mkSpine, create = S.mkSpine }
+      -- gh242: 必须把 createMetadataOnly 也挂在这张表上 —— 游戏 AnimResManager.lua
+      --   走的正是 spine38.NewSkeletonAnimation:createMetadataOnly(...)，漏了会得到
+      --   nil 并抛 "attempt to call a nil value"。
+      return { createWithBinaryFile = S.mkSpine, createWithFile = S.mkSpine, create = S.mkSpine,
+               createMetadataOnly = S.mkSpineMetaOnly }
     end
     return nil
   end})
