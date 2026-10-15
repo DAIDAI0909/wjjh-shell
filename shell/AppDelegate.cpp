@@ -8,6 +8,7 @@
 #include "WJJHSpine38.h"
 #include <os/log.h>
 #include <sys/time.h>
+#include <sys/sysctl.h>
 #include <unistd.h>
 
 USING_NS_CC;
@@ -111,6 +112,34 @@ bool AppDelegate::applicationDidFinishLaunching()
     if (!glview) {
         glview = GLViewImpl::create("WJJH");
         director->setOpenGLView(glview);
+    }
+
+    // ---- gh240: 低内存设备纹理降级（解决真机载入 96% 被 Jetsam 杀）----
+    // JetsamEvent 实证（JetsamEvent-2026-10-15-132645.ips）：
+    //   name=WJJH, rpages=92800 (pageSize 16KB) = 1450MB, reason=per-process-limit
+    //   （2GB 内存的 A9 iPad，iOS 16 单进程上限约 1.4GB —— 正好撞线）
+    //   physicalPages.internal 峰值 57286 页 = 895MB，即纹理解压后的匿名内存。
+    // 资源 374MB PNG（2906 张），PNG 解压成 RGBA8888(4B/px) 后约 2GB 量级。
+    // 把每像素降到 2B（RGBA4444）⇒ 纹理内存减半 ⇒ 1450MB → ~1100MB，安全通过。
+    // 仅在 ≤3GB 设备上降级；4GB+ 设备保持默认 RGBA8888，画质不受影响。
+    {
+        uint64_t memsize = 0;
+        size_t memsz = sizeof(memsize);
+        if (sysctlbyname("hw.memsize", &memsize, &memsz, nullptr, 0) == 0) {
+            char membuf[160];
+            snprintf(membuf, sizeof(membuf),
+                     "WJJH_BOOT: hw.memsize = %llu MB",
+                     (unsigned long long)(memsize / (1024ULL * 1024ULL)));
+            wjjh_bootlog(membuf);
+            if (memsize > 0 && memsize <= 3ULL * 1024ULL * 1024ULL * 1024ULL) {
+                Texture2D::setDefaultAlphaPixelFormat(Texture2D::PixelFormat::RGBA4444);
+                wjjh_bootlog("WJJH_BOOT: low-memory device -> texture format RGBA4444 (texture RAM halved)");
+            } else {
+                wjjh_bootlog("WJJH_BOOT: ample memory -> keep default texture format RGBA8888");
+            }
+        } else {
+            wjjh_bootlog("WJJH_BOOT: hw.memsize unavailable -> keep default texture format");
+        }
     }
 
     // 游戏资源在 bundle 的 Resources/ 下：src/ 与 res/ 由 main.lua 自己 addSearchPath
