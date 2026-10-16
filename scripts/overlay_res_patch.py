@@ -248,6 +248,202 @@ def patch_offline_button_reverts():
           ' (task/sect renamed back, jianghu/sect popups -> direct) OK', flush=True)
 
 
+_NL = b'\r\n'  # game.zip 资产是 CRLF（实测），多行锚点必须带 \r\n。
+
+
+def _helper_loop_guard(callback_call, recurse_call):
+    """给 Helper 的 `for ... callback(...) ; _callChildren(...) end` 循环套上
+    「死节点容错」外壳（缩进 12 起）。callback_call / recurse_call 为 bytes。"""
+    L1 = b'            '    # 12
+    L2 = b'                '  # 16
+    L3 = b'                    '  # 20
+    L4 = b'                        '  # 24
+    return (
+        L1 + b'for key, var in pairs(children) do' + _NL +
+        L2 + b'local __dead = false' + _NL +
+        L2 + b"if type(var) == 'userdata' and type(tolua) == 'table' "
+        b"and type(tolua.isnull) == 'function' then" + _NL +
+        L3 + b'local __ok, __d = pcall(tolua.isnull, var)' + _NL +
+        L3 + b'if __ok then __dead = __d end' + _NL +
+        L2 + b'end' + _NL +
+        L2 + b'if not __dead then' + _NL +
+        L3 + b'local __ok, __e = pcall(function()' + _NL +
+        L4 + callback_call + _NL +
+        L4 + recurse_call + _NL +
+        L3 + b'end)' + _NL +
+        L3 + b'if not __ok then' + _NL +
+        L4 + b'print("[WJJH_UI] skip node " .. tostring(var) '
+        b'.. " err=" .. tostring(__e))' + _NL +
+        L3 + b'end' + _NL +
+        L2 + b'end' + _NL +
+        L1 + b'end'
+    )
+
+
+def _lifecycle_loop_guard(child_op):
+    """LifeCycleSupport.resume/pause 的 children 循环容错（缩进 16 起）。"""
+    L2 = b'                '  # 16
+    L3 = b'                    '  # 20
+    return (
+        b'            if children then' + _NL +
+        L2 + b'for k, child in pairs(children) do' + _NL +
+        L2 + b'local __dead = false' + _NL +
+        L2 + b"if type(child) == 'userdata' and type(tolua) == 'table' "
+        b"and type(tolua.isnull) == 'function' then" + _NL +
+        L3 + b'local __ok, __d = pcall(tolua.isnull, child)' + _NL +
+        L3 + b'if __ok then __dead = __d end' + _NL +
+        L2 + b'end' + _NL +
+        L2 + b'if not __dead then ' + child_op + b' end' + _NL +
+        L2 + b'end' + _NL +
+        b'            end'
+    )
+
+
+def patch_dead_node_tolerant():
+    """gh257: 让 UI 树遍历对「失效 userdata 节点」免疫 —— 修掉任务按钮/练功 的根因。
+
+    ★ 真实根因（由老板 iPad 的 gh255 launch.log 定位，非猜测）：
+      iOS 上 UI 树里会混入**已释放（dead）的 cocos 节点**（launch.log 里 20+ 条
+      `WJJH_TAGGUARD: getTag invalid` 就是 shell 的 getTag 守卫用 tolua.isnull
+      抓到它们）。这些死节点一旦出现在某个父节点的 children 里，就会毒化三条遍历：
+
+        ① Helper:convertUIByParent / convertUI / setNodeTree / callChildrenParent
+           —— 逐层 `parent[child:getName()] = child` 把命名节点挂到父表上。
+           死节点的 `getName()` 返回 nil（launch.log 里报 "table index is nil"），
+           或直接抛错；**而且紧跟着的递归 `_callChildren(var)` 会调
+           `var:getChildren()` 再次抛错 ⇒ 整条遍历当场中断。**
+
+        ② LifeCycleSupport.resume / pause
+           —— `for k,child in pairs(self:getChildren()) do class.resume(child) end`。
+           死子节点的 `getChildren()` 返回 nil ⇒ `pairs(nil)` ⇒
+           `TableProxy.lua:65 rawget(nil)` 崩（launch.log 实锤）。
+
+        ③ NodeEx:callAllChild —— 同样的 children 递归。
+
+    ★ 为什么任务按钮「点了没反应」：
+      `MainTasksUI:init` 第 16 行调 `Helper:convertUIByParent(self)`。csd 根节点名为
+      "Layer"，`callChildrenByParent` 借此把**根的所有子节点**挂到 `self` 上，于是
+      有了 `self.PageView_Tasks`。而 `Layer:addChild` 顺序是
+      `Panel_Back`(第56行) → `PageView_Tasks`(第72行)…… **Panel_Back 是死节点**。
+      基线代码遍历到 Panel_Back 时，赋值抛错 → 递归 `_callChildren(Panel_Back)`
+      再抛错 → **遍历在 PageView_Tasks（下一个兄弟）之前整体中断** ⇒
+      `self.PageView_Tasks` 永远没被赋值 = nil ⇒ `MainTasksUI:onEnable`(行22)
+      `self.PageView_Tasks:setTouchEnabled(true)` 直接崩 ⇒ 任务层建不出来。
+      练功/修炼层同样走这套公共基础设施，同病相怜。
+
+    ★ 为什么 gh253/gh255 的「跳过」反而更糟：
+      gh253 只把「赋值那一行」用 pcall 包住并 `continue`，**没包递归** ⇒
+      死节点的 `getChildren()` 仍在递归里抛错，遍历照样中断（等于没修）；
+      而它对 **MainLayer** 的影响更毒：`self._UI.Button_task` 若是被跳过的那一个，
+      `initButtons()` 行237 直接崩 ⇒ 头像（行251）及其后所有按钮回调全绑不上。
+      ⇒ **教训：改「跳过」必须同时保证 ①不中断兄弟遍历 ②不丢 `_UI` 键。**
+      本版正是这样做的：**先判死（tolua.isnull）跳过；再把「回调+递归」整体 pcall
+      包住，失败只丢这一个子树、继续遍历兄弟**，既不中断也不连坐。
+
+    三文件、六处替换，全部按 CRLF 字节精确锚定；命中数不符即 WARN 且**整文件不动**。
+    """
+    problems = []
+
+    # ---------- 1) Helper.lua ----------
+    p = os.path.join(DEST, 'src', 'app', 'Helper.lua')
+    if not os.path.exists(p):
+        problems.append('Helper.lua not found at %s' % p)
+    else:
+        raw = open(p, 'rb').read()
+        jobs = []
+        # A: callChildrenByParent + callChildrenParent（各 1，共 2）
+        jobs.append((
+            b'        for key, var in pairs(children) do' + _NL +
+            b'            callback(parent, var)' + _NL +
+            b'            _callChildren(var, callback)' + _NL +
+            b'        end',
+            _helper_loop_guard(b'callback(parent, var)', b'_callChildren(var, callback)'),
+            2))
+        # B: callChildren（1）
+        jobs.append((
+            b'        for key, var in pairs(children) do' + _NL +
+            b'            callback(var)' + _NL +
+            b'            _callChildren(var, callback)' + _NL +
+            b'        end',
+            _helper_loop_guard(b'callback(var)', b'_callChildren(var, callback)'),
+            1))
+        # C: setNodeTree（1）
+        jobs.append((
+            b'        for k, child in pairs(children) do' + _NL +
+            b'            callback(parent, child)' + _NL +
+            b'            _callChildren(child, callback)' + _NL +
+            b'        end',
+            _helper_loop_guard(b'callback(parent, var)', b'_callChildren(var, callback)'),
+            1))
+        new = raw
+        for idx, (old, repl, want) in enumerate(jobs):
+            n = new.count(old)
+            if n != want:
+                problems.append('Helper.lua block%s expected %d got %d' % ('ABC'[idx], want, n))
+                break
+            new = new.replace(old, repl)
+        else:
+            open(p, 'wb').write(new)
+            print('[overlay] gh257: Helper.lua -> 4 traversal loops dead-node-tolerant OK', flush=True)
+
+    # ---------- 2) LifeCycleSupport.lua ----------
+    p = os.path.join(DEST, 'src', 'app', 'extends', 'LifeCycleSupport.lua')
+    if not os.path.exists(p):
+        problems.append('LifeCycleSupport.lua not found at %s' % p)
+    else:
+        raw = open(p, 'rb').read()
+        old_r = (b'            for k, child in pairs(children) do' + _NL +
+                 b'                class.resume(child)' + _NL +
+                 b'            end')
+        old_p = (b'            for k, child in pairs(children) do' + _NL +
+                 b'                class.pause(child)' + _NL +
+                 b'            end')
+        nr, np_ = raw.count(old_r), raw.count(old_p)
+        if nr != 1 or np_ != 1:
+            problems.append('LifeCycleSupport resume=%d pause=%d' % (nr, np_))
+        else:
+            new = raw.replace(old_r, _lifecycle_loop_guard(b'class.resume(child)'))
+            new = new.replace(old_p, _lifecycle_loop_guard(b'class.pause(child)'))
+            open(p, 'wb').write(new)
+            print('[overlay] gh257: LifeCycleSupport.lua -> resume/pause dead-node-tolerant OK',
+                  flush=True)
+
+    # ---------- 3) NodeEx.lua ----------
+    p = os.path.join(DEST, 'src', 'app', 'extends', 'NodeEx.lua')
+    if not os.path.exists(p):
+        problems.append('NodeEx.lua not found at %s' % p)
+    else:
+        raw = open(p, 'rb').read()
+        old = (b'    for k, child in pairs(children) do' + _NL +
+               b'        func(child)' + _NL +
+               b'        child:callAllChild(func)' + _NL +
+               b'    end')
+        n = raw.count(old)
+        if n != 1:
+            problems.append('NodeEx callAllChild=%d' % n)
+        else:
+            L2 = b'        '
+            L3 = b'            '
+            new_block = (
+                b'    for k, child in pairs(children) do' + _NL +
+                L2 + b'local __dead = false' + _NL +
+                L2 + b"if type(child) == 'userdata' and type(tolua) == 'table' "
+                b"and type(tolua.isnull) == 'function' then" + _NL +
+                L3 + b'local __ok, __d = pcall(tolua.isnull, child)' + _NL +
+                L3 + b'if __ok then __dead = __d end' + _NL +
+                L2 + b'end' + _NL +
+                L2 + b'if not __dead then' + _NL +
+                L3 + b'func(child)' + _NL +
+                L3 + b'child:callAllChild(func)' + _NL +
+                L2 + b'end' + _NL +
+                b'    end')
+            open(p, 'wb').write(raw.replace(old, new_block))
+            print('[overlay] gh257: NodeEx.lua -> callAllChild dead-node-tolerant OK', flush=True)
+
+    if problems:
+        print('[overlay] gh257: WARN incomplete -> %s' % '; '.join(problems), flush=True)
+
+
 def patch_helper_nil_name():
     """gh253: 修掉「任务按钮点了没反应」的**根因** —— Helper:convertUIByParent 崩溃。
 
@@ -364,10 +560,11 @@ def main():
 
     # gh242: 必须跑在 game.zip 解压之后、CMake 打包之前。
     patch_animres_metadata_only()
-    # gh256: Helper 的三个 convertUI* helper —— **只加诊断，不改行为**。
-    #   gh253/gh253b 的"跳过失败节点"改法让头像等一排按钮连坐失效（见函数注释），
-    #   本版退回基线控制流，失败时原样抛错，只多打一行 [WJJH_CONVUI] FAIL 指明节点。
-    patch_helper_nil_name()
+    # gh257: UI 树遍历对「失效 userdata 节点」免疫（Helper/LifeCycleSupport/NodeEx）。
+    #   由老板 iPad 的 gh255 launch.log 定位到真实根因（Panel_Back 等死节点毒化遍历），
+    #   修法 = tolua.isnull 预筛 + pcall 包住「回调+递归」，跳过死节点但不中断兄弟遍历。
+    #   ★ 取代 gh256 的纯诊断版（诊断版只包赋值不包递归，遍历仍会中断）。
+    patch_dead_node_tolerant()
     # ★ gh251 说明：原 gh249/gh250 不再调用。
     #   那两轮我按**本地开发树** ink_dec/fangzhi_lua_dec 分析，以为 game.zip 里带
     #   开发版 v57 遗留（按钮改名『经营』『科举』、跳过标题页）。实测 CI 实际用的
