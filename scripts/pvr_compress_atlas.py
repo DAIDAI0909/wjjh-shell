@@ -88,6 +88,21 @@ KTX_PVRTC_MAP = {
 }
 KTX_NO_ALPHA = {GL_PVRTC_RGB_4, GL_PVRTC_RGB_2}
 
+# ★★ gh251：**运行期常驻图集优先**。
+#   run 250 只转了 2257/3502 页（截止时间提前），按"像素降序"排的结果是：
+#   gongfu1(1144页, 进战斗才加载) 全转完，但 **gongfu(1620页) 只转了 1113 页**、
+#   specialEffect 一页没转 —— 而这两个恰恰是**主界面就常驻**的图集。
+#   ⇒ 内存收益落在了"暂时用不到"的图集上，主界面的 OOM 风险没解除。
+#   所以这里显式给"运行期常驻"的图集更高优先级，其余才按像素降序。
+#   注意用**带斜杠**的前缀精确匹配，避免 'Anim/gongfu/' 把 'Anim/gongfu1/' 也吃掉。
+RUNTIME_RESIDENT = (
+    'Anim/gongfu/',          # 主界面战斗人物（202MB→51MB，最大的常驻块）
+    'Anim/specialEffect/',   # 主界面特效（160MB→40MB）
+    'Anim/ep2/',             # 标题页 + 主界面骨骼
+    'Anim/portrait/new/',    # 主界面立绘（112MB→28MB）
+    'Anim/FightEffect/',     # 战斗特效（进战斗前也会预载）
+)
+
 # 每个线程一个工具输出日志文件（避免交错），用于超时时把 stderr 带回来
 _TL = threading.local()
 
@@ -617,7 +632,18 @@ def main():
         if pages:
             pages.sort(key=lambda t: -(t[1] * t[2]))       # 页内也按大小降序
             per_atlas.append((px, a, pages))
-    per_atlas.sort(key=lambda t: -t[0])
+
+    def _rank(item):
+        """排序键：(是否运行期常驻, 像素)。先常驻后其它，各自按像素降序。"""
+        _px, a, _pg = item
+        rel = os.path.relpath(a, RES_ROOT).replace(os.sep, '/')
+        resident = any(rel.startswith(p) for p in RUNTIME_RESIDENT)
+        return (0 if resident else 1, -_px)
+
+    per_atlas.sort(key=_rank)
+    print('[pvr] priority: resident-first = %s'
+          % ', '.join(os.path.relpath(a, RES_ROOT).replace(os.sep, '/')
+                      for _p, a, _g in per_atlas[:6]), flush=True)
 
     jobs = []                 # (atlas_path, name, png_path) —— 已按收益降序
     for _px, a, pages in per_atlas:

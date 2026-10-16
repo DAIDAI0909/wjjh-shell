@@ -271,8 +271,15 @@ def main():
 
     # gh242: 必须跑在 game.zip 解压之后、CMake 打包之前。
     patch_animres_metadata_only()
-    patch_skip_title_page()
-    patch_offline_button_reverts()
+    # ★ gh251 说明：原 gh249/gh250 不再调用。
+    #   那两轮我按**本地开发树** ink_dec/fangzhi_lua_dec 分析，以为 game.zip 里带
+    #   开发版 v57 遗留（按钮改名『经营』『科举』、跳过标题页）。实测 CI 实际用的
+    #   /opt/wjjh_ci/game.zip 是**已还原的干净版**（MainLayer 1079 行、不含
+    #   Text_jingying/Text_keju、Game.lua 也没有 menuLayer:StartGame()），
+    #   所以那两个补丁的锚点根本不存在，CI 里只会打印 WARN 后原样保留。
+    #   留着函数以便日后基线变化时复用，但不再默认执行。
+    # patch_skip_title_page()
+    # patch_offline_button_reverts()
 
     # gh243: spine 图集页 → PVRTC4（运行期纹理内存降到约 1/8）。
     #   必须在 res 已解压（fetch_private.py 已把 res_full 铺进 gamelua/）之后、
