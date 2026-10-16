@@ -486,12 +486,23 @@ target_compile_definitions(WJJH PRIVATE
 
 if(WJJH_LAUNCH_LOG)
     target_compile_definitions(WJJH PRIVATE WJJH_LAUNCH_LOG_PATH="${WJJH_LAUNCH_LOG}")
-    # gh154: CI 诊断构建总开关（自动点按等 CI 专用行为都挂在这个宏下；真机包不定义）
-    target_compile_definitions(WJJH PRIVATE WJJH_CI_DIAG=1)
+    # gh154: CI 诊断构建总开关（自动点按/改敌方血量/自动逃跑/自动进副本等 CI 专用行为
+    #        全挂在 __WJJH_AUTOSTART 下，而它只由本宏打开）。
+    # ★★ gh258 修正：真机包(WJJH_DEVICE=ON)**必须不定义**这个宏。
+    #    原因：build_device_ipa.py 为了真机日志也会传 -DWJJH_LAUNCH_LOG=...
+    #    ⇒ 旧的裸 `if(WJJH_LAUNCH_LOG)` 会把 CI_DIAG 一并打开 ⇒ 整套 CI 自动演示逻辑
+    #      进了真机包。老板实测后果：没点副本就自动进入、战斗一击必杀(敌方血量被压到10)、
+    #      自动逃跑、结算面板自动点掉 —— "像动画不像游戏"。
+    #    ⇒ 显式加 `NOT WJJH_DEVICE` 守卫：真机保留日志，但不带任何 CI 自动行为。
+    if(NOT WJJH_DEVICE)
+        target_compile_definitions(WJJH PRIVATE WJJH_CI_DIAG=1)
+    endif()
 elseif(DEFINED ENV{GITHUB_ACTIONS})
     # GitHub Actions runner 的固定工作区路径
     target_compile_definitions(WJJH PRIVATE WJJH_LAUNCH_LOG_PATH="/Users/runner/work/wjjh-ios/wjjh-ios/launch.log")
-    target_compile_definitions(WJJH PRIVATE WJJH_CI_DIAG=1)
+    if(NOT WJJH_DEVICE)
+        target_compile_definitions(WJJH PRIVATE WJJH_CI_DIAG=1)
+    endif()
 endif()
 
 # ---- third-party prebuilt static libs（cocos 官方包，含模拟器架构）----
