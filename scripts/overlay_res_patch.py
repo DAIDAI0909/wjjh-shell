@@ -287,10 +287,16 @@ def patch_helper_nil_name():
     "我们改坏了某个资源"，而是这条递归遍历对某个节点的假设不成立。
 
     修法（不改动正常路径的语义，只在**出错时**降级）：
+      · **失效子节点直接跳过**：`child == nil` 或 `tolua.isnull(child)` 为真时记
+        `[WJJH_CONVUI] DEAD-CHILD` 并 continue。依据：本机日志里有 14 条
+        `WJJH_TAGGUARD: child invalid`，说明 children 列表里确实会混进**失效 userdata**
+        （shell 注释里 gh152 崩溃也证实过：Release 下 `tolua_tousertype` 不做有效性检查，
+        对失效对象调 native 方法就是 UB）。往存活对象里塞一个失效子节点也是有病的，必须跳过。
       · 取名字与赋值各包一层 pcall；任何一步失败都**跳过该节点继续遍历**，
         其余具名控件照常挂到 self 上 ⇒ 任务界面能正常建出来、能打开；
-      · 出错时打一行 [WJJH_CONVUI] 日志，把 child/parent 的 tostring、type、
-        name 与 err 写进 launch.log ⇒ 若仍异常，一轮 CI 就能定位到具体节点。
+      · 出错时打一行 [WJJH_CONVUI] 日志（DEAD-CHILD / GETNAME-ERR / NILNAME / ASSIGNFAIL），
+        把 child/parent 的 tostring、type、name 与 err 写进 launch.log
+        ⇒ 若仍异常，一轮 CI 就能定位到具体节点。
 
     `convertUI` / `convertUIParent` 里有**一模一样**的语句（同源缺陷），一并替换，
     这三个 helper 的所有调用方都受益。
@@ -304,7 +310,12 @@ def patch_helper_nil_name():
         return
     raw = open(p, 'rb').read()
     old = b'parent[child:getName()] = child'
-    new = (b'do local __okn, __n = pcall(function() return child:getName() end) '
+    new = (b'do local __dead = (child == nil) '
+           b'if not __dead and type(tolua) == "table" and type(tolua.isnull) == "function" then '
+           b'local __oki, __r = pcall(tolua.isnull, child) if __oki and __r then __dead = true end end '
+           b'if __dead then print("[WJJH_CONVUI] DEAD-CHILD skipped child=" .. tostring(child) '
+           b'.. " type=" .. type(child) .. " parent=" .. tostring(parent)) else '
+           b'local __okn, __n = pcall(function() return child:getName() end) '
            b'if not __okn then print("[WJJH_CONVUI] GETNAME-ERR child=" .. tostring(child) '
            b'.. " type=" .. type(child) .. " err=" .. tostring(__n)) '
            b'elseif __n == nil then print("[WJJH_CONVUI] NILNAME child=" .. tostring(child) '
@@ -312,7 +323,7 @@ def patch_helper_nil_name():
            b'else local __oka, __e = pcall(function() parent[__n] = child end) '
            b'if not __oka then print("[WJJH_CONVUI] ASSIGNFAIL name=" .. tostring(__n) '
            b'.. " parent=" .. tostring(parent) .. " child=" .. tostring(child) '
-           b'.. " err=" .. tostring(__e)) end end end')
+           b'.. " err=" .. tostring(__e)) end end end end')
     n = raw.count(old)
     if n == 0:
         print('[overlay] gh253: WARN anchor not found -> Helper.lua left unchanged', flush=True)
