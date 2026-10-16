@@ -286,51 +286,59 @@ def patch_helper_nil_name():
     一字不差**（逐字节比对过），res 布局 41 个节点也全部 setName，所以这不是
     "我们改坏了某个资源"，而是这条递归遍历对某个节点的假设不成立。
 
-    修法（不改动正常路径的语义，只在**出错时**降级）：
-      · **失效子节点直接跳过**：`child == nil` 或 `tolua.isnull(child)` 为真时记
-        `[WJJH_CONVUI] DEAD-CHILD` 并 continue。依据：本机日志里有 14 条
-        `WJJH_TAGGUARD: child invalid`，说明 children 列表里确实会混进**失效 userdata**
-        （shell 注释里 gh152 崩溃也证实过：Release 下 `tolua_tousertype` 不做有效性检查，
-        对失效对象调 native 方法就是 UB）。往存活对象里塞一个失效子节点也是有病的，必须跳过。
-      · 取名字与赋值各包一层 pcall；任何一步失败都**跳过该节点继续遍历**，
-        其余具名控件照常挂到 self 上 ⇒ 任务界面能正常建出来、能打开；
-      · 出错时打一行 [WJJH_CONVUI] 日志（DEAD-CHILD / GETNAME-ERR / NILNAME / ASSIGNFAIL），
-        把 child/parent 的 tostring、type、name 与 err 写进 launch.log
-        ⇒ 若仍异常，一轮 CI 就能定位到具体节点。
+    ★★ gh256 修正：**之前的"跳过"改法把问题搞得更糟，已废弃。**
 
-    `convertUI` / `convertUIParent` 里有**一模一样**的语句（同源缺陷），一并替换，
-    这三个 helper 的所有调用方都受益。
+    gh253/gh253b 我让失败的节点"跳过并继续遍历"。实测（老板反馈）**后果更严重**：
+    任务按钮照旧无效，而且**人物头像也点不了了**。机制在 `MainLayer.lua`：
+
+        function MainLayer:initButtons()
+            do self._UI.Button_task:releaseFunc(...) end   -- 行237
+            do self._UI.Button_head:releaseFunc(...) end   -- 行251
+            ...                                            -- 后面还有一串按钮
+        end
+
+    `self._UI` 正是由 `Helper:convertUIByParent` 填出来的（`MainLayer.lua:31`
+    `self._UI = MainUI`）。**只要 `_UI.Button_task` 为 nil，行 237 就抛错、
+    `initButtons()` 当场中断 ⇒ 头像（行251）以及其后所有按钮的点击回调
+    全都绑不上。** 一个控件缺失，连坐一整排按钮。
+
+    教训：这个 helper 是 483 个界面的公共基础设施，**任何控制流改动都会放大成全局性故障**。
+    在没弄清到底是哪个节点之前，**不能动行为**。
+
+    所以本版改为**纯诊断、零行为改动**：
+      · 用 pcall 执行**原本那条语句**（`parent[child:getName()] = child`）；
+      · 失败时打一行 `[WJJH_CONVUI] FAIL cls=… child=… parent=… err=…`，
+        把**出问题节点的类名、指针、父节点与错误**全部写进 launch.log；
+      · 然后 `error(__e, 0)` **把原错误原样抛回去** ⇒ 控制流与基线**逐语句一致**。
+    ⇒ 症状不会比基线更差，且日志会**直接点名是哪个节点**，下一版才做精准修复。
 
     注意：替换文本刻意写成**单行**，不引入换行 ⇒ Helper.lua 总行数不变，
-    将来 traceback 里的行号依然对得上。
+    traceback 里的行号依然对得上。
     """
     p = os.path.join(DEST, 'src', 'app', 'Helper.lua')
     if not os.path.exists(p):
-        print('[overlay] gh253: WARN Helper.lua not found at %s' % p, flush=True)
+        print('[overlay] gh256: WARN Helper.lua not found at %s' % p, flush=True)
         return
     raw = open(p, 'rb').read()
     old = b'parent[child:getName()] = child'
-    new = (b'do local __dead = (child == nil) '
-           b'if not __dead and type(tolua) == "table" and type(tolua.isnull) == "function" then '
-           b'local __oki, __r = pcall(tolua.isnull, child) if __oki and __r then __dead = true end end '
-           b'if __dead then print("[WJJH_CONVUI] DEAD-CHILD skipped child=" .. tostring(child) '
-           b'.. " type=" .. type(child) .. " parent=" .. tostring(parent)) else '
-           b'local __okn, __n = pcall(function() return child:getName() end) '
-           b'if not __okn then print("[WJJH_CONVUI] GETNAME-ERR child=" .. tostring(child) '
-           b'.. " type=" .. type(child) .. " err=" .. tostring(__n)) '
-           b'elseif __n == nil then print("[WJJH_CONVUI] NILNAME child=" .. tostring(child) '
-           b'.. " type=" .. type(child) .. " parent=" .. tostring(parent)) '
-           b'else local __oka, __e = pcall(function() parent[__n] = child end) '
-           b'if not __oka then print("[WJJH_CONVUI] ASSIGNFAIL name=" .. tostring(__n) '
-           b'.. " parent=" .. tostring(parent) .. " child=" .. tostring(child) '
-           b'.. " err=" .. tostring(__e)) end end end end')
+    # 单行；行为与基线完全一致（失败时把原错误抛回），只多打一行诊断。
+    new = (b'do local __ok, __er = pcall(function() parent[child:getName()] = child end) '
+           b'if not __ok then '
+           b'local __tp = "?" '
+           b'local __to, __tr = pcall(function() return tolua.type(child) end) '
+           b'if __to then __tp = tostring(__tr) end '
+           b'print("[WJJH_CONVUI] FAIL cls=" .. __tp '
+           b'.. " child=" .. tostring(child) .. " ctype=" .. type(child) '
+           b'.. " parent=" .. tostring(parent) .. " ptype=" .. type(parent) '
+           b'.. " err=" .. tostring(__er)) '
+           b'error(__er, 0) end end')
     n = raw.count(old)
     if n == 0:
-        print('[overlay] gh253: WARN anchor not found -> Helper.lua left unchanged', flush=True)
+        print('[overlay] gh256: WARN anchor not found -> Helper.lua left unchanged', flush=True)
         return
     open(p, 'wb').write(raw.replace(old, new))
-    print('[overlay] gh253: Helper convertUIByParent/convertUI/convertUIParent'
-          ' -> nil-name safe + diagnostic (%d sites) OK' % n, flush=True)
+    print('[overlay] gh256: Helper convertUIByParent/setNodeTree/convertUIParent'
+          ' -> diagnostic-only, behaviour unchanged (%d sites) OK' % n, flush=True)
 
 
 def main():
@@ -356,8 +364,9 @@ def main():
 
     # gh242: 必须跑在 game.zip 解压之后、CMake 打包之前。
     patch_animres_metadata_only()
-    # gh253: Helper 的三个 convertUI* helper 加 nil-name 保护 + [WJJH_CONVUI] 诊断。
-    #   修「任务按钮点了没反应」（Helper.lua:227 抛 table index is nil，被 xpcall 吞掉）。
+    # gh256: Helper 的三个 convertUI* helper —— **只加诊断，不改行为**。
+    #   gh253/gh253b 的"跳过失败节点"改法让头像等一排按钮连坐失效（见函数注释），
+    #   本版退回基线控制流，失败时原样抛错，只多打一行 [WJJH_CONVUI] FAIL 指明节点。
     patch_helper_nil_name()
     # ★ gh251 说明：原 gh249/gh250 不再调用。
     #   那两轮我按**本地开发树** ink_dec/fangzhi_lua_dec 分析，以为 game.zip 里带
