@@ -88,19 +88,24 @@ KTX_PVRTC_MAP = {
 }
 KTX_NO_ALPHA = {GL_PVRTC_RGB_4, GL_PVRTC_RGB_2}
 
-# ★★ gh251：**运行期常驻图集优先**。
+# ★★ gh251/gh252：**运行期常驻图集优先**。
 #   run 250 只转了 2257/3502 页（截止时间提前），按"像素降序"排的结果是：
 #   gongfu1(1144页, 进战斗才加载) 全转完，但 **gongfu(1620页) 只转了 1113 页**、
 #   specialEffect 一页没转 —— 而这两个恰恰是**主界面就常驻**的图集。
 #   ⇒ 内存收益落在了"暂时用不到"的图集上，主界面的 OOM 风险没解除。
-#   所以这里显式给"运行期常驻"的图集更高优先级，其余才按像素降序。
-#   注意用**带斜杠**的前缀精确匹配，避免 'Anim/gongfu/' 把 'Anim/gongfu1/' 也吃掉。
+#
+#   ⚠️ gh251 第一版有个 bug：前缀写成 'Anim/gongfu/'，但 relpath 的实际值是
+#      'res/Anim/gongfu/gongfu.atlas'（**开头有 res/**）⇒ startswith 永远 False，
+#      排序退化成纯像素降序（run 251 日志的 priority 行证实 gongfu1 仍排第一）。
+#      gh252 改成**两侧都带斜杠**的包含匹配：'/Anim/gongfu/'。
+#      这样无论前缀是 'res/' 还是别的都能命中，且**不会误吃** 'Anim/gongfu1/'
+#      （'…/Anim/gongfu1/…' 里不含 '/Anim/gongfu/'）。
 RUNTIME_RESIDENT = (
-    'Anim/gongfu/',          # 主界面战斗人物（202MB→51MB，最大的常驻块）
-    'Anim/specialEffect/',   # 主界面特效（160MB→40MB）
-    'Anim/ep2/',             # 标题页 + 主界面骨骼
-    'Anim/portrait/new/',    # 主界面立绘（112MB→28MB）
-    'Anim/FightEffect/',     # 战斗特效（进战斗前也会预载）
+    '/Anim/gongfu/',          # 主界面战斗人物（202MB→51MB，最大的常驻块）
+    '/Anim/specialEffect/',   # 主界面特效（160MB→40MB）
+    '/Anim/ep2/',             # 标题页 + 主界面骨骼
+    '/Anim/portrait/new/',    # 主界面立绘（112MB→28MB）
+    '/Anim/FightEffect/',     # 战斗特效（进战斗前也会预载）
 )
 
 # 每个线程一个工具输出日志文件（避免交错），用于超时时把 stderr 带回来
@@ -636,8 +641,9 @@ def main():
     def _rank(item):
         """排序键：(是否运行期常驻, 像素)。先常驻后其它，各自按像素降序。"""
         _px, a, _pg = item
-        rel = os.path.relpath(a, RES_ROOT).replace(os.sep, '/')
-        resident = any(rel.startswith(p) for p in RUNTIME_RESIDENT)
+        rel = '/' + os.path.relpath(a, RES_ROOT).replace(os.sep, '/')
+        # ★ gh252：两侧都带斜杠的包含匹配（见 RUNTIME_RESIDENT 注释里的教训）
+        resident = any(p in rel for p in RUNTIME_RESIDENT)
         return (0 if resident else 1, -_px)
 
     per_atlas.sort(key=_rank)
