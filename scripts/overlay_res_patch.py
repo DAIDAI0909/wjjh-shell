@@ -93,6 +93,161 @@ def patch_skip_title_page():
         print('[overlay] gh249: file size=%d' % len(raw), flush=True)
 
 
+def patch_offline_button_reverts():
+    """gh250: 还原 MainLayer 里 4 处「开发版 v57/v61」改动（单机版出包前必做）。
+
+    全库搜「单机版出包前 / 出单机包前」共 **5 处 TODO**，gh249 只做了 `Game.lua` 那一处，
+    剩下 4 处都在 `app/views/layer/MainLayer.lua`：
+
+      ① 第 250-255 行  任务按钮被改名成「经营」并隐藏原图 ← 注释掉
+            self._UI.Image_task:setVisible(false)
+            local Text_jingying = ccui.Text:create("经营", ...)
+            ... self._UI.Button_task:addChild(Text_jingying)
+      ② 第 273-292 行  江湖按钮改成"弹窗选世界"           ← 换回原版直进副本
+            弹窗第一项「武动仙途」走 `luaj.callStaticMethod("com/zwyouto/main/Util","openMud")`
+            —— 那是**安卓 Java 类**，iOS 上必然失败 ⇒ 玩家看到"进入武动仙途失败"
+      ③ 第 299-304 行  师门按钮被改名成「科举」           ← 注释掉
+      ④ 第 310-334 行  师门按钮改成"弹窗二选一"            ← 换回原师门直进行为
+
+    ★ 这是**老板"找不到任务按钮"的直接原因**：任务按钮上叠了一个绿色「经营」字，
+      原「任务」图被 setVisible(false) 隐藏 ⇒ 玩家找不到任务入口。
+
+    实现用**锚点行手术**（不依赖多行长字符串匹配）：先按 strip() 内容定位唯一锚点行，
+    再按行号范围改写；找不到或锚点不唯一就**大声告警并整文件不动**。
+    """
+    p = os.path.join(DEST, 'src', 'app', 'views', 'layer', 'MainLayer.lua')
+    if not os.path.exists(p):
+        print('[overlay] gh250: WARN MainLayer.lua not found at %s' % p, flush=True)
+        return
+    raw = open(p, 'rb').read()
+    text = raw.decode('utf-8', 'replace')
+    if b'\r\n' in raw:
+        print('[overlay] gh250: WARN file uses CRLF -> left unchanged', flush=True)
+        return
+    lines = text.split('\n')
+
+    def find_unique(pred, desc):
+        hits = [i for i, l in enumerate(lines) if pred(l)]
+        if len(hits) != 1:
+            print('[overlay] gh250: WARN anchor %s matched %d times -> abort'
+                  % (desc, len(hits)), flush=True)
+            return None
+        return hits[0]
+
+    def strip_is(s):
+        return lambda l: l.strip() == s
+
+    # ---- 锚点定位 ----
+    a_task = find_unique(strip_is('self._UI.Image_task:setVisible(false)'), 'task-rename')
+    a_task_end = find_unique(strip_is('self._UI.Button_task:addChild(Text_jingying)'), 'task-rename-end')
+    a_shimen = find_unique(strip_is('self._UI.Image_shimen:setVisible(false)'), 'shimen-rename')
+    a_shimen_end = find_unique(strip_is('self._UI.Button_shimen:addChild(Text_keju)'), 'shimen-rename-end')
+    # 两个弹窗都靠「锚点行 + 紧随的标题行」共同确认
+    jh = [i for i, l in enumerate(lines)
+          if l.strip() == 'ButtonPopLayer:createCustomInRunningScene('
+          and i + 1 < len(lines) and '要前往哪个世界' in lines[i + 1]]
+    sm = [i for i, l in enumerate(lines)
+          if l.strip() == 'ButtonPopLayer:createCustomInRunningScene('
+          and i + 1 < len(lines) and '要做什么' in lines[i + 1]]
+    if any(x is None for x in (a_task, a_task_end, a_shimen, a_shimen_end)) \
+            or len(jh) != 1 or len(sm) != 1:
+        print('[overlay] gh250: WARN anchors not all unique -> file left unchanged', flush=True)
+        return
+    a_jh, a_sm = jh[0], sm[0]
+
+    def bare_paren_after(start):
+        """锚点之后第一个「整行就是一个右括号」的行 = createCustomInRunningScene 的收尾。"""
+        for i in range(start + 1, len(lines)):
+            if lines[i].strip() == ')':
+                return i
+        return None
+
+    e_jh = bare_paren_after(a_jh)
+    e_sm = bare_paren_after(a_sm)
+    if e_jh is None or e_sm is None:
+        print('[overlay] gh250: WARN popup closing paren not found -> file left unchanged', flush=True)
+        return
+
+    # ---- 取师门事务原文（④ 要保留它的行为）----
+    try:
+        f_start = next(i for i in range(a_sm, e_sm) if lines[i].strip() == '"师门事务",')
+        body_start = f_start + 2                       # 跳过 function()
+        sect_body = lines[body_start:e_sm - 1]         # 去掉内层 function 的 end
+        if 'hasFamily' not in '\n'.join(sect_body):
+            raise ValueError('sect body not recognised')
+    except Exception as e:                              # noqa: BLE001
+        print('[overlay] gh250: WARN cannot extract sect body (%r) -> file left unchanged' % e,
+              flush=True)
+        return
+
+    def comment_out(i_from, i_to, marker):
+        indent = lines[i_from][:len(lines[i_from]) - len(lines[i_from].lstrip())]
+        out = ['%s-- %s' % (indent, marker)]
+        for i in range(i_from, i_to + 1):
+            ln = lines[i]
+            if not ln.strip():
+                out.append(ln)
+                continue
+            ind = ln[:len(ln) - len(ln.lstrip())]
+            out.append('%s-- %s' % (ind, ln.lstrip()))       # 保留缩进在注释符之前
+        return out
+
+    DIRECT_JH = [
+        '\t\t\t-- gh250: offline build enters the dungeon directly'
+        ' (dev v57 world picker removed)',
+        '\t\t\tlocal role = User:getRole()',
+        '\t\t\tlocal RoleTaskControllor ='
+        ' require("app.views.layer.RoleLayer.RoleTaskControllor")',
+        '\t\t\tif RoleTaskControllor:clickMapLayer(role, EMPTY_FUNC) == false then',
+        '\t\t\t\treturn',
+        '\t\t\tend',
+        '\t\t\tMainControllLayer:pushLayer("SelectMapMenuPresenter")',
+    ]
+    DIRECT_SM = ['\t\t\t-- gh250: offline build goes straight to the sect'
+                 ' (dev v61 exam picker removed)'] + sect_body
+
+    # ---- 从后往前改，避免行号漂移 ----
+    ops = sorted([(a_jh, e_jh, DIRECT_JH), (a_sm, e_sm, DIRECT_SM)], key=lambda t: -t[0])
+    for s, e, repl in ops:
+        lines[s:e + 1] = repl
+    # ①③ 的注释化（此时行号可能已变，重新按锚点定位更稳）
+    for anchor, end_anchor, marker in (
+            ('self._UI.Image_task:setVisible(false)',
+             'self._UI.Button_task:addChild(Text_jingying)',
+             'gh250: offline build keeps the original task button (dev v57 rename removed)'),
+            ('self._UI.Image_shimen:setVisible(false)',
+             'self._UI.Button_shimen:addChild(Text_keju)',
+             'gh250: offline build keeps the original sect button (dev v57 rename removed)')):
+        i0 = next((i for i, l in enumerate(lines) if l.strip() == anchor), None)
+        i1 = next((i for i, l in enumerate(lines) if l.strip() == end_anchor), None)
+        if i0 is None or i1 is None or i1 < i0:
+            print('[overlay] gh250: WARN re-anchor failed for %s -> skipped' % marker, flush=True)
+            continue
+        lines[i0:i1 + 1] = comment_out(i0, i1, marker)
+
+    out = '\n'.join(lines).encode('utf-8')
+    # 安全检查：不许出现语法上断掉的引用
+    problems = []
+    if out.count(b'createCustomInRunningScene') >= text.count('createCustomInRunningScene'):
+        # 两个弹窗应该各少一次调用
+        if text.count('createCustomInRunningScene') - out.decode('utf-8', 'replace').count(
+                'createCustomInRunningScene') != 2:
+            problems.append('popup call count did not drop by exactly 2')
+    for name in ('Text_jingying', 'Text_keju'):
+        body_ = out.decode('utf-8', 'replace')
+        live = [l for l in body_.split('\n')
+                if name in l and not l.lstrip().startswith('--')]
+        if live:
+            problems.append('%s still has a live reference' % name)
+    if problems:
+        print('[overlay] gh250: WARN sanity check failed (%s) -> file left unchanged'
+              % '; '.join(problems), flush=True)
+        return
+    open(p, 'wb').write(out)
+    print('[overlay] gh250: MainLayer.lua -> 4 dev-v57/v61 reverts applied'
+          ' (task/sect renamed back, jianghu/sect popups -> direct) OK', flush=True)
+
+
 def main():
     # gamelua/src 不存在 = game.zip 还没解（CMake 配置期才解）→ 先替它解掉
     if not os.path.isdir(os.path.join(DEST, 'src')):
@@ -117,6 +272,7 @@ def main():
     # gh242: 必须跑在 game.zip 解压之后、CMake 打包之前。
     patch_animres_metadata_only()
     patch_skip_title_page()
+    patch_offline_button_reverts()
 
     # gh243: spine 图集页 → PVRTC4（运行期纹理内存降到约 1/8）。
     #   必须在 res 已解压（fetch_private.py 已把 res_full 铺进 gamelua/）之后、
