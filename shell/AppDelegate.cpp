@@ -480,6 +480,45 @@ end
 for _, n in ipairs({'ExtRichText','ExtRichTextScroll','ExtPageView','YXShaderSprite','YXMotionStreak','YXEaseAction','YXHelper','encrypt','LogManager'}) do
   __stubClass(n)
 end
+-- ===== gh259: ExtPageView 真桩 =====
+-- 旧桩 create 返回普通 cc.Node + 「未知方法一律返回 nil」peer，而游戏 ExtPageView.lua
+-- (Extends.lua 加载)把 ccui.PageView 整个换成它 → MainTasksUI/RankingUI/GoodsInfo 等
+-- 10 个界面的构建器造出的「PageView」是假节点：setName 被 peer 吞掉、getName() 走 peer
+-- 自动 no-op 返回 nil → Helper:convertUIByParent 绑定时 'table index is nil'
+-- (gh257 容错只跳过不绑定) → self.PageView_Tasks=nil → 任务页空白；返回时 onDisable
+-- 报错 → 切层 aftAnim 不执行 → 触摸屏蔽层永不撤销 = 全局卡死（gh258 实测链路）。
+-- 真桩：create 返回真 ccui.PageView（安装此刻 ccui.PageView 还是原生类）。
+-- 3.15.1 的 PageView 继承 ListView，getItem/getItems/addPage/removeAllPages/
+-- getInnerContainer/setCurrentPageIndex 全原生可用；游戏 ExtPageView.lua 在类表上
+-- 定义的 3 个方法(getPageByIndex/getInnerContainerPosX/setScrollDurationWithNumber)
+-- 于 create 时拷入 peer（其内部走原生 getItem/getInnerContainer，isNewPackage 默认
+-- true=新分支，与 3.15.1 匹配）。3.15.1 没有魔改引擎的 playScrollPageAnim 与
+-- setScrollDuration → peer 里用 scrollToPage 等价 / no-op，且本桩版本优先于类表拷贝。
+-- peer 是净表（无自动 no-op 元表）：未知键自然落到原生方法，setName/getName 从此走原生。
+local __wjjh_realPageView = ccui.PageView
+ExtPageView = {}
+ExtPageView.create = function(...)
+  local node = __wjjh_realPageView:create()
+  if tolua and tolua.setpeer then
+    local peer = {
+      playScrollPageAnim = function(self, pageIndex)
+        if pageIndex == nil then return end
+        return self:scrollToPage(pageIndex)
+      end,
+      setScrollDurationWithNumber = function(self, num) end,
+      getPage = function(self, index)
+        if self.getItem then return self:getItem(index) end
+        return nil
+      end,
+    }
+    for k, v in pairs(ExtPageView) do
+      if k ~= 'create' and peer[k] == nil then peer[k] = v end
+    end
+    tolua.setpeer(node, peer)
+  end
+  return node
+end
+__wjjhlog('WJJH_BOOT: ExtPageView real stub installed (native PageView + clean peer)')
 -- gh192: YXEaseAction 是安卓魔改引擎的缓动动作类(游戏 31 个文件 176 处调用,战斗/UI 动画全用)。
 -- 官方 3.15.1 没有它 → 桩 create 原返回 cc.Node → runAction(cc.Node) = invalid arguments
 -- (gh191 实锤 AnimFightLayer:1227 rolePopNumber 每回合炸一次 → 战斗卡在首回合)。

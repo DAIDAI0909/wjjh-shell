@@ -537,6 +537,129 @@ def patch_helper_nil_name():
           ' -> diagnostic-only, behaviour unchanged (%d sites) OK' % n, flush=True)
 
 
+def patch_switch_anim_failsafe():
+    """gh259: 切层动画收尾容错 —— 保证 callBack("aftAnim") 永远执行。
+
+    老板 iPad gh258 实测链路：任务层(MainTasksUI)因 ExtPageView 桩是假 PageView，
+    self.PageView_Tasks=nil → 返回时 pop 动画收尾 CallFunc 里
+    `fromLayer:pauseSelfAndChildren()` → onDisable → `self.PageView_Tasks:...`
+    报错 → **callBack("aftAnim") 永远不执行** →
+    `playSwitchAnim.animCallBack` 的 aftAnim 分支(hideTouchSwallowLayer/
+    resumeUpdate/__isSwitching=false)全部没跑 → **触摸屏蔽层永不撤销 = 全局卡死**
+    （launch.log 尾部主循环仍在跑，只是输入全被吞，与实测完全吻合）。
+
+    三处加固（全部 CRLF 字节精确锚定，命中数不符即 WARN 且整文件不动）：
+      ① base/ControllLayer.lua preAnim 分支：注册 3 秒看门狗——若 3 秒后仍在
+        切换态（正常 aftAnim 会把 __isSwitching 置 false），强制恢复输入。
+      ② base/ControllLayer.lua aftAnim 分支：animAftFunc 与 removeLayer 循环
+        pcall 包住，保证 __isSwitching=false 一定执行。
+      ③ layer/ControllLayer.lua MoveAndFadeAnim 两处收尾 CallFunc：主体
+        pcall 包住，aftAnim 照常回调（这正是 gh258 的实际断点）。
+    """
+    problems = []
+
+    # ---------- 1)+2) base/ControllLayer.lua ----------
+    p = os.path.join(DEST, 'src', 'app', 'views', 'base', 'ControllLayer.lua')
+    if not os.path.exists(p):
+        problems.append('base/ControllLayer.lua not found at %s' % p)
+    else:
+        new = open(p, 'rb').read()
+
+        old_watch = (
+            '            self:showTouchSwallowLayer() -- 显示触摸屏蔽层\r\n'
+            '            self:pauseUpdate()\r\n'
+            '        elseif eventType == "aftAnim" then')
+        new_watch = (
+            '            self:showTouchSwallowLayer() -- 显示触摸屏蔽层\r\n'
+            '            self:pauseUpdate()\r\n'
+            '            -- gh259: 切层看门狗——动画回调链若在 aftAnim 前被 Lua 错误打断，\r\n'
+            '            -- 触摸屏蔽层永不撤销=全局卡死（gh258 实测）。3 秒后仍在切换态\r\n'
+            '            -- 则强制恢复输入（正常 aftAnim 已把 __isSwitching 置 false）。\r\n'
+            '            self:uniqueDelayFunc(\r\n'
+            '                "wjjhSwitchWatchdog_" .. tostring(fromLayerName) .. "_" .. tostring(toLayerName),\r\n'
+            '                3,\r\n'
+            '                function()\r\n'
+            '                    if self.__isSwitching then\r\n'
+            '                        print("[WJJH_UI] switch watchdog: force aftAnim "\r\n'
+            '                            .. tostring(fromLayerName) .. " -> " .. tostring(toLayerName))\r\n'
+            '                        self:resumeUpdate()\r\n'
+            '                        self:hideTouchSwallowLayer()\r\n'
+            '                        self.__isSwitching = false\r\n'
+            '                    end\r\n'
+            '                end\r\n'
+            '            )\r\n'
+            '        elseif eventType == "aftAnim" then')
+
+        old_aft = (
+            '        elseif eventType == "aftAnim" then\r\n'
+            '            self:resumeUpdate()\r\n'
+            '            self:hideTouchSwallowLayer() -- 隐藏触摸屏蔽层\r\n'
+            '            Helper:callFunc(switch.animAftFunc, self, fromLayerName, toLayerName, switch)')
+        new_aft = (
+            '        elseif eventType == "aftAnim" then\r\n'
+            '            self:resumeUpdate()\r\n'
+            '            self:hideTouchSwallowLayer() -- 隐藏触摸屏蔽层\r\n'
+            '            -- gh259: aftFunc/层清理若报错，不能阻断 __isSwitching 复位；\r\n'
+            '            -- 关键输入状态已在上两行恢复，易错部分 pcall 包住。\r\n'
+            '            pcall(Helper.callFunc, Helper, switch.animAftFunc, self, fromLayerName, toLayerName, switch)')
+
+        old_rm = (
+            '                    if unRemoveLayer[v] then\r\n'
+            '                    else\r\n'
+            '                        self:removeLayer(v)\r\n'
+            '                    end')
+        new_rm = (
+            '                    if unRemoveLayer[v] then\r\n'
+            '                    else\r\n'
+            '                        pcall(self.removeLayer, self, v)\r\n'
+            '                    end')
+
+        for tag, old, want in (('watchdog', old_watch, 1), ('aftcall', old_aft, 1), ('rmlayer', old_rm, 1)):
+            n = new.count(old.encode('utf-8'))
+            if n != want:
+                problems.append('base/ControllLayer %s expected %d got %d' % (tag, want, n))
+                break
+            new = new.replace(old.encode('utf-8'), new_watch.encode('utf-8') if tag == 'watchdog'
+                              else (new_aft.encode('utf-8') if tag == 'aftcall' else new_rm.encode('utf-8')))
+        else:
+            open(p, 'wb').write(new)
+            print('[overlay] gh259: base/ControllLayer.lua -> switch watchdog + aftAnim pcall OK',
+                  flush=True)
+
+    # ---------- 3) layer/ControllLayer.lua ----------
+    p = os.path.join(DEST, 'src', 'app', 'views', 'layer', 'ControllLayer.lua')
+    if not os.path.exists(p):
+        problems.append('layer/ControllLayer.lua not found at %s' % p)
+    else:
+        raw = open(p, 'rb').read()
+        old_call = (
+            '                        function()\r\n'
+            '                            fromLayer:move(cc.p(0, display.height))\r\n'
+            '                            fromLayer:setVisible(false)\r\n'
+            '                            fromLayer:pauseSelfAndChildren()\r\n'
+            '                            callBack("aftAnim")\r\n'
+            '                        end')
+        new_call = (
+            '                        function()\r\n'
+            '                            pcall(function()\r\n'
+            '                                fromLayer:move(cc.p(0, display.height))\r\n'
+            '                                fromLayer:setVisible(false)\r\n'
+            '                                fromLayer:pauseSelfAndChildren()\r\n'
+            '                            end)\r\n'
+            '                            callBack("aftAnim")\r\n'
+            '                        end')
+        n = raw.count(old_call.encode('utf-8'))
+        if n != 2:
+            problems.append('layer/ControllLayer callfunc expected 2 got %d' % n)
+        else:
+            open(p, 'wb').write(raw.replace(old_call.encode('utf-8'), new_call.encode('utf-8')))
+            print('[overlay] gh259: layer/ControllLayer.lua -> 2 switch CallFunc bodies pcall-wrapped OK',
+                  flush=True)
+
+    if problems:
+        print('[overlay] gh259: WARN incomplete -> %s' % '; '.join(problems), flush=True)
+
+
 def main():
     # gamelua/src 不存在 = game.zip 还没解（CMake 配置期才解）→ 先替它解掉
     if not os.path.isdir(os.path.join(DEST, 'src')):
@@ -565,6 +688,9 @@ def main():
     #   修法 = tolua.isnull 预筛 + pcall 包住「回调+递归」，跳过死节点但不中断兄弟遍历。
     #   ★ 取代 gh256 的纯诊断版（诊断版只包赋值不包递归，遍历仍会中断）。
     patch_dead_node_tolerant()
+    # gh259: 切层动画收尾容错——保证 aftAnim 必执行（否则触摸屏蔽层永不撤销=全局卡死）。
+    #   gh258 实测链路：任务层 PageView 坏节点 → onDisable 报错 → 收尾 CallFunc 中断。
+    patch_switch_anim_failsafe()
     # ★ gh251 说明：原 gh249/gh250 不再调用。
     #   那两轮我按**本地开发树** ink_dec/fangzhi_lua_dec 分析，以为 game.zip 里带
     #   开发版 v57 遗留（按钮改名『经营』『科举』、跳过标题页）。实测 CI 实际用的
