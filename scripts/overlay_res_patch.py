@@ -248,6 +248,80 @@ def patch_offline_button_reverts():
           ' (task/sect renamed back, jianghu/sect popups -> direct) OK', flush=True)
 
 
+def patch_helper_nil_name():
+    """gh253: 修掉「任务按钮点了没反应」的**根因** —— Helper:convertUIByParent 崩溃。
+
+    老板实测症状：进主界面后点「任务」毫无反应（连点 5 次都一样）。launch.log 里
+    每次点击都留下一条 Lua 错误，被 WidgetEx 的 xpcall 捕获后只打印、不弹窗，
+    所以界面上"看起来什么都没发生"：
+
+        table index is nil
+        stack traceback:
+            [C]: in function '__newindex'
+            [string "app/Helper.lua"]:227: in function 'callback'
+            [string "app/Helper.lua"]:217: in function '_callChildren'
+            [string "app/Helper.lua"]:218: in function 'callChildrenByParent'
+            [string "app/Helper.lua"]:225: in function 'convertUIByParent'
+            [string "app/views/ui/TaskUI/MainTasksUI.lua"]:16: in function 'init'
+            [string "app/views/ui/TaskUI/MainTasksUI.lua"]:7:  in function 'create'
+            [string "app/presenters/Tasks/MainTaskPresenter.lua"]:23: in function '__init'
+            [string "app/presenters/Tasks/MainTaskPresenter.lua"]:17: in function 'create'
+            [string "app/views/base/ControllLayer.lua"]:187: in function 'getLayer'
+            [string "app/views/layer/ControllLayer.lua"]:2354: in function 'MoveAndFadeAnim'
+            [string "app/views/layer/MainLayer.lua"]:240: in function 'func'
+
+    整条链与 MainLayer.lua:235-241 的「任务系统」按钮**完全对上**：
+
+        self._UI.Button_task:releaseFunc(function()
+            Audio:playEffect("daAnNiu")
+            MainControllLayer:pushLayer("MainTaskPresenter")   -- 行 240，崩溃点
+        end)
+
+    ⇒ 点任务按钮 → pushLayer("MainTaskPresenter") → MainTaskPresenter:create()
+      → MainTasksUI:init() → Helper:convertUIByParent(self) 抛错
+      ⇒ 任务层永远建不出来 = 按钮"没反应"。
+
+    崩点就是 Helper.lua:227 的 `parent[child:getName()] = child`：赋值经 tolua 的
+    C __newindex 落库时报 "table index is nil"。**同一份代码在 Android 官方包里
+    一字不差**（逐字节比对过），res 布局 41 个节点也全部 setName，所以这不是
+    "我们改坏了某个资源"，而是这条递归遍历对某个节点的假设不成立。
+
+    修法（不改动正常路径的语义，只在**出错时**降级）：
+      · 取名字与赋值各包一层 pcall；任何一步失败都**跳过该节点继续遍历**，
+        其余具名控件照常挂到 self 上 ⇒ 任务界面能正常建出来、能打开；
+      · 出错时打一行 [WJJH_CONVUI] 日志，把 child/parent 的 tostring、type、
+        name 与 err 写进 launch.log ⇒ 若仍异常，一轮 CI 就能定位到具体节点。
+
+    `convertUI` / `convertUIParent` 里有**一模一样**的语句（同源缺陷），一并替换，
+    这三个 helper 的所有调用方都受益。
+
+    注意：替换文本刻意写成**单行**，不引入换行 ⇒ Helper.lua 总行数不变，
+    将来 traceback 里的行号依然对得上。
+    """
+    p = os.path.join(DEST, 'src', 'app', 'Helper.lua')
+    if not os.path.exists(p):
+        print('[overlay] gh253: WARN Helper.lua not found at %s' % p, flush=True)
+        return
+    raw = open(p, 'rb').read()
+    old = b'parent[child:getName()] = child'
+    new = (b'do local __okn, __n = pcall(function() return child:getName() end) '
+           b'if not __okn then print("[WJJH_CONVUI] GETNAME-ERR child=" .. tostring(child) '
+           b'.. " type=" .. type(child) .. " err=" .. tostring(__n)) '
+           b'elseif __n == nil then print("[WJJH_CONVUI] NILNAME child=" .. tostring(child) '
+           b'.. " type=" .. type(child) .. " parent=" .. tostring(parent)) '
+           b'else local __oka, __e = pcall(function() parent[__n] = child end) '
+           b'if not __oka then print("[WJJH_CONVUI] ASSIGNFAIL name=" .. tostring(__n) '
+           b'.. " parent=" .. tostring(parent) .. " child=" .. tostring(child) '
+           b'.. " err=" .. tostring(__e)) end end end')
+    n = raw.count(old)
+    if n == 0:
+        print('[overlay] gh253: WARN anchor not found -> Helper.lua left unchanged', flush=True)
+        return
+    open(p, 'wb').write(raw.replace(old, new))
+    print('[overlay] gh253: Helper convertUIByParent/convertUI/convertUIParent'
+          ' -> nil-name safe + diagnostic (%d sites) OK' % n, flush=True)
+
+
 def main():
     # gamelua/src 不存在 = game.zip 还没解（CMake 配置期才解）→ 先替它解掉
     if not os.path.isdir(os.path.join(DEST, 'src')):
@@ -271,6 +345,9 @@ def main():
 
     # gh242: 必须跑在 game.zip 解压之后、CMake 打包之前。
     patch_animres_metadata_only()
+    # gh253: Helper 的三个 convertUI* helper 加 nil-name 保护 + [WJJH_CONVUI] 诊断。
+    #   修「任务按钮点了没反应」（Helper.lua:227 抛 table index is nil，被 xpcall 吞掉）。
+    patch_helper_nil_name()
     # ★ gh251 说明：原 gh249/gh250 不再调用。
     #   那两轮我按**本地开发树** ink_dec/fangzhi_lua_dec 分析，以为 game.zip 里带
     #   开发版 v57 遗留（按钮改名『经营』『科举』、跳过标题页）。实测 CI 实际用的
