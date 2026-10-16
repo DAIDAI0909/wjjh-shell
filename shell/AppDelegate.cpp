@@ -497,13 +497,38 @@ end
 -- peer 是净表（无自动 no-op 元表）：未知键自然落到原生方法，setName/getName 从此走原生。
 local __wjjh_realPageView = ccui.PageView
 ExtPageView = {}
+local __pvProbe = __wjjh_realPageView:create()
+local __natSetCurrentPageIndex = nil
+pcall(function()
+  if type(__pvProbe.setCurrentPageIndex) == 'function' then
+    __natSetCurrentPageIndex = __pvProbe.setCurrentPageIndex
+  end
+end)
 ExtPageView.create = function(...)
   local node = __wjjh_realPageView:create()
   if tolua and tolua.setpeer then
     local peer = {
       playScrollPageAnim = function(self, pageIndex)
-        if pageIndex == nil then return end
+        -- gh260: 越界夹紧(空页/越界直接忽略)——原生 scrollToItem 对越界的容错未知,
+        --   原生异常会穿 tolua 变 abort(无 Lua 日志的闪退)。getItem 天然越界安全,这里对齐。
+        local oki, items = pcall(function() return self:getItems() end)
+        local n = 0
+        if oki and type(items) == 'table' then n = #items end
+        if n <= 0 or type(pageIndex) ~= 'number' then return end
+        if pageIndex < 0 then pageIndex = 0 end
+        if pageIndex > n - 1 then pageIndex = n - 1 end
         return self:scrollToPage(pageIndex)
+      end,
+      setCurrentPageIndex = function(self, index)
+        local oki, items = pcall(function() return self:getItems() end)
+        local n = 0
+        if oki and type(items) == 'table' then n = #items end
+        if n <= 0 then return end
+        if type(index) ~= 'number' then index = 0 end
+        if index < 0 then index = 0 end
+        if index > n - 1 then index = n - 1 end
+        if __natSetCurrentPageIndex then return __natSetCurrentPageIndex(self, index) end
+        return nil
       end,
       setScrollDurationWithNumber = function(self, num) end,
       getPage = function(self, index)
@@ -807,34 +832,207 @@ if not luaTableEncode then
   __wjjhlog('WJJH_BOOT: luaTableEncode/Decode stubs installed')
 end
 
--- ===== ExtRichTextScroll 真实现 =====
+-- ===== gh260: ExtRichTextScroll 真实现 =====
+-- 旧"真实现"(gh179 时代)其实是文本黑洞：pushBackText=no-op、getRichText 返回哑对象。
+--   后果：全部富文本区——主输出栏 PrintUI、Fight2Layer 战斗日志、RoleObserveLayer/RoleInfoLayer
+--   NPC 描述（武馆管家描述空白实测）、MainTasksUI 挂机详情等 159 处——零报错但什么都不显示。
+-- 本版实现：
+--   实例 = 真 ccui.ScrollView（原生触摸滚动/jumpTo*/滚动条/惯性全可用）；
+--   文本 = cc.Label 流式排版（每段一个 Label，超行宽则换行/整段硬折行）；
+--   内容顶对齐：flow 节点承载负 y 子节点，flow.y=内容高 ⇒ 子节点落回 inner 正坐标；
+--   内容超高自动 jumpToBottom（输出栏跟随）；setString/jumpToPercentVertical/getInnerContainer
+--   等 API 全部覆盖。
+-- 方法放类表：RichTextEx.lua 加载时会把类表 pushBackText 包装成「颜色码/\n 分段器」
+--   （原实现存为 pushBackText_old 逐段回调）⇒ 类表 pushBackText 必须是「推单段」语义。
+--   实例经 peer.__index=类表 解析方法；类表没列的原生方法由 tolua 回落到 ScrollView 本体，
+--   常用者另在安装期从 probe 实例捕获直通（capture 失败也不致错）。
 if ExtRichTextScroll and rawget(ExtRichTextScroll, '__wjjh_real') ~= true then
-  local __inner = { setVerticalSpace = function() end,
-    getNewContentSizeHeight = function() return 0 end,
-    pushBackText = function() end, pushBackNewLine = function() end, removeAllChildren = function() end }
-  setmetatable(__inner, {__index = function() return function() return __inner end end})
-  local __peer = {
-    getRichText = function() return __inner end,
-    setBounceEnabled = function() end, setDirection = function() end,
-    setSize = function() end, pushBackText = function() end,
-    pushBackNewLine = function() end, setDirectionEnabled = function() end,
-    setScrollBarEnabled = function() end }
-  -- gh179: 未列出的方法一律自动 no-op——把"我们桩缺方法"这整类崩掉的风险一次根治
-  -- （FightUI.lua:104 richPrint:setScrollBarEnabled 就是这么炸的）
-  setmetatable(__peer, {__index = function(t, k)
-    local f = function() return nil end
-    rawset(t, k, f)
-    return f
-  end})
-  local __node = cc.Node:create()
-  tolua.setpeer(__node, __peer)
-  ExtRichTextScroll.create = function(...)
-    local n = cc.Node:create()
-    tolua.setpeer(n, __peer)
-    return n
+  local __cls = {}
+  local __probe = ccui.ScrollView:create()
+  local function nat(name)
+    local ok, f = pcall(function() return __probe[name] end)
+    if ok and type(f) == 'function' then return f end
+    return nil
   end
-  rawset(ExtRichTextScroll, '__wjjh_real', true)
-  __wjjhlog('WJJH_BOOT: ExtRichTextScroll real impl installed')
+  -- 原生直通（安装期捕获；缺了就靠 peer 未命中回落原生）
+  for _, name in ipairs({'jumpToTop','jumpToBottom','scrollToBottom','jumpToPercentVertical',
+      'setScrollBarEnabled','setBounceEnabled','setInertiaScrollEnabled','setTouchEnabled',
+      'setInnerContainerSize','getInnerContainerSize','getInnerContainer',
+      'addEventListener','addTouchEventListener','setContentSize','getContentSize',
+      'addChild','removeFromParent','setAnchorPoint','setPosition','getPosition',
+      'setLocalZOrder','setTag','setName','setVisible','setCascadeOpacity',
+      'setScale','setSwallowTouches'}) do
+    local f = nat(name)
+    if f then __cls[name] = function(self, ...) return f(self, ...) end end
+  end
+  local __natJumpBottom = __cls.jumpToBottom
+  local __natSetContentSize = __cls.setContentSize
+  local __natDir = nat('setDirection')
+  if __natDir then
+    __cls.setDirection = function(self, dir)
+      if dir == nil then dir = 1 end  -- kCCScrollViewDirectionVertical 在个别环境可能未定义,默认竖向
+      return __natDir(self, dir)
+    end
+  end
+  -- ---- 流式排版 ----
+  local function st(self)
+    if tolua and tolua.getpeer then
+      local p = tolua.getpeer(self)
+      if type(p) == 'table' then return p.st end
+    end
+    return nil
+  end
+  local function makeLabel(text, color, opacity, fontName, fontSize)
+    local label
+    pcall(function() label = cc.Label:createWithTTF(text, fontName, fontSize) end)
+    if label == nil then
+      pcall(function() label = cc.Label:createWithSystemFont(text, 'Arial', fontSize) end)
+    end
+    if label == nil then return nil end
+    if color ~= nil then pcall(function() label:setTextColor(color) end) end
+    if opacity ~= nil then pcall(function() label:setOpacity(opacity) end) end
+    pcall(function() label:setAnchorPoint(cc.p(0, 1)) end)
+    return label
+  end
+  local function labelSize(label)
+    local ok, w, h = pcall(function()
+      local sz = label:getContentSize()
+      return sz.width, sz.height
+    end)
+    if not ok then return 0, 0 end
+    return w, h
+  end
+  local function advanceLine(s, extra)
+    local lh = s.lineH
+    if lh <= 0 then lh = (s.lastSize or 42) * 1.2 end
+    s.h = s.h + lh + (s.vspace or 0) + (extra or 0)
+    s.x = 0
+    s.lineH = 0
+  end
+  local function refit(self)
+    local s = st(self)
+    if not s or not s.flow then return end
+    local vh = 0
+    pcall(function() vh = self:getContentSize().height or 0 end)
+    local innerH = s.h
+    if vh and vh > innerH then innerH = vh end
+    if innerH < 1 then innerH = 1 end
+    s.flow:setPositionY(innerH)
+    pcall(function() self:setInnerContainerSize(cc.size(math.max(s.W, 1), innerH)) end)
+  end
+  __cls.pushBackText = function(self, text, color, opacity, fontName, fontSize)
+    local s = st(self)
+    if not s or not s.flow or type(text) ~= 'string' or text == '' then return end
+    if type(fontSize) ~= 'number' or fontSize <= 0 then fontSize = s.lastSize or 42 end
+    s.lastSize = fontSize
+    local label = makeLabel(text, color, opacity, fontName, fontSize)
+    if label == nil then return end
+    local w, h = labelSize(label)
+    if w <= 0 then return end
+    local wrapped = false
+    if w > s.W then
+      pcall(function()
+        label:setLineBreakWithoutSpace(true)
+        label:setDimensions(s.W, 0)
+      end)
+      w, h = labelSize(label)
+      wrapped = true
+    end
+    if wrapped or (s.x > 0 and s.x + w > s.W) then
+      advanceLine(s, 0)  -- 本行放不下,先结行再从头排
+    end
+    s.flow:addChild(label)
+    pcall(function() label:setPosition(s.x, -s.h) end)
+    if h > s.lineH then s.lineH = h end
+    s.x = s.x + w
+    refit(self)
+  end
+  __cls.pushBackNewLine = function(self, size)
+    local s = st(self)
+    if not s then return end
+    advanceLine(s, size or 0)
+    refit(self)
+    -- 内容超高后跟随底部（输出栏语义）；描述类界面随后会自行 jumpToTop 覆盖
+    local okv, sz = pcall(function() return self:getContentSize() end)
+    if okv and sz ~= nil and sz.height and s.h > sz.height + 2 and __natJumpBottom then
+      pcall(function() __natJumpBottom(self) end)
+    end
+  end
+  __cls.setVerticalSpace = function(self, v)
+    local s = st(self)
+    if s and type(v) == 'number' then s.vspace = v end
+  end
+  __cls.setTextMaxHeight = function(self, mh)
+    local s = st(self)
+    if s then s.maxH = mh end  -- 记录不裁剪:游戏层到阈值自会重建(PrintUI 8888/MainTasksUI 4000)
+  end
+  __cls.getRichText = function(self)
+    local s = st(self)
+    if not s then return nil end
+    if s.inner == nil then
+      local inner = {}
+      inner.setVerticalSpace = function(_, v)
+        if type(v) == 'number' then s.vspace = v end
+      end
+      inner.getNewContentSizeHeight = function() return s.h end
+      inner.formatText = function() end
+      inner.removeAllElement = function()
+        if s.flow then pcall(function() s.flow:removeAllChildren() end) end
+        s.h, s.x, s.lineH = 0, 0, 0
+        if s.owner then refit(s.owner) end
+      end
+      inner.pushBackText = function(_, text, c, o, f, sz)
+        if s.owner then return __cls.pushBackText(s.owner, text, c, o, f, sz) end
+      end
+      inner.pushBackNewLine = function(_, n)
+        if s.owner then return __cls.pushBackNewLine(s.owner, n) end
+      end
+      setmetatable(inner, {__index = function() return function() end end})
+      s.inner = inner
+    end
+    return s.inner
+  end
+  __cls.setSize = function(self, size)
+    local s = st(self)
+    if not s then return end
+    -- size 可能是 {width,height} 纯表,也可能是 getContentSize() 返回的 Size userdata
+    local okw, w = pcall(function() return size.width end)
+    local okh, h = pcall(function() return size.height end)
+    if okw and okh and type(w) == 'number' and type(h) == 'number' then
+      s.W = w
+      if __natSetContentSize then pcall(function() __natSetContentSize(self, size) end) end
+      refit(self)
+    end
+  end
+  __cls.setString = function(self, str)
+    if st(self) == nil then return end
+    __cls.getRichText(self):removeAllElement()
+    if type(str) == 'string' and str ~= '' then
+      __cls.pushBackText(self, str, cc.c3b(255, 255, 255), 255, 'Font/default.ttf', 30)
+      __cls.pushBackNewLine(self, 0)
+    end
+  end
+  __cls.create = function(...)
+    local scroll = ccui.ScrollView:create()
+    if scroll == nil then return nil end
+    local s = { W = 0, h = 0, x = 0, lineH = 0, vspace = 0, lastSize = nil, maxH = 0, owner = scroll }
+    if not (tolua and tolua.setpeer) then
+      __wjjhlog('WJJH_BOOT: ExtRichTextScroll real impl: no tolua.setpeer, degraded')
+      return scroll
+    end
+    local peer = { st = s }
+    setmetatable(peer, {__index = __cls})
+    tolua.setpeer(scroll, peer)
+    local flow = cc.Node:create()
+    scroll:addChild(flow)  -- ScrollView.addChild 自动进 inner 容器
+    s.flow = flow
+    local okw, cw = pcall(function() return scroll:getContentSize().width end)
+    if okw and type(cw) == 'number' and cw > 0 then s.W = cw else s.W = 600 end
+    return scroll
+  end
+  rawset(__cls, '__wjjh_real', true)
+  ExtRichTextScroll = __cls
+  __wjjhlog('WJJH_BOOT: ExtRichTextScroll real impl installed (gh260, native ScrollView + label flow)')
 end
 
 -- ===== XMLHttpRequest(NSURLSession 原生实现)=====

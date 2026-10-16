@@ -599,9 +599,11 @@ def patch_switch_anim_failsafe():
             '        elseif eventType == "aftAnim" then\r\n'
             '            self:resumeUpdate()\r\n'
             '            self:hideTouchSwallowLayer() -- 隐藏触摸屏蔽层\r\n'
-            '            -- gh259: aftFunc/层清理若报错，不能阻断 __isSwitching 复位；\r\n'
-            '            -- 关键输入状态已在上两行恢复，易错部分 pcall 包住。\r\n'
-            '            pcall(Helper.callFunc, Helper, switch.animAftFunc, self, fromLayerName, toLayerName, switch)')
+            '            -- gh259/gh260: aftFunc/层清理若报错，不能阻断 __isSwitching 复位；\r\n'
+            '            -- 关键输入状态已在上两行恢复；gh260 起报错必须打日志\r\n'
+            '            -- （gh259 看门狗触发过 SelectMapMenuPresenter->SelectMapLayer，当时错误被静默吞掉）。\r\n'
+            '            local __wokA, __werrA = pcall(Helper.callFunc, Helper, switch.animAftFunc, self, fromLayerName, toLayerName, switch)\r\n'
+            '            if not __wokA then print("[WJJH_UI] aftAnim aftFunc err=" .. tostring(__werrA)) end')
 
         old_rm = (
             '                    if unRemoveLayer[v] then\r\n'
@@ -611,7 +613,8 @@ def patch_switch_anim_failsafe():
         new_rm = (
             '                    if unRemoveLayer[v] then\r\n'
             '                    else\r\n'
-            '                        pcall(self.removeLayer, self, v)\r\n'
+            '                        local __wokR, __werrR = pcall(self.removeLayer, self, v)\r\n'
+            '                        if not __wokR then print("[WJJH_UI] removeLayer err=" .. tostring(__werrR)) end\r\n'
             '                    end')
 
         for tag, old, want in (('watchdog', old_watch, 1), ('aftcall', old_aft, 1), ('rmlayer', old_rm, 1)):
@@ -623,7 +626,7 @@ def patch_switch_anim_failsafe():
                               else (new_aft.encode('utf-8') if tag == 'aftcall' else new_rm.encode('utf-8')))
         else:
             open(p, 'wb').write(new)
-            print('[overlay] gh259: base/ControllLayer.lua -> switch watchdog + aftAnim pcall OK',
+            print('[overlay] gh259/gh260: base/ControllLayer.lua -> switch watchdog + aftAnim pcall(logged) OK',
                   flush=True)
 
     # ---------- 3) layer/ControllLayer.lua ----------
@@ -641,23 +644,79 @@ def patch_switch_anim_failsafe():
             '                        end')
         new_call = (
             '                        function()\r\n'
-            '                            pcall(function()\r\n'
+            '                            local __wok, __werr = pcall(function()\r\n'
             '                                fromLayer:move(cc.p(0, display.height))\r\n'
             '                                fromLayer:setVisible(false)\r\n'
             '                                fromLayer:pauseSelfAndChildren()\r\n'
             '                            end)\r\n'
+            '                            if not __wok then print("[WJJH_UI] switch callfunc err=" .. tostring(__werr)) end\r\n'
             '                            callBack("aftAnim")\r\n'
             '                        end')
         n = raw.count(old_call.encode('utf-8'))
         if n != 2:
             problems.append('layer/ControllLayer callfunc expected 2 got %d' % n)
         else:
-            open(p, 'wb').write(raw.replace(old_call.encode('utf-8'), new_call.encode('utf-8')))
-            print('[overlay] gh259: layer/ControllLayer.lua -> 2 switch CallFunc bodies pcall-wrapped OK',
+            raw = raw.replace(old_call.encode('utf-8'), new_call.encode('utf-8'))
+            print('[overlay] gh259/gh260: layer/ControllLayer.lua -> 2 switch CallFunc bodies pcall-wrapped(logged) OK',
+                  flush=True)
+
+        # gh260: 切层 uniqueDelayFunc 函数体整体 pcall+日志（switchTo/HouseSkin/updateSkinUI/
+        # toAction 创建在其中,任一报错 ⇒ toAction 不会跑 ⇒ aftAnim 不会执行 ⇒ 触发看门狗。
+        # gh259 看门狗就是在这里被触发的,但当时错误被静默吞掉）。两个方向各一处,收尾有
+        # 空行差异,分别锚定。
+        body_head_old = (
+            '            function()\r\n'
+            '                self.__backgroundLayer:switchTo(toLayerName)\r\n'
+            '                local HouseSkin = require("app.models.ChangeHouseSkin.HouseSkin")\r\n'
+            '                if HouseSkin:hasPrintLayerCurrentConfig(toLayerName) then\r\n'
+            '                    self:getLayer("PrintLayer"):updateSkinUI(toLayerName)\r\n'
+            '                end')
+        body_head_new = (
+            '            function()\r\n'
+            '                local __wokB, __werrB = pcall(function()\r\n'
+            '                self.__backgroundLayer:switchTo(toLayerName)\r\n'
+            '                local HouseSkin = require("app.models.ChangeHouseSkin.HouseSkin")\r\n'
+            '                if HouseSkin:hasPrintLayerCurrentConfig(toLayerName) then\r\n'
+            '                    self:getLayer("PrintLayer"):updateSkinUI(toLayerName)\r\n'
+            '                end')
+        body_tail_a_old = (
+            '                toAction:setTag(toTag)\r\n'
+            '\r\n'
+            '                toLayer:runAction(toAction)\r\n'
+            '            end')
+        body_tail_a_new = (
+            '                toAction:setTag(toTag)\r\n'
+            '\r\n'
+            '                toLayer:runAction(toAction)\r\n'
+            '                end)\r\n'
+            '                if not __wokB then print("[WJJH_UI] switch body err=" .. tostring(__werrB)) end\r\n'
+            '            end')
+        body_tail_b_old = (
+            '                toAction:setTag(toTag)\r\n'
+            '                toLayer:runAction(toAction)\r\n'
+            '            end')
+        body_tail_b_new = (
+            '                toAction:setTag(toTag)\r\n'
+            '                toLayer:runAction(toAction)\r\n'
+            '                end)\r\n'
+            '                if not __wokB then print("[WJJH_UI] switch body err=" .. tostring(__werrB)) end\r\n'
+            '            end')
+        for tag, old, want, repl in (
+                ('bodyhead', body_head_old, 2, body_head_new),
+                ('bodytailA', body_tail_a_old, 1, body_tail_a_new),
+                ('bodytailB', body_tail_b_old, 1, body_tail_b_new)):
+            n = raw.count(old.encode('utf-8'))
+            if n != want:
+                problems.append('layer/ControllLayer %s expected %d got %d' % (tag, want, n))
+                break
+            raw = raw.replace(old.encode('utf-8'), repl.encode('utf-8'))
+        else:
+            open(p, 'wb').write(raw)
+            print('[overlay] gh260: layer/ControllLayer.lua -> 2 switch uniqueDelayFunc bodies pcall-wrapped(logged) OK',
                   flush=True)
 
     if problems:
-        print('[overlay] gh259: WARN incomplete -> %s' % '; '.join(problems), flush=True)
+        print('[overlay] gh259/gh260: WARN incomplete -> %s' % '; '.join(problems), flush=True)
 
 
 def main():
