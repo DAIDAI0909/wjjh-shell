@@ -61,26 +61,46 @@ def run(cmd, cwd=None, timeout=3600):
 
 
 def upload(name, path):
-    """流式 POST:/put 用于大文件(IPA),/report 用于日志。"""
+    """流式 POST:/put 用于大文件(IPA),/report 用于日志。
+
+    gh255: 加重试。run 254 实测 `OSError(51, 'Network is unreachable')` ——
+    runner 出网偶发不可达,一次抖动就让 60 分钟的构建产物彻底丢失
+    (那次既没进 Release,artifact 里也只有 495B 的诊断包)。
+    重试只针对**连接层异常**(requests 意义上的"还没发出去"),文件每轮重新打开。
+    """
     if not TOKEN:
         log('!! no token (WJJH_GAME_URL missing) — skip upload %s' % name)
         return False
     route = '/put' if name.endswith('.ipa') else '/report'
     size = os.path.getsize(path) if os.path.exists(path) else 0
     log('UPLOAD %s (%d bytes) -> %s' % (name, size, route))
-    try:
-        conn = http.client.HTTPConnection(HOST, 80, timeout=1800)
-        with open(path, 'rb') as f:
-            conn.request('POST', '%s?name=%s&t=%s' % (route, name, TOKEN),
-                         body=f, headers={'Content-Length': str(size)})
-        resp = conn.getresponse()
-        body = resp.read()[:200]
-        log('  upload resp: %d %r' % (resp.status, body))
-        conn.close()
-        return resp.status == 200
-    except Exception as e:
-        log('  upload failed: %r' % e)
-        return False
+    last = None
+    for attempt in range(3):
+        if attempt:
+            wait = (5, 15, 30)[attempt]
+            log('  upload retry #%d in %ds (last=%r)' % (attempt, wait, last))
+            time.sleep(wait)
+        try:
+            conn = http.client.HTTPConnection(HOST, 80, timeout=1800)
+            with open(path, 'rb') as f:
+                conn.request('POST', '%s?name=%s&t=%s' % (route, name, TOKEN),
+                             body=f, headers={'Content-Length': str(size)})
+            resp = conn.getresponse()
+            body = resp.read()[:200]
+            log('  upload resp: %d %r' % (resp.status, body))
+            conn.close()
+            if resp.status == 200:
+                return True
+            last = 'HTTP %d' % resp.status
+        except Exception as e:
+            last = e
+            log('  upload failed: %r' % e)
+            try:
+                conn.close()
+            except Exception:
+                pass
+    log('!! upload gave up after 3 attempts: %r' % (last,))
+    return False
 
 
 def get_gh_token():
@@ -108,6 +128,13 @@ def get_gh_token():
 
 
 def gh_request(host, method, path, tok, body=None, ctype=None, timeout=120):
+    """gh255: 连接层加重试。
+
+    run 254 实测:构建成功(IPA 已 ditto 出来)但 `gh_request('api.github.com',...)`
+    抛 `OSError(51, 'Network is unreachable')` ⇒ release 里没有资产、artifact 里也没有
+    IPA,整轮白跑。runner 出网偶发不可达,重试是最小代价的兜底。
+    body 是文件时必须每轮 seek(0),否则第二轮发出去的是空体。
+    """
     import json
     headers = {'Authorization': 'Bearer ' + tok, 'User-Agent': 'wjjh-device-ipa',
                'Accept': 'application/vnd.github+json'}
@@ -115,16 +142,46 @@ def gh_request(host, method, path, tok, body=None, ctype=None, timeout=120):
         headers['Content-Type'] = ctype
     if body is not None and hasattr(body, 'read'):
         headers['Content-Length'] = str(os.path.getsize(body.name))
-    conn = http.client.HTTPSConnection(host, timeout=timeout)
-    conn.request(method, path, body=body, headers=headers)
-    r = conn.getresponse()
-    data = r.read()
-    conn.close()
-    try:
-        js = json.loads(data)
-    except Exception:
-        js = None
-    return r.status, js
+    last = None
+    for attempt in range(3):
+        if attempt:
+            wait = (5, 15, 30)[attempt]
+            log('  gh_request retry #%d in %ds (%s %s, last=%r)'
+                % (attempt, wait, method, path.split('?')[0], last))
+            time.sleep(wait)
+        if body is not None and hasattr(body, 'seek'):
+            try:
+                body.seek(0)
+            except Exception:
+                pass
+        conn = None
+        try:
+            conn = http.client.HTTPSConnection(host, timeout=timeout)
+            conn.request(method, path, body=body, headers=headers)
+            r = conn.getresponse()
+            data = r.read()
+            conn.close()
+            conn = None
+            try:
+                js = json.loads(data)
+            except Exception:
+                js = None
+            # 5xx 视为可重试；4xx 是确定性错误，直接返回
+            if r.status >= 500:
+                last = 'HTTP %d' % r.status
+                continue
+            return r.status, js
+        except Exception as e:
+            last = e
+            log('  gh_request failed: %r' % e)
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+    log('!! gh_request gave up after 3 attempts (%s %s): %r' % (method, path, last))
+    return 0, None
 
 
 def upload_release(ipa_path):
