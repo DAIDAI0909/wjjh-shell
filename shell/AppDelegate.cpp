@@ -2039,6 +2039,56 @@ if ccui ~= nil then
   __wjjhlog('WJJH_BOOT: ccui custom-method shims installed (' .. __wjjh_patched .. ')')
 end
 
+-- ===== gh265: 战斗纹理预载（治「第一次切磋迟钝很久」）=====
+-- 首次进战斗才加载 gongfu(1620页)/specialEffect(320页)/enterVictory(160页) 图集
+--   ⇒ 老板实测第一次切磋白等数秒，之后正常（缓存命中）。
+--   在开机 3 秒后（标题界面期间）把全部页排进 TextureCache 的异步加载队列
+--   （解码在加载线程、上传摊进主线程帧间），到玩家真进战斗时全部命中缓存。
+-- ★ 预载/战斗必须用同一个 cache key：spine 的页路径 = 图集所在目录 + 页名
+--   （相对路径，如 "Anim/gongfu/gongfu36.png"），这里保持一致。
+do
+  local __preloaded = false
+  local function __preloadAtlasPages(atlasPath)
+    local fu = cc.FileUtils:getInstance()
+    local full = fu:fullPathForFilename(atlasPath)
+    local f = io.open(full, 'rb')
+    if not f then
+      __wjjhlog('WJJH_PRELOAD: atlas unreadable ' .. atlasPath)
+      return 0
+    end
+    local data = f:read('*a')
+    f:close()
+    local tc = cc.Director:getInstance():getTextureCache()
+    local dir = atlasPath:match('^(.*)/')
+    local n = 0
+    for line in string.gmatch(data, '([^%r\n]+)') do
+      if line:sub(-4) == '.png' then
+        local page = (dir and (dir .. '/') or '') .. line
+        n = n + 1
+        pcall(function() tc:addImageAsync(page, function() end) end)
+      end
+    end
+    return n
+  end
+  local __sched = cc.Director:getInstance():getScheduler()
+  if __sched then
+    local __fired = false
+    __sched:scheduleScriptFunc(function()
+      if __fired then return end
+      __fired = true
+      local total = 0
+      for _, a in ipairs({'Anim/gongfu/gongfu.atlas',
+                          'Anim/specialEffect/specialEffect.atlas',
+                          'Anim/enterVictory/enterVictory.atlas',
+                          'Anim/FightEffect/fanghu.atlas'}) do
+        total = total + __preloadAtlasPages(a)
+      end
+      __wjjhlog('WJJH_PRELOAD: ' .. total .. ' pages queued')
+    end, 3.0, false)
+    __wjjhlog('WJJH_PRELOAD: scheduled (t+3s)')
+  end
+end
+
 -- ===== main.lua =====
 local f, err = loadfile(__WJJH_MAINLUA)
 if not f then

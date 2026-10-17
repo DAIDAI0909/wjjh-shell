@@ -841,6 +841,50 @@ def patch_ipad_resolution():
     print('[overlay] gh264: config.lua -> iPad FIXED_WIDTH callback enabled OK', flush=True)
 
 
+def patch_menu_resolution():
+    """gh265: MenuLayer:init 每次都把设计分辨率重置回 1080x1920 SHOW_ALL。
+
+    gh264 在 config.lua 启用的 FIXED_WIDTH 开机生效后，进标题界面又被这里覆盖回
+    SHOW_ALL ⇒ 原生 iPad 上全程两侧各 192px 黑边、所有 UI 内缩（老板"开始界面图
+    残缺/不完整"的真正来源——config.lua 的补丁被这处覆盖了）。
+    按屏比适配：4:3 屏（ratio<=1.34）走 FIXED_WIDTH（全宽 1440x1920），
+    常规 16:9 手机维持原 SHOW_ALL 行为不变。
+    """
+    p = os.path.join(DEST, 'src', 'app', 'views', 'layer', 'MenuLayer', 'MenuLayer.lua')
+    if not os.path.exists(p):
+        print('[overlay] gh265: WARN MenuLayer.lua not found at %s' % p, flush=True)
+        return
+    raw = open(p, 'rb').read()
+    NL = b'\r\n'
+    old = (
+        '    if (channelId == "oppo" or channelId == "xiaomi") and Game:isCheckNewPackage() == NEED_CHECK_AND_IS_OPEN then'.encode('utf-8') + NL +
+        b'        cc.Director:getInstance():getOpenGLView():setDesignResolutionSize(1080, 1920, cc.ResolutionPolicy.EXACT_FIT)' + NL +
+        b'    else' + NL +
+        b'        cc.Director:getInstance():getOpenGLView():setDesignResolutionSize(1080, 1920, cc.ResolutionPolicy.SHOW_ALL)' + NL +
+        b'    end')
+    new = (
+        '    -- gh265: 按屏比适配——4:3 屏（原生 iPad 1536x2048）走 FIXED_WIDTH 全宽，'.encode('utf-8') + NL +
+        '    --   否则 SHOW_ALL 会两侧各留 192px 黑边、全部 UI 内缩（老板实测"图不完整"）。'.encode('utf-8') + NL +
+        '    local __fsize = cc.Director:getInstance():getOpenGLView():getFrameSize()'.encode('utf-8') + NL +
+        '    local __ratio = __fsize.width / __fsize.height'.encode('utf-8') + NL +
+        '    if __ratio <= 1.34 then'.encode('utf-8') + NL +
+        '        local __scaleY = __fsize.height / 1920'.encode('utf-8') + NL +
+        '        local __w = __fsize.width / __scaleY'.encode('utf-8') + NL +
+        '        cc.Director:getInstance():getOpenGLView():setDesignResolutionSize(__w, 1920, cc.ResolutionPolicy.NO_BORDER)'.encode('utf-8') + NL +
+        '    elseif (channelId == "oppo" or channelId == "xiaomi") and Game:isCheckNewPackage() == NEED_CHECK_AND_IS_OPEN then'.encode('utf-8') + NL +
+        b'        cc.Director:getInstance():getOpenGLView():setDesignResolutionSize(1080, 1920, cc.ResolutionPolicy.EXACT_FIT)' + NL +
+        b'    else' + NL +
+        b'        cc.Director:getInstance():getOpenGLView():setDesignResolutionSize(1080, 1920, cc.ResolutionPolicy.SHOW_ALL)' + NL +
+        b'    end')
+    n = raw.count(old)
+    if n != 1:
+        print('[overlay] gh265: WARN MenuLayer resolution block expected 1 got %d -> file left unchanged' % n,
+              flush=True)
+        return
+    open(p, 'wb').write(raw.replace(old, new))
+    print('[overlay] gh265: MenuLayer.lua -> aspect-adaptive design resolution OK', flush=True)
+
+
 def main():
     # gamelua/src 不存在 = game.zip 还没解（CMake 配置期才解）→ 先替它解掉
     if not os.path.isdir(os.path.join(DEST, 'src')):
@@ -876,6 +920,8 @@ def main():
     patch_fight_spine_lazy()
     # gh264: 启用 config.lua 的 iPad 4:3 适配（原生分辨率下去黑边）。
     patch_ipad_resolution()
+    # gh265: MenuLayer 会把设计分辨率重置回 SHOW_ALL（黑边回归）——按屏比适配。
+    patch_menu_resolution()
     # ★ gh251 说明：原 gh249/gh250 不再调用。
     #   那两轮我按**本地开发树** ink_dec/fangzhi_lua_dec 分析，以为 game.zip 里带
     #   开发版 v57 遗留（按钮改名『经营』『科举』、跳过标题页）。实测 CI 实际用的

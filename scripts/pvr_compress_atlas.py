@@ -590,7 +590,115 @@ def job_anchor():
     return None
 
 
+# gh265: 特效图集缩半清单——这些图集的页 512²→256²（sips 缩放 + atlas 坐标折半），
+#   补偿 PVRTC 停用后的内存：specialEffect 320p 160→40MB、enterVictory 160p 80→20MB、
+#   FightEffect 7p→1MB。gongfu 本体已是 256² 不动。
+EFFECT_DOWNSCALE = ('/Anim/specialEffect/', '/Anim/enterVictory/', '/Anim/FightEffect/')
+TARGET_MAX = 256
+
+
+def _scale_atlas_line(ln, factor):
+    """把 atlas 属性行（xy:/size:/orig:/offset:）里的像素数字按 factor 缩放。"""
+    def _half(m):
+        v = int(m.group(0))
+        return str(int(round(v * factor))).encode('utf-8')
+    return re.sub(rb'\d+', _half, ln)
+
+
+def _downscale_effect_atlases():
+    """特效图集页 512²→256²：sips 缩放 PNG + atlas 坐标折半。"""
+    total_pages = 0
+    for dp, _dn, fn in os.walk(RES_ROOT):
+        for f in sorted(fn):
+            if not f.endswith('.atlas'):
+                continue
+            apath = os.path.join(dp, f)
+            rel = '/' + os.path.relpath(apath, RES_ROOT).replace(os.sep, '/')
+            if not any(p in rel for p in EFFECT_DOWNSCALE):
+                continue
+            raw = open(apath, 'rb').read()
+            nl = b'\r\n' if b'\r\n' in raw[:4000] else b'\n'
+            lines = raw.split(nl)
+            pages = dict((name, (w, h)) for name, w, h in parse_atlas(apath))
+            cur_page = None
+            seen_page_size = False
+            factor = 1.0
+            out = []
+            scaled = 0
+            for ln in lines:
+                s = ln.strip()
+                if s and not ln.startswith(b' ') and (s.endswith(b'.png') or s.endswith(b'.pvr')):
+                    cur_page = s.decode('utf-8', 'replace')
+                    seen_page_size = False
+                    factor = 1.0
+                    out.append(ln)
+                    continue
+                if cur_page and not seen_page_size and s.startswith(b'size:'):
+                    seen_page_size = True
+                    w, h = pages.get(cur_page, (0, 0))
+                    if max(w, h) > TARGET_MAX:
+                        factor = TARGET_MAX / float(max(w, h))
+                        out.append(('size: %d,%d' % (int(round(w * factor)),
+                                                     int(round(h * factor)))).encode('utf-8'))
+                        scaled += 1
+                        continue
+                    out.append(ln)
+                    continue
+                if seen_page_size and factor != 1.0 and ln.startswith(b' '):
+                    hit = False
+                    for key in (b'xy:', b'size:', b'orig:', b'offset:'):
+                        if s.startswith(key):
+                            out.append(_scale_atlas_line(ln, factor))
+                            hit = True
+                            break
+                    if not hit:
+                        out.append(ln)
+                    continue
+                out.append(ln)
+            if scaled:
+                open(apath, 'wb').write(nl.join(out))
+            # sips 缩放超过目标尺寸的 PNG 页
+            adir = os.path.dirname(apath)
+            for name, (w, h) in sorted(pages.items()):
+                if max(w, h) <= TARGET_MAX:
+                    continue
+                ppath = os.path.join(adir, name)
+                if not os.path.exists(ppath):
+                    continue
+                r = None
+                try:
+                    r = subprocess.run(['sips', '-Z', str(TARGET_MAX), ppath],
+                                       capture_output=True, text=True)
+                except FileNotFoundError:
+                    print('[pvr] gh265: sips unavailable -> %s left unscaled' % name, flush=True)
+                if r is not None and r.returncode == 0:
+                    total_pages += 1
+                elif r is not None:
+                    print('[pvr] gh265: sips FAILED %s : %s'
+                          % (name, (r.stderr or '').strip()[:120]), flush=True)
+    print('[pvr] gh265: effect atlases downscaled (pages=%d, target_max=%d)' % (total_pages, TARGET_MAX),
+          flush=True)
+
+
 def main():
+    # gh265: PVRTC 全面停用。
+    #   gh264 决定性实验：gongfu 图集退 PNG 后战斗人物立即恢复正常人形
+    #   （老板录屏实证），而 enterVictory/specialEffect 等仍是 PVRTC ⇒ 入场/特效
+    #   依旧渲染全白（开场黄方块）。结论：PVRTC 硬件压缩上传链路在本项目
+    #   （cocos 3.15.1 + 该设备）不可用。全部 spine 图集保留 PNG，
+    #   cocos 按全局 RGBA4444 加载（2B/px）。
+    #   内存补偿：特效三图集页缩半（512²→256²），战斗期 spine 纹理 ≈263MB。
+    #   如需重新启用：设 WJJH_PVR_ENABLE=1。
+    if os.environ.get('WJJH_PVR_ENABLE', '') != '1':
+        print('[pvr] gh265: PVRTC disabled (white-render confirmed) -> keep all PNG', flush=True)
+        if not os.path.isdir(RES_ROOT):
+            print('[pvr] %s not found -> skip' % RES_ROOT, flush=True)
+            return
+        try:
+            _downscale_effect_atlases()
+        except Exception as e:                                  # noqa: BLE001
+            print('[pvr] gh265: downscale FAILED (%r) -> atlases left unchanged' % e, flush=True)
+        return
     t0 = time.time()
     cands = find_texturetool_candidates()
     print('[pvr] texturetool candidates: %s' % ([c[1] for c in cands] or 'NONE'), flush=True)
