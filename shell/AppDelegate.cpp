@@ -261,6 +261,42 @@ for _i, path in ipairs(__list) do
 end
 __wjjhlog('WJJH_BOOT: isclass stamped ' .. __ns .. ' [' .. __detail .. ']')
 
+-- ===== gh272: 死节点高危方法守卫（治「玩着玩着 SIGSEGV」）=====
+-- 实测（老板 gh271，WJJH-2026-10-18-065421.ips）：打开 DecorativeBoxLayer 后下一帧，
+--   某 Lua 定时回调对已释放节点调 getParent → lua_cocos2dx_Node_getParent 直接解引用
+--   已释放内存 = SIGSEGV（原生层，Lua isnull 预筛只能自己人用，裸方法拦不住）。
+--   iOS 上 UI 树混入已释放节点是常态（gh255 起多方实锤），Node 析构会把 tolua 注册
+--   摘除 ⇒ tolua.isnull 能识别 ⇒ 把最常被裸调的 8 个方法包上 isnull 守卫：
+--   死节点返回 nil/安全值（调用链下游若 nil 解引用，会被游戏既有的 xpcall 捕获成
+--   Lua 错误，比 SIGSEGV 全局闪退好一个量级）。
+--   开销：LuaJIT 方法转发 ~0.1μs/次，高频路径可忽略。与 gh153 getTag 守卫同模式。
+if cc and cc.Node then
+  local __isnull = (tolua and tolua.isnull) or nil
+  local __guarded = {
+    getParent = function(self) return nil end,
+    getName = function(self) return nil end,
+    getChildren = function(self) return {} end,
+    getPosition = function(self) return 0, 0 end,
+    getContentSize = function(self) return { width = 0, height = 0 } end,
+    getTag = function(self) return -1 end,
+    getChildrenCount = function(self) return 0 end,
+    getLocalZOrder = function(self) return 0 end,
+  }
+  for __name, __fallback in pairs(__guarded) do
+    local __orig = rawget(cc.Node, __name) or cc.Node[__name]
+    if type(__orig) == 'function' then
+      cc.Node[__name] = function(self, ...)
+        if __isnull and type(self) == 'userdata' and __isnull(self) then
+          return __fallback(self)
+        end
+        return __orig(self, ...)
+      end
+    end
+  end
+  __wjjhlog('WJJH_BOOT: dead-node method guards installed (8 methods)')
+end
+
+
 -- ===== addChild 兼容包装(gh61 修正:原实现把无 tag 的 addChild 一律传 tag=0,
 --      cocos 3 参数 addChild 会把子节点 tag 重置为 0 -> tag 查重全灭的最初源头) =====
 if cc and cc.Node and type(cc.Node.addChild) == 'function' then
