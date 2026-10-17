@@ -216,12 +216,14 @@ bool AppDelegate::applicationDidFinishLaunching()
     lua_pushboolean(L, 0);
 #endif
     lua_setglobal(L, "__WJJH_AUTOSTART");
-    // gh265: 真机构建标志（CMake 对真机包定义 WJJH_DEVICE）。CI 模拟器专用补偿
-    //   （战斗 frame-drive 每渲染帧推 12 逻辑帧等）在真机 60fps 下=24 倍速乱打，据此关闭。
-#if defined(WJJH_DEVICE)
-    lua_pushboolean(L, 1);
-#else
+    // gh265/gh271: 真机构建标志。★gh271 修正：CMakeLists 从未把 WJJH_DEVICE 定义成
+    //   编译宏（它只是 configure 期变量）⇒ #if defined(WJJH_DEVICE) 恒假，
+    //   frame-drive 在真机照跑=24 倍速乱打（gh270 实测）。
+    //   改用 CI_DIAG 反义：CI_DIAG 只在模拟器 CI 构建定义（gh258 已验证该机制可靠）。
+#if defined(WJJH_CI_DIAG)
     lua_pushboolean(L, 0);
+#else
+    lua_pushboolean(L, 1);
 #endif
     lua_setglobal(L, "__WJJH_DEVICE");
     wjjh_bootlog(("WJJH_BOOT: src/main.lua -> " + path).c_str());
@@ -2055,40 +2057,40 @@ if ccui ~= nil then
   __wjjhlog('WJJH_BOOT: ccui custom-method shims installed (' .. __wjjh_patched .. ')')
 end
 
--- ===== gh265: 战斗纹理预载（治「第一次切磋迟钝很久」）=====
--- 首次进战斗才加载 gongfu(1620页)/specialEffect(320页)/enterVictory(160页) 图集
---   ⇒ 老板实测第一次切磋白等数秒，之后正常（缓存命中）。
---   在开机 3 秒后（标题界面期间）把全部页排进 TextureCache 的异步加载队列
---   （解码在加载线程、上传摊进主线程帧间），到玩家真进战斗时全部命中缓存。
--- ★ 预载/战斗必须用同一个 cache key：spine 的页路径 = 图集所在目录 + 页名
---   （相对路径，如 "Anim/gongfu/gongfu36.png"），这里保持一致。
+-- ===== gh265/gh271: 战斗骨架预热（治「第一次切磋迟钝很久」+ 保 4444 生效）=====
+-- ★ gh271 推翻 gh265 的页预载方案：addImageAsync 走标准管线（RGBA8888）把 2107 页
+--   塞进 TextureCache，战斗时 spine loader 直接命中这些 8888 纹理 ⇒ gh269 的
+--   4444 强制 loader 被绕过（gh270 实测战斗内存反超 392MB、五场后 1450MB 被杀）。
+-- 新方案 = 逐个「预热真实骨架」：createWith*File 走 spine loader（4444 强制✓），
+--   SkeletonData 进桥内缓存✓，实例即抛（shared ownership，数据/纹理存活）。
+--   首战只剩 Skeleton 实例构建（<1s）。每 0.6s 一个，避免标题界面一次卡 5 秒。
 do
-  local __preloaded = false
-  local function __preloadAtlasPages(atlasPath)
-    -- gh269: 改走 C 侧（FileUtils 读文件 + addImageAsync 排队）。Lua io.open 在真机
-    --   上读 bundle 文件得到空内容（gh268 实测 0 pages queued）。
-    if wjjh_spine38_preload_atlas == nil then return 0 end
-    local ok, n = pcall(wjjh_spine38_preload_atlas, atlasPath)
-    if ok and type(n) == 'number' then return n end
-    __wjjhlog('WJJH_PRELOAD: preload pcall failed for ' .. atlasPath)
-    return 0
-  end
+  local __warmQ = {
+    { skel = 'Anim/gongfu/gongfu.json',            atlas = 'Anim/gongfu/gongfu.atlas' },
+    { skel = 'Anim/specialEffect/specialEffect.skel', atlas = 'Anim/specialEffect/specialEffect.atlas' },
+    { skel = 'Anim/enterVictory/enterVictory.skel', atlas = 'Anim/enterVictory/enterVictory.atlas' },
+    { skel = 'Anim/FightEffect/fanghu.skel',       atlas = 'Anim/FightEffect/fanghu.atlas' },
+  }
+  local __warmIdx = 0
   local __sched = cc.Director:getInstance():getScheduler()
   if __sched then
-    local __fired = false
-    __sched:scheduleScriptFunc(function()
-      if __fired then return end
-      __fired = true
-      local total = 0
-      for _, a in ipairs({'Anim/gongfu/gongfu.atlas',
-                          'Anim/specialEffect/specialEffect.atlas',
-                          'Anim/enterVictory/enterVictory.atlas',
-                          'Anim/FightEffect/fanghu.atlas'}) do
-        total = total + __preloadAtlasPages(a)
+    local __handle
+    __handle = __sched:scheduleScriptFunc(function()
+      __warmIdx = __warmIdx + 1
+      local it = __warmQ[__warmIdx]
+      if not it then
+        __sched:unscheduleScriptFunc(__handle)
+        __wjjhlog('WJJH_PRELOAD: all skeletons warmed')
+        return
       end
-      __wjjhlog('WJJH_PRELOAD: ' .. total .. ' pages queued')
-    end, 3.0, false)
-    __wjjhlog('WJJH_PRELOAD: scheduled (t+3s)')
+      local ok, err = pcall(function()
+        if spine38 and spine38.NewSkeletonAnimation then
+          spine38.NewSkeletonAnimation:createWithBinaryFile(it.skel, it.atlas, 1)
+        end
+      end)
+      __wjjhlog('WJJH_PRELOAD: warm ' .. it.skel .. ' ok=' .. tostring(ok) .. ' ' .. tostring(err or ''))
+    end, 0.6, false)
+    __wjjhlog('WJJH_PRELOAD: skeleton warmup scheduled (4 items, 0.6s apart)')
   end
 end
 
