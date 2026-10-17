@@ -657,9 +657,15 @@ def _downscale_effect_atlases():
                     seen_page_size = True
                     decl_w, decl_h = pages.get(cur_page, (0, 0))
                     actual = _png_size(os.path.join(adir, cur_page))
-                    if actual and max(actual) > max(decl_w, decl_h) and max(decl_w, decl_h) > 0:
-                        factor = max(decl_w, decl_h) / float(max(actual))
-                        out.append(('size: %d,%d' % (decl_w, decl_h)).encode('utf-8'))
+                    # gh268: 统一目标 = min(声明尺寸, TARGET_MAX)。gongfu 声明 256（源 512）
+                    #   缩到 256；specialEffect/enterVictory 声明即 512 也缩到 256。
+                    tw, th = decl_w, decl_h
+                    if decl_w > 0 and decl_h > 0:
+                        k = min(1.0, TARGET_MAX / float(max(decl_w, decl_h)))
+                        tw, th = int(round(decl_w * k)), int(round(decl_h * k))
+                    if actual and max(actual) > max(tw, th) and max(tw, th) > 0:
+                        factor = max(tw, th) / float(max(actual))
+                        out.append(('size: %d,%d' % (tw, th)).encode('utf-8'))
                         scaled += 1
                         continue
                     out.append(ln)
@@ -677,17 +683,19 @@ def _downscale_effect_atlases():
                 out.append(ln)
             if scaled:
                 open(apath, 'wb').write(nl.join(out))
-            # sips 精确缩放实际尺寸超声明的 PNG 页
+            # sips 精确缩放超过目标的 PNG 页（目标=min(声明, TARGET_MAX)）
             for name, (dw, dh) in sorted(pages.items()):
                 if max(dw, dh) <= 0:
                     continue
+                k = min(1.0, TARGET_MAX / float(max(dw, dh)))
+                tw, th = int(round(dw * k)), int(round(dh * k))
                 ppath = os.path.join(adir, name)
                 actual = _png_size(ppath)
-                if not actual or max(actual) <= max(dw, dh):
+                if not actual or max(actual) <= max(tw, th):
                     continue
                 r = None
                 try:
-                    r = subprocess.run(['sips', '-z', str(dh), str(dw), ppath],
+                    r = subprocess.run(['sips', '-z', str(th), str(tw), ppath],
                                        capture_output=True, text=True)
                 except FileNotFoundError:
                     print('[pvr] gh265: sips unavailable -> %s left unscaled' % name, flush=True)
