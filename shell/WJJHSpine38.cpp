@@ -548,8 +548,7 @@ int l_preload_atlas(lua_State* L) {
     std::string full = fu->fullPathForFilename(atlas);
     FILE* fp = fopen(full.c_str(), "rb");
     if (!fp) {
-        fprintf(stderr, "WJJH_PRELOAD: open failed %s (full=%s)
-", atlas, full.c_str());
+        fprintf(stderr, "WJJH_PRELOAD: open failed %s (full=%s)\n", atlas, full.c_str());
         lua_pushnumber(L, 0);
         return 1;
     }
@@ -567,11 +566,10 @@ int l_preload_atlas(lua_State* L) {
     int count = 0;
     size_t pos = 0;
     while (pos <= text.size()) {
-        size_t eol = text.find('
-', pos);
+        size_t eol = text.find('\n', pos);
         if (eol == std::string::npos) eol = text.size();
         std::string line = text.substr(pos, eol - pos);
-        while (!line.empty() && (line.back() == '' || line.back() == ' ')) line.pop_back();
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
         if (line.size() > 4 && line.compare(line.size() - 4, 4, ".png") == 0) {
             std::string page = dir + line;
             tc->addImageAsync(page, [](Texture2D*) {});
@@ -580,8 +578,7 @@ int l_preload_atlas(lua_State* L) {
         if (eol >= text.size()) break;
         pos = eol + 1;
     }
-    fprintf(stderr, "WJJH_PRELOAD: %s -> %d pages queued
-", atlas, count);
+    fprintf(stderr, "WJJH_PRELOAD: %s -> %d pages queued\n", atlas, count);
     lua_pushnumber(L, (lua_Number)count);
     return 1;
 }
