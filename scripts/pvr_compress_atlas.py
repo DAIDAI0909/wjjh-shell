@@ -106,6 +106,9 @@ RUNTIME_RESIDENT = (
     '/Anim/ep2/',             # 标题页 + 主界面骨骼
     '/Anim/portrait/new/',    # 主界面立绘（112MB→28MB）
     '/Anim/FightEffect/',     # 战斗特效（进战斗前也会预载）
+    '/Anim/enterVictory/',    # gh261: 入场/胜利动画（160 页 512² PNG=160MB 未压，
+                              #   run259 被 deadline 砍掉全留 PNG——切磋加载它
+                              #   是 Jetsam 1.38GB 撞线的大头之一，必转）
 )
 
 # 每个线程一个工具输出日志文件（避免交错），用于超时时把 stderr 带回来

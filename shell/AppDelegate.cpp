@@ -10,6 +10,7 @@
 #include <sys/time.h>
 #include <sys/sysctl.h>
 #include <unistd.h>
+#include <mach/mach.h>
 
 USING_NS_CC;
 using namespace std;
@@ -156,6 +157,15 @@ bool AppDelegate::applicationDidFinishLaunching()
                 auto* tc = Director::getInstance()->getTextureCache();
                 std::string info = tc ? tc->getCachedTextureInfo() : std::string("(no cache)");
                 fprintf(stderr, "WJJH_MEM: #%d textures=[%s]\n", n, info.c_str());
+                // gh261: phys_footprint = Jetsam highwater 的同口径读数。gh260 实测
+                //   一场切磋推到 1.38GB 被杀；有了这条曲线就能看到每一时刻离
+                //   1.4GB 上限多远、是哪一步跳的（纹理/骨架/文字各占多少一目了然）。
+                task_vm_info_data_t tvi;
+                mach_msg_type_number_t tcnt = TASK_VM_INFO_COUNT;
+                if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&tvi, &tcnt) == KERN_SUCCESS) {
+                    fprintf(stderr, "WJJH_FOOT: #%d phys_footprint=%.0fMB\n",
+                            n, (double)tvi.phys_footprint / 1048576.0);
+                }
             }, this, 20.0f, false, "wjjh_mem_probe");
             wjjh_bootlog("WJJH_MEM: texture-cache probe scheduled (every 20s)");
         }

@@ -719,6 +719,80 @@ def patch_switch_anim_failsafe():
         print('[overlay] gh259/gh260: WARN incomplete -> %s' % '; '.join(problems), flush=True)
 
 
+def patch_fight_spine_lazy():
+    """gh261: 战斗 3-5 号站位 Player 免建 spine —— 治「切磋即闪退」。
+
+    定案证据（老板 gh260 实测 + JetsamEvent-2026-10-17-081520.ips）：
+      闪退 = Jetsam `highwater` 查杀。WJJH rpages=92856×16KB=1.38GB，
+      iPad6,11(2GB) 单进程上限 ~1.4GB，一场切磋就撞线。
+      纹理仅 366MB（TextureCache 探针），大头是**每场战斗固定创建的 10 套完整 spine**
+      （AnimFightLayer:FightStart 按 left/right 各 5 站位逐个 Player:create()，
+      每套 = gongfu.json[1620 页图集/5969 regions] + fanghu + specialEffect + enterVictory
+      四个骨架的 SkeletonData/Skeleton/AnimationState 全量解析——不管该站位是否有人）。
+      放置江湖全部战斗均为 1v1（fightId 只有 left1/right1），第 3-5 站位纯属原版
+      "通用模板"浪费。initRoleAnim 对空位只调 animRole:setVisible(false)，
+      所以 Player 节点本身必须保留——只是不建 spine。
+
+    修法（三处 CRLF 字节精确锚定，命中数不符即 WARN 且整文件不动）：
+      ① Player:create 加 lazy 参数并透传 init；
+      ② Player:init 开头：lazy 时用哑动画（方法全 no-op 的表）+ 保留廉价 UI
+         （血条/状态文字），**直接 return 跳过全部 spine 创建**；
+      ③ FightStart 两个循环改为 Player:create(i > 2)（每边前 2 个保留完整骨架，
+         余 6 个免建 ⇒ 战斗内存直接砍 60%+）。
+      万一真出现 >2v2 的战斗，第 3 人起角色隐身但流程照跑（哑动画 no-op 不炸）。
+    """
+    p = os.path.join(DEST, 'src', 'app', 'views', 'layer', 'FightLayer', 'AnimFightLayer.lua')
+    if not os.path.exists(p):
+        print('[overlay] gh261: WARN AnimFightLayer.lua not found at %s' % p, flush=True)
+        return
+    raw = open(p, 'rb').read()
+    NL = b'\r\n'
+
+    a1_old = (b'function Player:create()' + NL +
+              b'    local p = Player.new()' + NL +
+              b'    p:init()' + NL +
+              b'    return p' + NL +
+              b'end')
+    a1_new = (b'function Player:create(lazy)' + NL +
+              b'    local p = Player.new()' + NL +
+              b'    p:init(lazy)' + NL +
+              b'    return p' + NL +
+              b'end')
+
+    a2_old = ('    --角色创建动画'.encode('utf-8') + NL +
+              b'    self.anim = Resource:getSkAnim("gongfu")')
+    lazy_body = (
+        '    --角色创建动画'.encode('utf-8') + NL +
+        b'    if lazy then' + NL +
+        '        -- gh261: 3-5 号站位是占位（放置江湖战斗全为 1v1，只有 left1/right1 上场）。'.encode('utf-8') + NL +
+        '        --   每套完整 spine（gongfu.json 1620 页图集/5969 regions 等 4 个骨架）内存巨大，'.encode('utf-8') + NL +
+        '        --   10 套把 2GB iPad 推过 1.4GB 进程上限被 Jetsam 杀'.encode('utf-8') + NL +
+        '        --   （JetsamEvent-2026-10-17-081520 实测 highwater 1.38GB）。占位 Player 用哑动画。'.encode('utf-8') + NL +
+        b'        self.anim = setmetatable({}, {__index = function() return function() end end})' + NL +
+        b'        self:resetHpBar(100, 100, 100)' + NL +
+        b'        self._currActiveZhaoReadyItem = nil' + NL +
+        b'        self:initStatusText()' + NL +
+        b'        return' + NL +
+        b'    end' + NL +
+        b'    self.anim = Resource:getSkAnim("gongfu")')
+
+    a3_old = (b'        local playerA = Player:create()' + NL)
+    a3_new = (b'        local playerA = Player:create(i > 2)' + NL)
+
+    new = raw
+    for tag, old, want, repl in (('create-sign', a1_old, 1, a1_new),
+                                 ('init-lazy', a2_old, 1, lazy_body),
+                                 ('call-sites', a3_old, 2, a3_new)):
+        n = new.count(old)
+        if n != want:
+            print('[overlay] gh261: WARN AnimFightLayer %s expected %d got %d -> file left unchanged'
+                  % (tag, want, n), flush=True)
+            return
+        new = new.replace(old, repl)
+    open(p, 'wb').write(new)
+    print('[overlay] gh261: AnimFightLayer.lua -> fight slots 3-5 lazy (no spine) OK', flush=True)
+
+
 def main():
     # gamelua/src 不存在 = game.zip 还没解（CMake 配置期才解）→ 先替它解掉
     if not os.path.isdir(os.path.join(DEST, 'src')):
@@ -750,6 +824,8 @@ def main():
     # gh259: 切层动画收尾容错——保证 aftAnim 必执行（否则触摸屏蔽层永不撤销=全局卡死）。
     #   gh258 实测链路：任务层 PageView 坏节点 → onDisable 报错 → 收尾 CallFunc 中断。
     patch_switch_anim_failsafe()
+    # gh261: 战斗 3-5 号站位免建 spine（治切磋 Jetsam 闪退——10 套骨架推爆 1.4GB 上限）。
+    patch_fight_spine_lazy()
     # ★ gh251 说明：原 gh249/gh250 不再调用。
     #   那两轮我按**本地开发树** ink_dec/fangzhi_lua_dec 分析，以为 game.zip 里带
     #   开发版 v57 遗留（按钮改名『经营』『科举』、跳过标题页）。实测 CI 实际用的
