@@ -759,6 +759,12 @@ def patch_fight_spine_lazy():
               b'    return p' + NL +
               b'end')
 
+    # ★ gh262 修复 gh261 的失误：只改了 create 签名并传参 p:init(lazy)，
+    #   但 Player:init 的签名没改——函数体内的 lazy 是未声明全局=nil，
+    #   免建分支永不生效（gh261 实测每场仍 10 套骨架，40 dispatch）。
+    a1b_old = (b'function Player:init()' + NL)
+    a1b_new = (b'function Player:init(lazy)' + NL)
+
     a2_old = ('    --角色创建动画'.encode('utf-8') + NL +
               b'    self.anim = Resource:getSkAnim("gongfu")')
     lazy_body = (
@@ -781,6 +787,7 @@ def patch_fight_spine_lazy():
 
     new = raw
     for tag, old, want, repl in (('create-sign', a1_old, 1, a1_new),
+                                 ('init-sign', a1b_old, 1, a1b_new),
                                  ('init-lazy', a2_old, 1, lazy_body),
                                  ('call-sites', a3_old, 2, a3_new)):
         n = new.count(old)

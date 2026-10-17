@@ -702,6 +702,35 @@ do
       setEventCallback = function(self, cb) end,
       registerScriptHandler = function(self, cb) end,
       runActionWithName = function(self, name, action) if action then self:runAction(action) end end,
+      -- gh262: playAnim 系——YXSkeletonAnimationEx.lua 把它们定义在 YX 类表上，
+      --   而 userdata 实例的方法解析不过 Lua 类表 ⇒ 真节点上全是 nil。
+      --   gh258 时代靠哑节点 catch-all 掩盖；gh217 真节点后 playAnim=nil（gh261 实测
+      --   209 次报错）：initRoleAnim 先 setVisible(false) 再 playAnim(站桩)——报错中断
+      --   ⇒ 身体永远隐藏=看不到小人；战斗每步 playRoleAnim 全炸=动画瘫痪、逻辑狂奔。
+      --   playAnim 按 Ex 的同款语义实装（重置→复原姿态→setAnimation track0）。
+      playAnim = function(self, name, loop)
+        if type(name) == 'function' then name = name() end
+        if type(name) ~= 'string' then return nil end
+        self:resetAnimState()
+        self:setSpeedScale(1)
+        self:setBonesToSetupPose()
+        self:setBackwards(false)
+        return self:setAnimation(0, name, S.normLoop(loop))
+      end,
+      -- setStartTime/setEndTime 目前是 no-op（C 桥无帧窗接口），先保证调用链不断
+      setAnimFrameFromTo = function(self, from, to)
+        if from ~= nil then self:setStartTime(from / 30) end
+        if to ~= nil then self:setEndTime(to / 30) end
+      end,
+      playAnimFromToWithDuration = function(self, name, from, to, duration)
+        self:playAnim(name, false)
+        self:setAnimFrameFromTo(from, to)
+        local interval = (to or 0) - (from or 0)
+        if interval < 0 then interval = 0 end
+        if duration and duration > 0 then self:setSpeedScale(interval / (30 / duration)) end
+      end,
+      fadeIn = function(self) self:runActionWithName("fadeInAdnFadeOut", cc.FadeIn:create(0.3)) end,
+      fadeOut = function(self) self:runActionWithName("fadeInAdnFadeOut", cc.FadeOut:create(0.3)) end,
     }
   end
   S.mkSpine = function(a, b, c, d)
@@ -1036,6 +1065,10 @@ if ExtRichTextScroll and rawget(ExtRichTextScroll, '__wjjh_real') ~= true then
     local flow = cc.Node:create()
     scroll:addChild(flow)  -- ScrollView.addChild 自动进 inner 容器
     s.flow = flow
+    -- gh262: 默认关触摸——cocos ScrollView 默认吞触摸,真实现后战斗日志框
+    --   (Image_print 底缘与按钮区重叠 12px)开始吞技能按钮的触摸。游戏在需要
+    --   滚动的界面会显式 setTouchEnabled(true)（RoleInfoLayer:setViewPage 等）。
+    pcall(function() scroll:setTouchEnabled(false) end)
     local okw, cw = pcall(function() return scroll:getContentSize().width end)
     if okw and type(cw) == 'number' and cw > 0 then s.W = cw else s.W = 600 end
     return scroll
