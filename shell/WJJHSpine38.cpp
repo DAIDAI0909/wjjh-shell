@@ -39,6 +39,7 @@ extern "C" {
 
 #include <string>
 #include <set>
+#include <map>
 #include <cstdio>
 
 USING_NS_CC;
@@ -144,8 +145,45 @@ bool wjjh_spine38_dry_run(const char* skel, const char* atlas, std::string& msg)
     const char* v = data->getVersion().buffer();
     msg += " version=";
     msg += (v && *v) ? v : "?";
+    // gh263: 附件类型构成——黄色方块问题的排查线索（mesh 解析坏=整条 mesh 化的人物
+    //   渲染异常；若 region/mesh 数与 atlasRegions 严重不符=解析不完整）。
+    {
+        int nRegion = 0, nMesh = 0, nOther = 0;
+        for (size_t si = 0; si < data->getSkins().size(); ++si) {
+            spine38::Skin* skin = data->getSkins()[si];
+            if (!skin) continue;
+            auto entries = skin->getAttachments();
+            while (entries.hasNext()) {
+                spine38::Attachment* a = entries.next()._attachment;
+                if (dynamic_cast<spine38::RegionAttachment*>(a)) ++nRegion;
+                else if (dynamic_cast<spine38::MeshAttachment*>(a)) ++nMesh;
+                else ++nOther;
+            }
+        }
+        msg += " att(region=" + std::to_string(nRegion)
+             + ",mesh=" + std::to_string(nMesh)
+             + ",other=" + std::to_string(nOther) + ")";
+    }
     delete data;
     return true;
+}
+
+// ---- gh263: SkeletonData 缓存 —— 治「点切磋要反应好几秒」----
+// 每次创建都在重复两件重活：① dry-run 全量解析一遍（诊断用）② createWith*File 再全量
+//   解析一遍；gongfu.json（488 骨/446 槽/5969 mesh 附件）单次解析即秒级，×2 路径 ×每场
+//   4 个实例。同 (skel,atlas,scale) 的 SkeletonData 是只读的，缓存后：
+//   * 命中 ⇒ 直接 createWithData(data, false)（不重读文件、不重建附件、不干跑）；
+//   * 附件里的 Texture2D 引用随数据共享 ⇒ 每场战斗的骨架 CPU 内存也大幅下降。
+//   只读性：Skeleton 实例只读 data；AnimationState 各自持有；皮肤/染色都在实例侧。
+static spine38::SkeletonData* wjjh_spine38_cached_data(const std::string& key) {
+    static std::map<std::string, spine38::SkeletonData*> s_cache;
+    auto it = s_cache.find(key);
+    return (it != s_cache.end()) ? it->second : nullptr;
+}
+
+static void wjjh_spine38_store_data(const std::string& key, spine38::SkeletonData* data) {
+    static std::map<std::string, spine38::SkeletonData*> s_cache;
+    s_cache[key] = data;
 }
 
 // ---- createBinary(skel, atlas, scale) -> node(cc.Node), skelptr(lightuserdata) ----
@@ -154,6 +192,33 @@ int l_createBinary(lua_State* L) {
     const char* skel = luaL_checkstring(L, 1);
     const char* atlas = luaL_checkstring(L, 2);
     float scale = (float)luaL_optnumber(L, 3, 1.0);
+    const std::string cacheKey = std::string(skel) + "|" + atlas + "|"
+        + std::to_string(scale);
+
+    // gh263: 缓存命中 = 跳过 dry-run 与文件解析，直接从共享 SkeletonData 构造。
+    spine38::SkeletonData* cached = wjjh_spine38_cached_data(cacheKey);
+    if (cached != nullptr) {
+        fprintf(stderr, "WJJH_SPINE38: cache hit skel=%s\n", skel);
+        spine38::SkeletonAnimation* sk = nullptr;
+        try {
+            sk = spine38::SkeletonAnimation::createWithData(cached, false);
+        } catch (...) {
+            sk = nullptr;
+        }
+        if (sk != nullptr && sk->getSkeleton() != nullptr) {
+            sk->setTwoColorTint(false);  // gh263: 同下，two-color 着色器在 3.15.1 下不可靠
+            Node* container = Node::create();
+            if (container != nullptr) {
+                container->addChild(sk);
+                lua_State* mainL = LuaEngine::getInstance()->getLuaStack()->getLuaState();
+                LuaEngine::getInstance()->getLuaStack()->pushObject(container, "cc.Node");
+                if (mainL != L) lua_xmove(mainL, L, 1);
+                lua_pushlightuserdata(L, reinterpret_cast<void*>(sk));
+                return 2;
+            }
+        }
+        fprintf(stderr, "WJJH_SPINE38: cache-hit create failed (skel=%s) -> fallback full path\n", skel);
+    }
 
     // 先验存在性 + 干跑门闸：
     //   initWithBinaryFile 里 CCASSERT 在 Release(COCOS2D_DEBUG=0) 是 no-op，
@@ -170,6 +235,7 @@ int l_createBinary(lua_State* L) {
     }
 
     spine38::SkeletonAnimation* sk = nullptr;
+    spine38::SkeletonData* parsed = nullptr;
     // gh224: 按内容派发 —— 游戏资产混格式（.skel 二进制 / .json 文本），
     //   文本 JSON 必须走 createWithJsonFile，否则会被二进制读取器解析成垃圾并崩。
     const bool isJson = wjjh_spine38_looks_json(skel);
@@ -188,6 +254,14 @@ int l_createBinary(lua_State* L) {
         lua_pushnil(L);
         return 1;
     }
+    // gh263: 解析产物入缓存。骨架数据与图集纹理由此跨实例共享；
+    //   实例的 owns 标志关掉（数据/图集生命周期归缓存管，进程内数量有限永不释放），
+    //   否则首个实例析构会 delete 共享数据/图集 → 后续实例悬垂崩溃。
+    parsed = sk->getSkeleton()->getData();
+    wjjh_spine38_store_data(cacheKey, parsed);
+    sk->setTwoColorTint(false);  // gh263: two-color 着色器在 cocos 3.15.1 下渲染不可靠
+                                 //   （实测表现=人物/特效成纯色方块），关掉走单色路径。
+    sk->setSharedOwnership(false, false);
 
     // 容器 + 真 spine 子节点
     Node* container = Node::create();

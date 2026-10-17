@@ -276,6 +276,34 @@ def main():
             rc = 1
         else:
             log('app bundle: %s' % app)
+            # gh263: 原生 iPad 支持。此前 Info.plist 只有 iPhone 设备族 ⇒ iPad 上跑
+            #   兼容模式（framesize 640x960），GPU 拉伸 2.4 倍 ⇒ 老板实测"整体界面模糊"
+            #   + "开始界面的图不完整"（兼容模式非等比裁切）。打开 iPad 设备族后
+            #   framesize=1536x2048，游戏 config.lua 的 SHOW_ALL(1080x1920) 原本就
+            #   为 4:3 屏设计（display.lua 注释可证）⇒ 完整 UI + 原生清晰度。
+            try:
+                import plistlib
+                _pl = os.path.join(app, 'Info.plist')
+                with open(_pl, 'rb') as _f:
+                    _info = plistlib.load(_f)
+                _changed = []
+                if list(_info.get('UIDeviceFamily', [])) != [1, 2]:
+                    _info['UIDeviceFamily'] = [1, 2]
+                    _changed.append('UIDeviceFamily=[1,2]')
+                if not _info.get('UIRequiresFullScreen'):
+                    _info['UIRequiresFullScreen'] = True
+                    _changed.append('UIRequiresFullScreen')
+                # iPad 也要声明方向（沿用 iPhone 的方向集合，竖屏为主）
+                if 'UISupportedInterfaceOrientations' in _info \
+                        and 'UISupportedInterfaceOrientations~ipad' not in _info:
+                    _info['UISupportedInterfaceOrientations~ipad'] = \
+                        _info['UISupportedInterfaceOrientations']
+                    _changed.append('orientations~ipad')
+                with open(_pl, 'wb') as _f:
+                    plistlib.dump(_info, _f)
+                log('gh263: Info.plist patched: %s' % ('; '.join(_changed) or 'no change'))
+            except Exception as _e:
+                log('!! gh263: Info.plist patch FAILED: %r (continue with original plist)' % _e)
             # gh237: iOS 16 要求任何被 dlopen 的目标（.so/.dylib）至少带 ad-hoc 签名，
             # 否则 Python 的 C 扩展加载失败（实测 binascii.cpython-314-iphoneos.so：
             # "mapped file has no cdhash, completely unsigned? Code has to be at least

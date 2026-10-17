@@ -57,6 +57,14 @@ namespace spine38 {
 		void setTimeScale(float scale);
 		float getTimeScale() const;
 
+		/* gh263: SkeletonData/Atlas 由外部缓存跨实例共享时，把实例的 owns 标志关掉，
+		 * 防止首个实例析构时 delete 掉缓存里的共享数据/图集（附件还引用着其中的
+		 * AtlasRegion ⇒ 悬垂指针）。_ownsSkeleton（实例自己的 Skeleton）保持不变。 */
+		void setSharedOwnership(bool ownsSkeletonData, bool ownsAtlas) {
+			_ownsSkeletonData = ownsSkeletonData;
+			_ownsAtlas = ownsAtlas;
+		}
+
 		/*  */
 		void setDebugSlotsEnabled(bool enabled);
 		bool getDebugSlotsEnabled() const;
