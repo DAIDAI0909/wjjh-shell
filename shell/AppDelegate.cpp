@@ -216,6 +216,14 @@ bool AppDelegate::applicationDidFinishLaunching()
     lua_pushboolean(L, 0);
 #endif
     lua_setglobal(L, "__WJJH_AUTOSTART");
+    // gh265: 真机构建标志（CMake 对真机包定义 WJJH_DEVICE）。CI 模拟器专用补偿
+    //   （战斗 frame-drive 每渲染帧推 12 逻辑帧等）在真机 60fps 下=24 倍速乱打，据此关闭。
+#if defined(WJJH_DEVICE)
+    lua_pushboolean(L, 1);
+#else
+    lua_pushboolean(L, 0);
+#endif
+    lua_setglobal(L, "__WJJH_DEVICE");
     wjjh_bootlog(("WJJH_BOOT: src/main.lua -> " + path).c_str());
     wjjh_bootlog(("WJJH_BOOT: res/LuaExtend.lua -> " + probeRes).c_str());
     if (path.empty()) {
@@ -1173,6 +1181,14 @@ local function __wjjh_instrument(name, M)
     if type(ost) == 'function' then
       M.start = function(self, ...)
         __wjjhlog('WJJH_FIGHT: Fight.start enter (frame-drive hook)')
+        -- gh265: 真机构建跳过 frame-drive。该钩子为 CI 模拟器 5-15fps 渲染设计
+        --   （每渲染帧推 12 逻辑帧补帧率）；真机 60fps 下 = 每秒 720 逻辑帧 = 24 倍速，
+        --   战斗回合/指令节奏全被打飞（老板实测"自动乱打一通，毫无战斗逻辑"）。
+        --   真机走游戏自己的 33ms 调度（≈30fps 逻辑帧，与安卓一致）。
+        if __WJJH_DEVICE then
+          __wjjhlog('WJJH_FIGHT: frame-drive skipped (device build)')
+          return ost(self, ...)
+        end
         if not self.__wjjh_frameHook then
           self.__wjjh_frameHook = true
           local sc = cc.Director:getInstance():getRunningScene()
