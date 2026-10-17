@@ -590,10 +590,13 @@ def job_anchor():
     return None
 
 
-# gh265: 特效图集缩半清单——这些图集的页 512²→256²（sips 缩放 + atlas 坐标折半），
-#   补偿 PVRTC 停用后的内存：specialEffect 320p 160→40MB、enterVictory 160p 80→20MB、
-#   FightEffect 7p→1MB。gongfu 本体已是 256² 不动。
-EFFECT_DOWNSCALE = ('/Anim/specialEffect/', '/Anim/enterVictory/', '/Anim/FightEffect/')
+# gh265/gh267: 特效+人物图集缩半清单——这些图集的页超过 atlas 声明尺寸（源资产 2 倍导出）
+#   → sips 缩到 atlas 声明尺寸（gongfu 512²→256²）+ atlas 坐标折半。
+#   gh267 关键：gongfu 原始 PNG 512²（atlas 声明 256²）⇒ 1620 页按 8888 加载=1.6GB /
+#   按 4444=806MB，战斗必撞 Jetsam；缩到 256² = 405MB(8888)/202MB(4444)。
+#   256² 即 gh243 PVRTC 时代的等效画质。
+EFFECT_DOWNSCALE = ('/Anim/specialEffect/', '/Anim/enterVictory/', '/Anim/FightEffect/',
+                    '/Anim/gongfu/')
 TARGET_MAX = 256
 
 
@@ -605,8 +608,24 @@ def _scale_atlas_line(ln, factor):
     return re.sub(rb'\d+', _half, ln)
 
 
+def _png_size(path):
+    """读 PNG IHDR 的实际宽高（避免依赖 PIL）。"""
+    try:
+        with open(path, 'rb') as fh:
+            head = fh.read(24)
+        if head[:8] != b'\x89PNG\r\n\x1a\n':
+            return None
+        w = int.from_bytes(head[16:20], 'big')
+        h = int.from_bytes(head[20:24], 'big')
+        return (w, h)
+    except Exception:                                           # noqa: BLE001
+        return None
+
+
 def _downscale_effect_atlases():
-    """特效图集页 512²→256²：sips 缩放 PNG + atlas 坐标折半。"""
+    """特效/人物图集页缩放：源 PNG 实际尺寸 > atlas 声明尺寸（源资产 2 倍导出）时，
+    sips 精确缩到声明尺寸 + atlas 区域坐标按同比例折半。
+    （gh267: gongfu 源 512²/atlas 声明 256²，不缩则 1620 页吃 806MB(4444)~1.6GB(8888)。）"""
     total_pages = 0
     for dp, _dn, fn in os.walk(RES_ROOT):
         for f in sorted(fn):
@@ -620,6 +639,7 @@ def _downscale_effect_atlases():
             nl = b'\r\n' if b'\r\n' in raw[:4000] else b'\n'
             lines = raw.split(nl)
             pages = dict((name, (w, h)) for name, w, h in parse_atlas(apath))
+            adir = os.path.dirname(apath)
             cur_page = None
             seen_page_size = False
             factor = 1.0
@@ -635,11 +655,11 @@ def _downscale_effect_atlases():
                     continue
                 if cur_page and not seen_page_size and s.startswith(b'size:'):
                     seen_page_size = True
-                    w, h = pages.get(cur_page, (0, 0))
-                    if max(w, h) > TARGET_MAX:
-                        factor = TARGET_MAX / float(max(w, h))
-                        out.append(('size: %d,%d' % (int(round(w * factor)),
-                                                     int(round(h * factor)))).encode('utf-8'))
+                    decl_w, decl_h = pages.get(cur_page, (0, 0))
+                    actual = _png_size(os.path.join(adir, cur_page))
+                    if actual and max(actual) > max(decl_w, decl_h) and max(decl_w, decl_h) > 0:
+                        factor = max(decl_w, decl_h) / float(max(actual))
+                        out.append(('size: %d,%d' % (decl_w, decl_h)).encode('utf-8'))
                         scaled += 1
                         continue
                     out.append(ln)
@@ -657,17 +677,17 @@ def _downscale_effect_atlases():
                 out.append(ln)
             if scaled:
                 open(apath, 'wb').write(nl.join(out))
-            # sips 缩放超过目标尺寸的 PNG 页
-            adir = os.path.dirname(apath)
-            for name, (w, h) in sorted(pages.items()):
-                if max(w, h) <= TARGET_MAX:
+            # sips 精确缩放实际尺寸超声明的 PNG 页
+            for name, (dw, dh) in sorted(pages.items()):
+                if max(dw, dh) <= 0:
                     continue
                 ppath = os.path.join(adir, name)
-                if not os.path.exists(ppath):
+                actual = _png_size(ppath)
+                if not actual or max(actual) <= max(dw, dh):
                     continue
                 r = None
                 try:
-                    r = subprocess.run(['sips', '-Z', str(TARGET_MAX), ppath],
+                    r = subprocess.run(['sips', '-z', str(dh), str(dw), ppath],
                                        capture_output=True, text=True)
                 except FileNotFoundError:
                     print('[pvr] gh265: sips unavailable -> %s left unscaled' % name, flush=True)
@@ -676,7 +696,7 @@ def _downscale_effect_atlases():
                 elif r is not None:
                     print('[pvr] gh265: sips FAILED %s : %s'
                           % (name, (r.stderr or '').strip()[:120]), flush=True)
-    print('[pvr] gh265: effect atlases downscaled (pages=%d, target_max=%d)' % (total_pages, TARGET_MAX),
+    print('[pvr] gh265: effect atlases downscaled (pages=%d, target=atlas-declared size)' % total_pages,
           flush=True)
 
 
