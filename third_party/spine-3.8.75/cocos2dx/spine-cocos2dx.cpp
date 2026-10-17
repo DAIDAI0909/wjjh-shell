@@ -176,7 +176,28 @@ void Cocos2dTextureLoader::load(AtlasPage& page, const spine38::String& path) {
 		}
 		return;
 	}
-	Texture2D* texture = Director::getInstance()->getTextureCache()->addImage(path.buffer());
+	// gh269: 强制 RGBA4444。Texture2D::setDefaultAlphaPixelFormat(RGBA4444)（AppDelegate
+	//   低内存设备分支）实测对 addImage 未生效（缓存探针 @32bpp）⇒ gongfu 1620 页
+	//   8888=405MB、特效合计 120MB ⇒ 战斗期 1.42GB 被 Jetsam 杀
+	//   （JetsamEvent-2026-10-18-001417, per-process-limit 1450MB）。4444 减半 ≈264MB。
+	cocos2d::Texture2D* texture = nullptr;
+	{
+		cocos2d::Image img;
+		if (img.initWithImageFile(path.buffer())) {
+			texture = new (std::nothrow) cocos2d::Texture2D();
+			if (texture != nullptr) {
+				texture->autorelease();  // gh269: 池排水时抵消 new 的引用，页持有靠下方 retain
+				if (!texture->initWithImage(&img, cocos2d::Texture2D::PixelFormat::RGBA4444)) {
+					texture->release();
+					texture = nullptr;
+				}
+			}
+		}
+	}
+	if (texture == nullptr) {
+		// 兜底：标准 addImage（原路径）
+		texture = Director::getInstance()->getTextureCache()->addImage(path.buffer());
+	}
 	CCASSERT(texture != nullptr, "Invalid image");
 	if (texture) {
 		texture->retain();

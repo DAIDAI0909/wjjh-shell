@@ -2065,26 +2065,13 @@ end
 do
   local __preloaded = false
   local function __preloadAtlasPages(atlasPath)
-    local fu = cc.FileUtils:getInstance()
-    local full = fu:fullPathForFilename(atlasPath)
-    local f = io.open(full, 'rb')
-    if not f then
-      __wjjhlog('WJJH_PRELOAD: atlas unreadable ' .. atlasPath)
-      return 0
-    end
-    local data = f:read('*a')
-    f:close()
-    local tc = cc.Director:getInstance():getTextureCache()
-    local dir = atlasPath:match('^(.*)/')
-    local n = 0
-    for line in string.gmatch(data, '([^%r\n]+)') do
-      if line:sub(-4) == '.png' then
-        local page = (dir and (dir .. '/') or '') .. line
-        n = n + 1
-        pcall(function() tc:addImageAsync(page, function() end) end)
-      end
-    end
-    return n
+    -- gh269: 改走 C 侧（FileUtils 读文件 + addImageAsync 排队）。Lua io.open 在真机
+    --   上读 bundle 文件得到空内容（gh268 实测 0 pages queued）。
+    if wjjh_spine38_preload_atlas == nil then return 0 end
+    local ok, n = pcall(wjjh_spine38_preload_atlas, atlasPath)
+    if ok and type(n) == 'number' then return n end
+    __wjjhlog('WJJH_PRELOAD: preload pcall failed for ' .. atlasPath)
+    return 0
   end
   local __sched = cc.Director:getInstance():getScheduler()
   if __sched then

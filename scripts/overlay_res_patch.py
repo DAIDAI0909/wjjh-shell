@@ -825,10 +825,10 @@ def patch_ipad_resolution():
            b'    end')
     new = (b'    callback = function(framesize)' + NL +
            '        -- gh264: 启用开发者注释中的 iPad 4:3 适配（原生 1536x2048 上 SHOW_ALL'.encode('utf-8') + NL +
-           '        --   会两侧各留 192px 黑边）；ratio<=1.34（4:3 屏）走 FIXED_WIDTH 全宽。'.encode('utf-8') + NL +
+           '        --   两侧留黑边；ratio<=1.34（4:3 屏）走 EXACT_FIT 全屏。'.encode('utf-8') + NL +
            b'        local ratio = framesize.width / framesize.height' + NL +
            b'        if ratio <= 1.34 then' + NL +
-           b'            return {autoscale = "FIXED_WIDTH"}' + NL +
+           b'            return {autoscale = "EXACT_FIT"}' + NL +
            b'        end' + NL +
            b'        return {autoscale = "SHOW_ALL"}' + NL +
            b'    end')
@@ -863,14 +863,13 @@ def patch_menu_resolution():
         b'        cc.Director:getInstance():getOpenGLView():setDesignResolutionSize(1080, 1920, cc.ResolutionPolicy.SHOW_ALL)' + NL +
         b'    end')
     new = (
-        '    -- gh265: 按屏比适配——4:3 屏（原生 iPad 1536x2048）走 FIXED_WIDTH 全宽，'.encode('utf-8') + NL +
-        '    --   否则 SHOW_ALL 会两侧各留 192px 黑边、全部 UI 内缩（老板实测"图不完整"）。'.encode('utf-8') + NL +
+        '    -- gh265/gh269: 按屏比适配——4:3 屏（原生 iPad 1536x2048）走 EXACT_FIT 全屏，'.encode('utf-8') + NL +
+        '    --   （SHOW_ALL 两侧各留 192px 黑边；FIXED_WIDTH 会把 1080 宽 UI 列挤到左侧、'.encode('utf-8') + NL +
+        '    --   右侧留 ~360 死区——gh268 实测）。1080x1920 全屏拉伸，与 oppo/小米渠道方案一致。'.encode('utf-8') + NL +
         '    local __fsize = cc.Director:getInstance():getOpenGLView():getFrameSize()'.encode('utf-8') + NL +
         '    local __ratio = __fsize.width / __fsize.height'.encode('utf-8') + NL +
         '    if __ratio <= 1.34 then'.encode('utf-8') + NL +
-        '        local __scaleY = __fsize.height / 1920'.encode('utf-8') + NL +
-        '        local __w = __fsize.width / __scaleY'.encode('utf-8') + NL +
-        '        cc.Director:getInstance():getOpenGLView():setDesignResolutionSize(__w, 1920, cc.ResolutionPolicy.NO_BORDER)'.encode('utf-8') + NL +
+        '        cc.Director:getInstance():getOpenGLView():setDesignResolutionSize(1080, 1920, cc.ResolutionPolicy.EXACT_FIT)'.encode('utf-8') + NL +
         '    elseif (channelId == "oppo" or channelId == "xiaomi") and Game:isCheckNewPackage() == NEED_CHECK_AND_IS_OPEN then'.encode('utf-8') + NL +
         b'        cc.Director:getInstance():getOpenGLView():setDesignResolutionSize(1080, 1920, cc.ResolutionPolicy.EXACT_FIT)' + NL +
         b'    else' + NL +

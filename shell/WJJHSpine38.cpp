@@ -539,6 +539,53 @@ int l_setSlotColor(lua_State* L) {
     return 0;
 }
 
+// ---- gh265/gh269: 预载图集页（Lua 侧 io.open 读 bundle 文件不可靠，改 C 侧 FileUtils）----
+// 读 atlas 文本，把每个 .png 页排进 TextureCache 异步加载队列（与 spine 加载同 cache key：
+// full-dir + 页名，解析走同一 FileUtils 搜索路径）。战斗真正创建骨架时全部命中缓存。
+int l_preload_atlas(lua_State* L) {
+    const char* atlas = luaL_checkstring(L, 1);
+    auto* fu = FileUtils::getInstance();
+    std::string full = fu->fullPathForFilename(atlas);
+    FILE* fp = fopen(full.c_str(), "rb");
+    if (!fp) {
+        fprintf(stderr, "WJJH_PRELOAD: open failed %s (full=%s)
+", atlas, full.c_str());
+        lua_pushnumber(L, 0);
+        return 1;
+    }
+    std::string text;
+    char buf[65536];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), fp)) > 0) text.append(buf, n);
+    fclose(fp);
+    std::string dir;
+    {
+        size_t slash = full.find_last_of('/');
+        if (slash != std::string::npos) dir = full.substr(0, slash + 1);
+    }
+    auto* tc = Director::getInstance()->getTextureCache();
+    int count = 0;
+    size_t pos = 0;
+    while (pos <= text.size()) {
+        size_t eol = text.find('
+', pos);
+        if (eol == std::string::npos) eol = text.size();
+        std::string line = text.substr(pos, eol - pos);
+        while (!line.empty() && (line.back() == '' || line.back() == ' ')) line.pop_back();
+        if (line.size() > 4 && line.compare(line.size() - 4, 4, ".png") == 0) {
+            std::string page = dir + line;
+            tc->addImageAsync(page, [](Texture2D*) {});
+            ++count;
+        }
+        if (eol >= text.size()) break;
+        pos = eol + 1;
+    }
+    fprintf(stderr, "WJJH_PRELOAD: %s -> %d pages queued
+", atlas, count);
+    lua_pushnumber(L, (lua_Number)count);
+    return 1;
+}
+
 // ---- probe(skel, atlas) -> string|nil —— gh221 干跑诊断 ----
 // 每个 (skel,atlas) 组合只跑一次（最多 24 组），避免每帧刷屏 / 拖慢。
 int l_probe(lua_State* L) {
@@ -566,6 +613,7 @@ void wjjh_spine38_register(lua_State* L) {
     lua_register(L, "wjjh_spine38_createBinary", l_createBinary);
     lua_register(L, "wjjh_spine38_createMetaOnly", l_createBinaryMetaOnly);
     lua_register(L, "wjjh_spine38_probe", l_probe);
+    lua_register(L, "wjjh_spine38_preload_atlas", l_preload_atlas);
     lua_register(L, "wjjh_spine38_setAnimation", l_setAnimation);
     lua_register(L, "wjjh_spine38_addAnimation", l_addAnimation);
     lua_register(L, "wjjh_spine38_setTimeScale", l_setTimeScale);
