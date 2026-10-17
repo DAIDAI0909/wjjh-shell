@@ -175,15 +175,11 @@ bool wjjh_spine38_dry_run(const char* skel, const char* atlas, std::string& msg)
 //   * 命中 ⇒ 直接 createWithData(data, false)（不重读文件、不重建附件、不干跑）；
 //   * 附件里的 Texture2D 引用随数据共享 ⇒ 每场战斗的骨架 CPU 内存也大幅下降。
 //   只读性：Skeleton 实例只读 data；AnimationState 各自持有；皮肤/染色都在实例侧。
-static spine38::SkeletonData* wjjh_spine38_cached_data(const std::string& key) {
+// ★ gh264 修复：此前读写各写了一个函数内 static map（=两个不同的 map，存 A 读 B，
+//   gh263 实测 cache hit=0 从未命中）。统一放到命名空间作用域。
+static std::map<std::string, spine38::SkeletonData*>& wjjh_spine38_skel_cache() {
     static std::map<std::string, spine38::SkeletonData*> s_cache;
-    auto it = s_cache.find(key);
-    return (it != s_cache.end()) ? it->second : nullptr;
-}
-
-static void wjjh_spine38_store_data(const std::string& key, spine38::SkeletonData* data) {
-    static std::map<std::string, spine38::SkeletonData*> s_cache;
-    s_cache[key] = data;
+    return s_cache;
 }
 
 // ---- createBinary(skel, atlas, scale) -> node(cc.Node), skelptr(lightuserdata) ----
@@ -196,7 +192,12 @@ int l_createBinary(lua_State* L) {
         + std::to_string(scale);
 
     // gh263: 缓存命中 = 跳过 dry-run 与文件解析，直接从共享 SkeletonData 构造。
-    spine38::SkeletonData* cached = wjjh_spine38_cached_data(cacheKey);
+    spine38::SkeletonData* cached = nullptr;
+    {
+        auto& cache = wjjh_spine38_skel_cache();
+        auto it = cache.find(cacheKey);
+        if (it != cache.end()) cached = it->second;
+    }
     if (cached != nullptr) {
         fprintf(stderr, "WJJH_SPINE38: cache hit skel=%s\n", skel);
         spine38::SkeletonAnimation* sk = nullptr;
@@ -258,7 +259,7 @@ int l_createBinary(lua_State* L) {
     //   实例的 owns 标志关掉（数据/图集生命周期归缓存管，进程内数量有限永不释放），
     //   否则首个实例析构会 delete 共享数据/图集 → 后续实例悬垂崩溃。
     parsed = sk->getSkeleton()->getData();
-    wjjh_spine38_store_data(cacheKey, parsed);
+    wjjh_spine38_skel_cache()[cacheKey] = parsed;
     sk->setTwoColorTint(false);  // gh263: two-color 着色器在 cocos 3.15.1 下渲染不可靠
                                  //   （实测表现=人物/特效成纯色方块），关掉走单色路径。
     sk->setSharedOwnership(false, false);

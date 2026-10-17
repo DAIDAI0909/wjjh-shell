@@ -797,7 +797,48 @@ def patch_fight_spine_lazy():
             return
         new = new.replace(old, repl)
     open(p, 'wb').write(new)
-    print('[overlay] gh261: AnimFightLayer.lua -> fight slots 3-5 lazy (no spine) OK', flush=True)
+    print('[overlay] gh261/gh264: AnimFightLayer.lua -> fight slots 3-5 lazy (no spine) OK', flush=True)
+
+
+def patch_ipad_resolution():
+    """gh264: 启用游戏自带的 iPad 4:3 适配（config.lua 被注释的 FIXED_WIDTH 分支）。
+
+    gh263 已把 App 打开原生 iPad（framesize=1536x2048，日志实锤生效），但
+    CC_DESIGN_RESOLUTION.callback 仍无条件返回 SHOW_ALL ⇒ 1080x1920 设计在 4:3 屏上
+    两侧各留 192px 黑边（老板此前在兼容模式见过 50px 边，原生后边更宽＝"开始图不完整"）。
+    config.lua 的注释代码本就写明了 iPad(1536*2048) 走 FIXED_WIDTH（开发者意图），
+    本补丁按其意图启用：ratio<=1.34 ⇒ FIXED_WIDTH（全宽、上下按设计裁切、无黑边）。
+    """
+    p = os.path.join(DEST, 'src', 'config.lua')
+    if not os.path.exists(p):
+        print('[overlay] gh264: WARN config.lua not found at %s' % p, flush=True)
+        return
+    raw = open(p, 'rb').read()
+    NL = b'\r\n'
+    old = (b'    callback = function(framesize)' + NL +
+           b'        return {autoscale = "SHOW_ALL"}' + NL +
+           b'        -- local ratio = framesize.width / framesize.height' + NL +
+           b'        -- if ratio <= 1.34 then' + NL +
+           b'        -- iPad 768*1024(1536*2048) is 4:3 screen' + NL +
+           b'        -- return {autoscale = "SHOW_ALL"}--"FIXED_WIDTH"}' + NL +
+           b'        -- end' + NL +
+           b'    end')
+    new = (b'    callback = function(framesize)' + NL +
+           '        -- gh264: 启用开发者注释中的 iPad 4:3 适配（原生 1536x2048 上 SHOW_ALL'.encode('utf-8') + NL +
+           '        --   会两侧各留 192px 黑边）；ratio<=1.34（4:3 屏）走 FIXED_WIDTH 全宽。'.encode('utf-8') + NL +
+           b'        local ratio = framesize.width / framesize.height' + NL +
+           b'        if ratio <= 1.34 then' + NL +
+           b'            return {autoscale = "FIXED_WIDTH"}' + NL +
+           b'        end' + NL +
+           b'        return {autoscale = "SHOW_ALL"}' + NL +
+           b'    end')
+    n = raw.count(old)
+    if n != 1:
+        print('[overlay] gh264: WARN config.lua callback expected 1 got %d -> file left unchanged' % n,
+              flush=True)
+        return
+    open(p, 'wb').write(raw.replace(old, new))
+    print('[overlay] gh264: config.lua -> iPad FIXED_WIDTH callback enabled OK', flush=True)
 
 
 def main():
@@ -833,6 +874,8 @@ def main():
     patch_switch_anim_failsafe()
     # gh261: 战斗 3-5 号站位免建 spine（治切磋 Jetsam 闪退——10 套骨架推爆 1.4GB 上限）。
     patch_fight_spine_lazy()
+    # gh264: 启用 config.lua 的 iPad 4:3 适配（原生分辨率下去黑边）。
+    patch_ipad_resolution()
     # ★ gh251 说明：原 gh249/gh250 不再调用。
     #   那两轮我按**本地开发树** ink_dec/fangzhi_lua_dec 分析，以为 game.zip 里带
     #   开发版 v57 遗留（按钮改名『经营』『科举』、跳过标题页）。实测 CI 实际用的

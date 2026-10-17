@@ -111,6 +111,13 @@ RUNTIME_RESIDENT = (
                               #   是 Jetsam 1.38GB 撞线的大头之一，必转）
 )
 
+# gh264: 排除清单——这些图集**保留 PNG**。gongfu（人物本体）做 PVRTC 渲染白/方块
+#   的决定性诊断（详见 main() 内注释）。确诊后如需恢复低内存，方案=构建期解压
+#   PVRTC→RGBA4444 而非硬件压缩上传。
+PVR_EXCLUDE = (
+    '/Anim/gongfu/',
+)
+
 # 每个线程一个工具输出日志文件（避免交错），用于超时时把 stderr 带回来
 _TL = threading.local()
 
@@ -625,7 +632,19 @@ def main():
     per_atlas = []            # (总像素, atlas_path, [(name,w,h), ...])
     skipped_nonpot = 0
     skipped_missing = 0
+    skipped_exclude = 0
     for a in atlases:
+        rel_atlas = '/' + os.path.relpath(a, RES_ROOT).replace(os.sep, '/')
+        # gh264: gongfu 图集保留 PNG —— 决定性诊断：gh262/263 实测战斗人物=黄色方块
+        #   （region 附件渲染白）。全部出问题的图集（gongfu/specialEffect/enterVictory）
+        #   恰好都是 PVRTC 转换过的，而非 PVRTC 的 ep2（标题页）无此类报告。
+        #   gongfu 是人物本体，先退回 PNG（RGBA4444 全局默认 ≈202MB，比 PVRTC +151MB，
+        #   内存峰值预计 ~1.14GB 仍在 1.4GB 内）。若人物恢复正常=PVRTC 链路实锤，
+        #   后续再以「构建期解压 PVRTC→RGBA4444」方式恢复低内存。
+        if any(p in rel_atlas for p in PVR_EXCLUDE):
+            print('[pvr] gh264: EXCLUDE (keep PNG) %s' % rel_atlas, flush=True)
+            skipped_exclude += 1
+            continue
         adir = os.path.dirname(a)
         pages, px = [], 0
         for name, w, h in parse_atlas(a):
@@ -660,8 +679,8 @@ def main():
         for name, _w, _h in pages:
             jobs.append((a, name, os.path.join(adir, name)))
     total_px = sum(p for p, _a, _pg in per_atlas)
-    print('[pvr] candidates=%d  skipped_nonPOT=%d  skipped_missing=%d  eligible_px=%.0fM'
-          % (len(jobs), skipped_nonpot, skipped_missing, total_px / 1e6), flush=True)
+    print('[pvr] candidates=%d  skipped_nonPOT=%d  skipped_missing=%d  skipped_exclude=%d  eligible_px=%.0fM'
+          % (len(jobs), skipped_nonpot, skipped_missing, skipped_exclude, total_px / 1e6), flush=True)
     print('[pvr] top atlases: %s'
           % ', '.join('%s(%d页)' % (os.path.relpath(a, RES_ROOT).replace(os.sep, '/'),
                                     len(pg)) for _p, a, pg in per_atlas[:5]), flush=True)
