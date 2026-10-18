@@ -287,23 +287,44 @@ if cc and cc.Node then
     getName = function(self) return nil end,
     getLocalZOrder = function(self) return 0 end,
   }
-  local __nWrapped = 0
-  local __origTable = {}
-  for __name, __origfn in pairs(cc.Node) do
-    if type(__origfn) == 'function' and __guarded[__name] == nil then
-      __origTable[__name] = __origfn
-      cc.Node[__name] = function(self, ...)
-        if __isnull and type(self) == 'userdata' and __isnull(self) then
-          return nil
+  -- gh279 修正：pairs(cc.Node) 遍历不到 tolua C 侧方法（gh278 实测 wrapped=0）。
+  --   tolua 类表支持「写入 Lua 函数」（gh153 getTag 同款）但 pairs 不见 C 方法。
+  --   ⇒ 改手动方法清单逐个取（cc.Node[name] 走 C 查找）再包。
+  local __methodList = {
+    'getParent','getParentByType','getChildren','getChildrenCount','getPosition','getPositionX',
+    'getPositionY','setContentSize','getContentSize','getTag','getName','getLocalZOrder',
+    'getScale','getScaleX','getScaleY','getOpacity','getColor','getAnchorPoint','getBoundingBox',
+    'getActionByTag','getActionManager','getEventDispatcher','getScheduler','getCamera','getGrid',
+    'removeFromParent','removeFromParentAndCleanup','removeChild','removeAllChildren',
+    'removeAllChildrenWithCleanup','removeFromPhysicsWorld','cleanup','addChild','addTo','setPosition',
+    'setPositionX','setPositionY','setScale','setScaleX','setScaleY','setRotation','setOpacity',
+    'setColor','setAnchorPoint','setLocalZOrder','setVisible','setVisibleWithoutEvent',
+    'setSwallowTouches','setTag','setName','setContentSize','setCascadeOpacityEnabled',
+    'setCascadeColorEnabled','setTouchEnabled','setSwallowTouches','schedule','scheduleOnce',
+    'unschedule','unscheduleAllCallbacks','runAction','stopAction','stopAllActions','stopActionByTag',
+    'performWithDelay','pause','resume','pauseSchedulerAndActions','resumeSchedulerAndActions',
+    'getChildByTag','getChildByName','isVisible','isRunning','isEnabled','isHighlighted',
+    'retain','release','onEnter','onExit','visit','update','getWorldPosition','convertToNodeSpace',
+    'convertToWorldSpace','convertTouchToNodeSpace','getNumberOfRunningActions','hasAncestor'
+  }
+  for _, __name in ipairs(__methodList) do
+    if __guarded[__name] == nil then
+      local okf, __orig = pcall(function() return cc.Node[__name] end)
+      if okf and type(__orig) == 'function' and not rawget(cc.Node, __name) then
+        __origTable[__name] = __orig
+        cc.Node[__name] = function(self, ...)
+          if __isnull and type(self) == 'userdata' and __isnull(self) then
+            return nil
+          end
+          return __orig(self, ...)
         end
-        return __origfn(self, ...)
+        __nWrapped = __nWrapped + 1
       end
-      __nWrapped = __nWrapped + 1
     end
   end
   for __name, __fallback in pairs(__guarded) do
-    local __orig = __origTable[__name]
-    if type(__orig) == 'function' then
+    local okg, __orig = pcall(function() return cc.Node[__name] end)
+    if okg and type(__orig) == 'function' and not rawget(cc.Node, __name) then
       cc.Node[__name] = function(self, ...)
         if __isnull and type(self) == 'userdata' and __isnull(self) then
           -- gh274: 命中守卫必须留痕——"网络错误请重试"这类软错误（老板 gh272 实测

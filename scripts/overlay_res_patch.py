@@ -799,6 +799,50 @@ def patch_fight_spine_lazy():
     open(p, 'wb').write(new)
     print('[overlay] gh261/gh264: AnimFightLayer.lua -> fight slots 3-5 lazy (no spine) OK', flush=True)
 
+def patch_additem_diag():
+    """gh279: Role_Item:1482 无法找到该资源 诊断——商城商品 getOneItemByKey 落空。"""
+    p = os.path.join(DEST, 'src', 'app', 'models', 'role', 'Role_Item.lua')
+    if not os.path.exists(p):
+        print('[overlay] gh279: WARN Role_Item.lua not found', flush=True)
+        return
+    raw = open(p, 'rb').read()
+    NL = b'\r\n'
+    popmsg = '无法找到该资源，请尝试重启游戏。'.encode('utf-8')
+    old = (b'\tlocal itemAttr = self:getOneItemByKey(itemId)' + NL +
+           b'\tif itemAttr == nil then' + NL +
+           b'\t\tPopText("' + popmsg + b'")' + NL +
+           b'\t\treturn false' + NL +
+           b'\tend')
+    diag = (
+        b'\t\t-- gh279: diagnose which table lacks the definition\n' +
+        b'\t\tpcall(function()\n' +
+        b'\t\t\tlocal __mi = require("script.map.mapItemAttr")\n' +
+        b'\t\t\tlocal __si = require("script.store.storeItem")\n' +
+        b'\t\t\tlocal function __has(tbl, k)\n' +
+        b'\t\t\t\tif type(tbl) ~= "table" then return "noTable" end\n' +
+        b'\t\t\t\tfor _, sheet in pairs(tbl) do\n' +
+        b'\t\t\t\t\tif type(sheet) == "table" and sheet[k] ~= nil then return "YES" end\n' +
+        b'\t\t\t\tend\n' +
+        b'\t\t\t\treturn "no"\n' +
+        b'\t\t\tend\n' +
+        b'\t\t\tprint("[WJJH_ITEM] missing " .. tostring(itemId)\n' +
+        b'\t\t\t\t.. " mapItemAttr=" .. __has(__mi, itemId)\n' +
+        b'\t\t\t\t.. " storeItem=" .. tostring(type(__si) == "table" and __si.shangchengwupin and __si.shangchengwupin[itemId] ~= nil))\n' +
+        b'\t\tend)\n')
+    new = (b'\tlocal itemAttr = self:getOneItemByKey(itemId)' + NL +
+           b'\tif itemAttr == nil then' + NL +
+           diag +
+           b'\t\tPopText("' + popmsg + b'")' + NL +
+           b'\t\treturn false' + NL +
+           b'\tend')
+    n = raw.count(old)
+    if n != 1:
+        print('[overlay] gh279: WARN Role_Item anchor expected 1 got %d -> unchanged' % n, flush=True)
+        return
+    open(p, 'wb').write(raw.replace(old, new))
+    print('[overlay] gh279: Role_Item.lua -> addItem missing-item diagnostics OK', flush=True)
+
+
 def patch_bagui_defensive():
     """gh276: 背包打不开（BagUI itemAttr nil）防御。"""
     p = os.path.join(DEST, 'src', 'app', 'views', 'ui', 'AttrUI', 'BagUI.lua')
@@ -986,6 +1030,8 @@ def main():
     patch_menu_resolution()
     # gh276: BagUI itemAttr nil 防御（背包打不开的根因——存档物品/容器在表里查无定义）。
     patch_bagui_defensive()
+    # gh279: Role_Item addItem 缺定义诊断（商城"无法找到该资源"点名）。
+    patch_additem_diag()
     # ★ gh251 说明：原 gh249/gh250 不再调用。
     #   那两轮我按**本地开发树** ink_dec/fangzhi_lua_dec 分析，以为 game.zip 里带
     #   开发版 v57 遗留（按钮改名『经营』『科举』、跳过标题页）。实测 CI 实际用的
