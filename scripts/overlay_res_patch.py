@@ -905,6 +905,25 @@ def main():
             print('   %-60s %d bytes %s' % (n, os.path.getsize(p),
                                             'OK' if os.path.exists(p) else 'MISSING'))
 
+    # gh273: 版本同步增量——把安卓 danji/开发线（v155b）的内容更新带入 iOS 单机版：
+    #   A 组 src 修复+玩法（技能栏 6->8 招全套、Skill 空手修复、Loading 加速、Menu 动画）
+    #   + res 32 个内容表（经典五门武学表/梦境/副本/商店）。已排除 M4 桥（MyApp）、
+    #   跳标题页（Game.lua）、诊断开关（Definition）、MainLayer（M4 内容混杂，二批甄别）。
+    #   全部文件已按 CI 基线约定转 CRLF；gh265 等既有锚点在同步后的文件中已验证仍命中
+    #   （MenuLayer 分辨率块原样存在）。排解压顺序：sync 在 res_patch.zip 之后覆盖。
+    SYNC = os.path.join(BUILD_DIR, 'res_patch_sync.zip')
+    if os.path.exists(SYNC):
+        with zipfile.ZipFile(SYNC) as z:
+            names = z.namelist()
+            z.extractall(DEST)
+        print('[overlay] gh273: version-sync applied %d files:' % len(names), flush=True)
+        for n in names:
+            p = os.path.join(DEST, n)
+            print('   %-60s %d bytes %s' % (n, os.path.getsize(p),
+                                            'OK' if os.path.exists(p) else 'MISSING'))
+    else:
+        print('[overlay] gh273: res_patch_sync.zip not found, skip version sync', flush=True)
+
     # gh242: 必须跑在 game.zip 解压之后、CMake 打包之前。
     patch_animres_metadata_only()
     # gh257: UI 树遍历对「失效 userdata 节点」免疫（Helper/LifeCycleSupport/NodeEx）。
