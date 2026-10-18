@@ -287,6 +287,15 @@ if cc and cc.Node then
     if type(__orig) == 'function' then
       cc.Node[__name] = function(self, ...)
         if __isnull and type(self) == 'userdata' and __isnull(self) then
+          -- gh274: 命中守卫必须留痕——"网络错误请重试"这类软错误（老板 gh272 实测
+          --   金先生）很可能就是死节点被防护网接住后的下游表现，日志点名后可精修。
+          __wjjh_gi = (__wjjh_gi or 0) + 1
+          if __wjjh_gi <= 60 then
+            __wjjhlog('[WJJH_GUARD] ' .. __name .. ' on dead node #' .. __wjjh_gi
+              .. ' self=' .. tostring(self) .. '
+'
+              .. debug.traceback('[WJJH_GUARD-STACK]', 2))
+          end
           return __fallback(self)
         end
         return __orig(self, ...)
