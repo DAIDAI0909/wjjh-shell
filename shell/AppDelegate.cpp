@@ -287,8 +287,7 @@ if cc and cc.Node then
           __wjjh_gi = (__wjjh_gi or 0) + 1
           if __wjjh_gi <= 60 then
             __wjjhlog('[WJJH_GUARD] ' .. __name .. ' on dead node #' .. __wjjh_gi
-              .. ' self=' .. tostring(self) .. '
-'
+              .. ' self=' .. tostring(self) .. '\n'
               .. debug.traceback('[WJJH_GUARD-STACK]', 2))
           end
           return __fallback(self)
