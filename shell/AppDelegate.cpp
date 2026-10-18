@@ -272,15 +272,10 @@ __wjjhlog('WJJH_BOOT: isclass stamped ' .. __ns .. ' [' .. __detail .. ']')
 --   开销：LuaJIT 方法转发 ~0.1μs/次，高频路径可忽略。与 gh153 getTag 守卫同模式。
 if cc and cc.Node then
   local __isnull = (tolua and tolua.isnull) or nil
+  -- gh275: 收窄到 getParent（.ips 实锤元凶）。gh272 的 8 方法版疑似与 gh273 的
+  --   「背包不能点」有耦合（无日志无法定分水岭，先最小化行为面）。
   local __guarded = {
     getParent = function(self) return nil end,
-    getName = function(self) return nil end,
-    getChildren = function(self) return {} end,
-    getPosition = function(self) return 0, 0 end,
-    getContentSize = function(self) return { width = 0, height = 0 } end,
-    getTag = function(self) return -1 end,
-    getChildrenCount = function(self) return 0 end,
-    getLocalZOrder = function(self) return 0 end,
   }
   for __name, __fallback in pairs(__guarded) do
     local __orig = rawget(cc.Node, __name) or cc.Node[__name]
@@ -2119,12 +2114,15 @@ do
   local __warmIdx = 0
   local __sched = cc.Director:getInstance():getScheduler()
   if __sched then
-    local __handle
-    __handle = __sched:scheduleScriptFunc(function()
+    -- gh275: 3.15.1 Scheduler 绑定没有 unscheduleScriptFunc（gh271 实测 1314 次报错，
+    --   每 0.6s 空转一次）。改标志位短路（空转开销≈nil 比较）。
+    local __done = false
+    __sched:scheduleScriptFunc(function()
+      if __done then return end
       __warmIdx = __warmIdx + 1
       local it = __warmQ[__warmIdx]
       if not it then
-        __sched:unscheduleScriptFunc(__handle)
+        __done = true
         __wjjhlog('WJJH_PRELOAD: all skeletons warmed')
         return
       end
