@@ -272,13 +272,37 @@ __wjjhlog('WJJH_BOOT: isclass stamped ' .. __ns .. ' [' .. __detail .. ']')
 --   开销：LuaJIT 方法转发 ~0.1μs/次，高频路径可忽略。与 gh153 getTag 守卫同模式。
 if cc and cc.Node then
   local __isnull = (tolua and tolua.isnull) or nil
-  -- gh275: 收窄到 getParent（.ips 实锤元凶）。gh272 的 8 方法版疑似与 gh273 的
-  --   「背包不能点」有耦合（无日志无法定分水岭，先最小化行为面）。
+  -- gh275: 收窄到 getParent。gh277 又见 removeFromParentAndCleanup 裸调 SIGSEGV
+  --   （同一疾病不同方法）⇒ 打地鼠失败，gh278 改**全量化**：遍历 cc.Node 类表上
+  --   全部 function 逐个包 isnull 守卫（动作方法=no-op 恰好是清理类调用的完美语义；
+  --   取值方法=nil 由下游 xpcall 兜）。专用语义 fallback 白名单保常用取值。
+  --   开销：LuaJIT 转发 ~0.05μs/次，每帧几百次调用≈几十 μs，可忽略。
   local __guarded = {
     getParent = function(self) return nil end,
+    getChildren = function(self) return {} end,
+    getChildrenCount = function(self) return 0 end,
+    getPosition = function(self) return 0, 0 end,
+    getContentSize = function(self) return { width = 0, height = 0 } end,
+    getTag = function(self) return -1 end,
+    getName = function(self) return nil end,
+    getLocalZOrder = function(self) return 0 end,
   }
+  local __nWrapped = 0
+  local __origTable = {}
+  for __name, __origfn in pairs(cc.Node) do
+    if type(__origfn) == 'function' and __guarded[__name] == nil then
+      __origTable[__name] = __origfn
+      cc.Node[__name] = function(self, ...)
+        if __isnull and type(self) == 'userdata' and __isnull(self) then
+          return nil
+        end
+        return __origfn(self, ...)
+      end
+      __nWrapped = __nWrapped + 1
+    end
+  end
   for __name, __fallback in pairs(__guarded) do
-    local __orig = rawget(cc.Node, __name) or cc.Node[__name]
+    local __orig = __origTable[__name]
     if type(__orig) == 'function' then
       cc.Node[__name] = function(self, ...)
         if __isnull and type(self) == 'userdata' and __isnull(self) then
@@ -296,7 +320,7 @@ if cc and cc.Node then
       end
     end
   end
-  __wjjhlog('WJJH_BOOT: dead-node method guards installed (8 methods)')
+  __wjjhlog('WJJH_BOOT: dead-node method guards installed (special=8, wrapped=' .. tostring(__nWrapped) .. ')')
 end
 
 
