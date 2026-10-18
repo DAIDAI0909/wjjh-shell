@@ -799,6 +799,70 @@ def patch_fight_spine_lazy():
     open(p, 'wb').write(new)
     print('[overlay] gh261/gh264: AnimFightLayer.lua -> fight slots 3-5 lazy (no spine) OK', flush=True)
 
+def patch_bagupgrade_diag():
+    """gh282: 背包/仓库"升级"点击无反应诊断。
+
+    老板实测：背包与仓库都点不了升级。代码链路：
+      BagUI.Button_add -> PopupLayerController:showLayer("BagUpgradePresenters")
+      -> BagUpgradePresenters:showLayer() -> Bag:initBagLevel()/WareHouse:initWareHouseLevel()
+    两处 initBagLevel 带 2026-10-04 的"容量下限 999"改动（danji 线注入），
+    而升级表最高档正号也是 999 ⇒ 面板会用"已升级到最大格数"呈现。
+    先加三层探针定位到底卡在哪一环（点击/弹层创建/showFunc 报错/数据）。
+    """
+    NL = b'\r\n'
+    # ---- 1) BagUI: 点击 Button_add 留痕 ----
+    p1 = os.path.join(DEST, 'src', 'app', 'views', 'ui', 'AttrUI', 'BagUI.lua')
+    if os.path.exists(p1):
+        raw = open(p1, 'rb').read()
+        old = b'\tself.Button_add:releaseFunc(function()' + NL
+        new = (b'\tself.Button_add:releaseFunc(function()' + NL +
+               b'\t\tprint("[WJJH_BAGUP] Button_add clicked")' + NL)
+        if raw.count(old) == 1:
+            open(p1, 'wb').write(raw.replace(old, new))
+            print('[overlay] gh282: BagUI Button_add click probe OK', flush=True)
+        else:
+            print('[overlay] gh282: WARN BagUI anchor=%d' % raw.count(old), flush=True)
+    # ---- 2) BagUpgradePresenters: 关键节点留痕 ----
+    p2 = os.path.join(DEST, 'src', 'app', 'presenters', 'BagUpgrade', 'BagUpgradePresenters.lua')
+    if os.path.exists(p2):
+        raw = open(p2, 'rb').read()
+        o1 = (b'function BagUpgradePresenters:showLayer()' + NL +
+              b'    self._role = User:getRole()' + NL)
+        n1 = (b'function BagUpgradePresenters:showLayer()' + NL +
+              b'    self._role = User:getRole()' + NL +
+              b'    print("[WJJH_BAGUP] showLayer enter weight=" .. tostring(self._role:getAttr("weight"))'
+              b' .. " baseCk=" .. tostring(self._role:getAttr("baseCkLimit"))'
+              b' .. " money=" .. tostring(self._role:getAttr("money")))' + NL)
+        o2 = b'    self._UI:showUI()'
+        n2 = (b'    print("[WJJH_BAGUP] data ready -> showUI")' + NL +
+              b'    self._UI:showUI()')
+        ok = raw.count(o1) == 1 and raw.count(o2) == 1
+        if ok:
+            raw = raw.replace(o1, n1).replace(o2, n2)
+            open(p2, 'wb').write(raw)
+            print('[overlay] gh282: BagUpgradePresenters probes OK', flush=True)
+        else:
+            print('[overlay] gh282: WARN BagUpgradePresenters anchors %d/%d'
+                  % (raw.count(o1), raw.count(o2)), flush=True)
+    # ---- 3) PopupLayerController: showFunc 报错不再静默 ----
+    p3 = os.path.join(DEST, 'src', 'app', 'views', 'base', 'PopupLayerController.lua')
+    if os.path.exists(p3):
+        raw = open(p3, 'rb').read()
+        old = (b'\tif showFunc then' + NL +
+               b'\t\tshowFunc(layer)' + NL +
+               b'\tend')
+        new = (b'\tif showFunc then' + NL +
+               b'\t\tlocal __ok, __err = pcall(showFunc, layer)' + NL +
+               b'\t\tif not __ok then print("[WJJH_POPUP] showFunc error "'
+               b' .. tostring(name) .. " : " .. tostring(__err)) end' + NL +
+               b'\tend')
+        if raw.count(old) == 1:
+            open(p3, 'wb').write(raw.replace(old, new))
+            print('[overlay] gh282: PopupLayerController showFunc pcall+log OK', flush=True)
+        else:
+            print('[overlay] gh282: WARN PopupLayerController anchor=%d' % raw.count(old), flush=True)
+
+
 def patch_additem_diag():
     """gh279: Role_Item:1482 无法找到该资源 诊断——商城商品 getOneItemByKey 落空。"""
     p = os.path.join(DEST, 'src', 'app', 'models', 'role', 'Role_Item.lua')
@@ -1032,6 +1096,8 @@ def main():
     patch_bagui_defensive()
     # gh279: Role_Item addItem 缺定义诊断（商城"无法找到该资源"点名）。
     patch_additem_diag()
+    # gh282: 背包/仓库升级点击无反应诊断（三层探针）。
+    patch_bagupgrade_diag()
     # ★ gh251 说明：原 gh249/gh250 不再调用。
     #   那两轮我按**本地开发树** ink_dec/fangzhi_lua_dec 分析，以为 game.zip 里带
     #   开发版 v57 遗留（按钮改名『经营』『科举』、跳过标题页）。实测 CI 实际用的
