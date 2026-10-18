@@ -799,6 +799,50 @@ def patch_fight_spine_lazy():
     open(p, 'wb').write(new)
     print('[overlay] gh261/gh264: AnimFightLayer.lua -> fight slots 3-5 lazy (no spine) OK', flush=True)
 
+def patch_bagui_defensive():
+    """gh276: 背包打不开（BagUI itemAttr nil）防御。"""
+    p = os.path.join(DEST, 'src', 'app', 'views', 'ui', 'AttrUI', 'BagUI.lua')
+    if not os.path.exists(p):
+        print('[overlay] gh276: WARN BagUI.lua not found at %s' % p, flush=True)
+        return
+    raw = open(p, 'rb').read()
+    NL = b'\r\n'
+    a1_old = (b'\t\tlocal itemAttr = role:getOneItemByKey(v)\r\n' +
+              b'\t\titemInfo.text = itemAttr.name')
+    a1_new = (b'\t\tlocal itemAttr = role:getOneItemByKey(v)\r\n' +
+              b'\t\tif itemAttr == nil then\r\n' +
+              b'\t\tprint("[WJJH_BAG] container item no attr: " .. tostring(v))\r\n' +
+              b'\t\titemAttr = { name = tostring(v), canFold = ITEM_STATE_TRUE, type = "\xe5\xae\xb9\xe5\x99\xa8" }\r\n' +
+              b'\t\tend\r\n' +
+              b'\t\titemInfo.text = itemAttr.name')
+    a2_old = (b'\t\t\tlocal itemAttr = role:getOneItemByKey(item.itemId)\r\n' +
+              b'\t\t\tlocal itemInfo = {}')
+    a2_new = (b'\t\t\tlocal itemAttr = role:getOneItemByKey(item.itemId)\r\n' +
+              b'\t\t\tif itemAttr == nil then\r\n' +
+              b'\t\t\tprint("[WJJH_BAG] item no attr: " .. tostring(item.itemId) .. " - skipped")\r\n' +
+              b'\t\t\telse\r\n' +
+              b'\t\t\tlocal itemInfo = {}')
+    a3_old = (b'\t\t\ttable.insert(bagItemsInfo,itemInfo)\r\n' +
+              b'\t\tend')
+    a3_new = (b'\t\t\ttable.insert(bagItemsInfo,itemInfo)\r\n' +
+              b'\t\t\tend\r\n' +
+              b'\t\tend')
+    new = raw
+    ok = True
+    for tag, old, want, repl in (('container', a1_old, 1, a1_new),
+                                 ('itemhead', a2_old, 1, a2_new),
+                                 ('itemtail', a3_old, 1, a3_new)):
+        n = new.count(old)
+        if n != want:
+            print('[overlay] gh276: WARN BagUI %s expected %d got %d -> file left unchanged'
+                  % (tag, want, n), flush=True)
+            ok = False
+            break
+        new = new.replace(old, repl)
+    if ok:
+        open(p, 'wb').write(new)
+        print('[overlay] gh276: BagUI.lua -> itemAttr nil guards (log + fallback) OK', flush=True)
+
 
 def patch_ipad_resolution():
     """gh264: 启用游戏自带的 iPad 4:3 适配（config.lua 被注释的 FIXED_WIDTH 分支）。
@@ -940,6 +984,8 @@ def main():
     patch_ipad_resolution()
     # gh265: MenuLayer 会把设计分辨率重置回 SHOW_ALL（黑边回归）——按屏比适配。
     patch_menu_resolution()
+    # gh276: BagUI itemAttr nil 防御（背包打不开的根因——存档物品/容器在表里查无定义）。
+    patch_bagui_defensive()
     # ★ gh251 说明：原 gh249/gh250 不再调用。
     #   那两轮我按**本地开发树** ink_dec/fangzhi_lua_dec 分析，以为 game.zip 里带
     #   开发版 v57 遗留（按钮改名『经营』『科举』、跳过标题页）。实测 CI 实际用的
