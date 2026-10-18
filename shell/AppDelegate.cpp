@@ -290,6 +290,10 @@ if cc and cc.Node then
   -- gh279 修正：pairs(cc.Node) 遍历不到 tolua C 侧方法（gh278 实测 wrapped=0）。
   --   tolua 类表支持「写入 Lua 函数」（gh153 getTag 同款）但 pairs 不见 C 方法。
   --   ⇒ 改手动方法清单逐个取（cc.Node[name] 走 C 查找）再包。
+  --   ★ gh280: gh279 替换时把 __nWrapped/__origTable 两个 local 声明弄丢了
+  --   （chunk:79 attempt to index global '__origTable' → 黑屏）——此处补回。
+  local __nWrapped = 0
+  local __origTable = {}
   local __methodList = {
     'getParent','getParentByType','getChildren','getChildrenCount','getPosition','getPositionX',
     'getPositionY','setContentSize','getContentSize','getTag','getName','getLocalZOrder',
