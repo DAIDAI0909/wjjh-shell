@@ -272,6 +272,18 @@ __wjjhlog('WJJH_BOOT: isclass stamped ' .. __ns .. ' [' .. __detail .. ']')
 --   开销：LuaJIT 方法转发 ~0.1μs/次，高频路径可忽略。与 gh153 getTag 守卫同模式。
 if cc and cc.Node then
   local __isnull = (tolua and tolua.isnull) or nil
+  -- gh288: tolua.isnull 对**带 peer 的活节点会误报 true**（gh286 实锤：
+  --   BookCaseLayer 刚创建、peer 已挂，isnull 返回 true ⇒ getParent 守卫返回 nil
+  --   ⇒ NodeEx:maxZ 崩 ⇒ showLayer 链断 ⇒ 书匣/武器点击全无反应）。
+  --   加一道"活体复核"：isnull 说死时再实测一次轻量方法，能调通就当活的。
+  local function __wjjh_alive(obj)
+    if obj == nil or type(obj) ~= 'userdata' then return false end
+    if __isnull == nil then return true end
+    local ok, dead = pcall(__isnull, obj)
+    if not ok or not dead then return true end          -- isnull 说活 / 调不通 → 当活
+    local ok2, r = pcall(function() return obj:getTag() end)
+    return ok2 and r ~= nil                              -- 能取到 tag = 活节点
+  end
   -- gh275: 收窄到 getParent。gh277 又见 removeFromParentAndCleanup 裸调 SIGSEGV
   --   （同一疾病不同方法）⇒ 打地鼠失败，gh278 改**全量化**：遍历 cc.Node 类表上
   --   全部 function 逐个包 isnull 守卫（动作方法=no-op 恰好是清理类调用的完美语义；
@@ -317,7 +329,7 @@ if cc and cc.Node then
       if okf and type(__orig) == 'function' and not rawget(cc.Node, __name) then
         __origTable[__name] = __orig
         cc.Node[__name] = function(self, ...)
-          if __isnull and type(self) == 'userdata' and __isnull(self) then
+          if not __wjjh_alive(self) then
             return nil
           end
           return __orig(self, ...)
@@ -330,7 +342,7 @@ if cc and cc.Node then
     local okg, __orig = pcall(function() return cc.Node[__name] end)
     if okg and type(__orig) == 'function' and not rawget(cc.Node, __name) then
       cc.Node[__name] = function(self, ...)
-        if __isnull and type(self) == 'userdata' and __isnull(self) then
+        if not __wjjh_alive(self) then
           -- gh274: 命中守卫必须留痕——"网络错误请重试"这类软错误（老板 gh272 实测
           --   金先生）很可能就是死节点被防护网接住后的下游表现，日志点名后可精修。
           __wjjh_gi = (__wjjh_gi or 0) + 1
