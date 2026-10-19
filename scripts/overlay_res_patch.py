@@ -888,6 +888,49 @@ def patch_bagupgrade_diag():
         else:
             print('[overlay] gh283: WARN PopupLayerController getLayer anchor=%d' % raw.count(o), flush=True)
 
+def patch_bagdesc_nil_guard():
+    """gh285: BagDescLayer nil 防御 + 属性页文字重影排查点。
+
+    gh284 日志实锤：从背包切页时
+      AttrControllLayer:39 `layer:hideLayer()` -> attempt to call method 'hideLayer' (a nil value)
+    （9 次）。AttrControllLayer 那段的写法是：
+      PopupLayerController:hideLayer("BagDescLayer", function(layer) layer:hideLayer() end, 0)
+    PopupLayerController:hideLayer 先 `hideFunc(self:getLayer(name))`；若该串
+    getLayer 内部抛错/返回 nil（BagDescLayer 是 classDefNodeGetInstance 单例），
+    layer 就是 nil ⇒ 每次离开背包页都报一次错 ⇒ 背包列表/描述面板状态半残。
+    修：AttrControllLayer 该处加 nil 防御（nil 时只记录并跳过，不再中断切页链）。
+    """
+    p = os.path.join(DEST, 'src', 'app', 'views', 'layer', 'AttrLayer', 'AttrControllLayer.lua')
+    if not os.path.exists(p):
+        print('[overlay] gh285: WARN AttrControllLayer.lua not found', flush=True)
+        return
+    raw = open(p, 'rb').read()
+    NL = b'\r\n'
+    old = (b'                PopupLayerController:hideLayer(' + NL +
+           b'                    "BagDescLayer",' + NL +
+           b'                    function(layer)' + NL +
+           b'                        layer:hideLayer()' + NL +
+           b'                    end,' + NL +
+           b'                    0' + NL +
+           b'                )')
+    new = (b'                PopupLayerController:hideLayer(' + NL +
+           b'                    "BagDescLayer",' + NL +
+           b'                    function(layer)' + NL +
+           b'                        if layer == nil then' + NL +
+           b'                            print("[WJJH_BAG] BagDescLayer nil on switch-away")' + NL +
+           b'                            return' + NL +
+           b'                        end' + NL +
+           b'                        layer:hideLayer()' + NL +
+           b'                    end,' + NL +
+           b'                    0' + NL +
+           b'                )')
+    n = raw.count(old)
+    if n != 1:
+        print('[overlay] gh285: WARN AttrControllLayer anchor expected 1 got %d -> unchanged' % n, flush=True)
+        return
+    open(p, 'wb').write(raw.replace(old, new))
+    print('[overlay] gh285: AttrControllLayer BagDescLayer nil-guard OK', flush=True)
+
 
 def patch_additem_diag():
     """gh279: Role_Item:1482 无法找到该资源 诊断——商城商品 getOneItemByKey 落空。"""
@@ -1124,6 +1167,8 @@ def main():
     patch_additem_diag()
     # gh282: 背包/仓库升级点击无反应诊断（三层探针）。
     patch_bagupgrade_diag()
+    # gh285: BagDescLayer nil 防御（离开背包页 9 次报错）。
+    patch_bagdesc_nil_guard()
     # ★ gh251 说明：原 gh249/gh250 不再调用。
     #   那两轮我按**本地开发树** ink_dec/fangzhi_lua_dec 分析，以为 game.zip 里带
     #   开发版 v57 遗留（按钮改名『经营』『科举』、跳过标题页）。实测 CI 实际用的
