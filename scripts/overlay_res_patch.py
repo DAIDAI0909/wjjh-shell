@@ -1163,6 +1163,99 @@ def patch_shenbing_unlock():
 
 
 
+def patch_shenbing_suidi_flag():
+    """gh293: 私服「回退路径」补神兵两个成对 flag（神兵直开真正生效处）。
+
+    单机版 v37 神兵直开需要两个成对 flag：
+      开始神兵任务 = 2（免做唐门之乱剧情，锻造/强化/领取）
+      可进入苏州水底 = 1（主界面神兵按钮/地图锻造·熔炉·加工·修理/家具神兵台）
+
+    关键：`_overlay_persisted_attrs` 里虽有这两个保底，但它只在 `roles/full.json`
+    存在（--role ours 模板路径）时调用；**单机版走的是「回退路径」**（--danji 净化掉
+    full.json，直接回客户端上传的存档），回退路径里只注入了 m_volume，**没注入神兵
+    flag** ⇒ 老板实测神兵按钮在但点进去不能打造。
+    补上：在回退路径的 m_volume 注入处，同步把两个 flag 写进 _inherit_flags。
+    """
+    cands = [
+        os.path.join(BUILD_DIR, 'py_ios_server', 'jhserver', 'fz_boot_server.py'),
+        os.path.join(BUILD_DIR, 'py_ios_server', 'fz_boot_server.py'),
+    ]
+    p = next((c for c in cands if os.path.exists(c)), None)
+    if p is None:
+        print('[overlay] gh293: WARN fz_boot_server.py not found', flush=True)
+        return
+    t = open(p, encoding='utf-8').read()
+    if '可进入苏州水底标记保底置 1' in t:
+        print('[overlay] gh293: already patched, skip', flush=True)
+        return
+    anchor = "log('★ 关卡全解锁（回退路径）：m_volume volume_1..8 = true')"
+    if t.count(anchor) != 2:
+        print('[overlay] gh293: WARN anchor count=%d (expected 2)' % t.count(anchor), flush=True)
+        return
+    block = anchor + """
+            log('★ 神兵直开（回退路径）：开始神兵任务=2 + 可进入苏州水底=1')"""
+    # 在每处 m_volume 注入后，把 flag 也写进去。回退路径两处分支（list / dict）都要。
+    # 这里用更稳的方式：直接在 anchor 后追加一句打印，flag 真正写入交给下面单独锚点。
+    open(p, 'w', encoding='utf-8').write(t.replace(anchor, block))
+    print('[overlay] gh293: fz_boot_server.py -> fallback-path shenbing flag log OK', flush=True)
+
+
+def patch_shenbing_flags_fallback():
+    """gh293b: 回退路径真正写入两个神兵 flag（list 与 dict 两分支）。"""
+    cands = [
+        os.path.join(BUILD_DIR, 'py_ios_server', 'jhserver', 'fz_boot_server.py'),
+        os.path.join(BUILD_DIR, 'py_ios_server', 'fz_boot_server.py'),
+    ]
+    p = next((c for c in cands if os.path.exists(c)), None)
+    if p is None:
+        print('[overlay] gh293b: WARN fz_boot_server.py not found', flush=True)
+        return
+    t = open(p, encoding='utf-8').read()
+    if '_set_shenbing_open' in t:
+        print('[overlay] gh293b: already patched, skip', flush=True)
+        return
+    # 在回退路径 json.loads 之后、m_volume 之前，注入一个公共辅助函数调用。
+    # 锚点：两处 m_volume 注入前的 elif/if 结构。用最稳的单一锚点：注入一个 helper 定义。
+    anchor = "def next_dataver():"
+    if t.count(anchor) != 1:
+        print('[overlay] gh293b: WARN next_dataver anchor=%d' % t.count(anchor), flush=True)
+        return
+    helper = '''def _set_shenbing_open(role):
+    """神兵直开两个成对 flag 保底（单机版回退路径专用）。"""
+    _iflags = role.get('_inherit_flags')
+    if not isinstance(_iflags, dict):
+        _iflags = {}
+        role['_inherit_flags'] = _iflags
+    try:
+        _sbq = int(_iflags.get('开始神兵任务') or 0)
+    except (TypeError, ValueError):
+        _sbq = 0
+    if _sbq < 2:
+        _iflags['开始神兵任务'] = 2
+    try:
+        _syd = int(_iflags.get('可进入苏州水底') or 0)
+    except (TypeError, ValueError):
+        _syd = 0
+    if _syd < 1:
+        _iflags['可进入苏州水底'] = 1
+    return role
+
+
+'''
+    t = t.replace(anchor, helper + anchor, 1)
+    # 在两处回退路径分支里调用 helper
+    t = t.replace(
+        "            _j[0]['m_volume'] = {'volume_%d' % i: True for i in range(1, 9)}",
+        "            _j[0] = _set_shenbing_open(_j[0])\n            _j[0]['m_volume'] = {'volume_%d' % i: True for i in range(1, 9)}",
+        1)
+    t = t.replace(
+        "            _j['m_volume'] = {'volume_%d' % i: True for i in range(1, 9)}",
+        "            _j = _set_shenbing_open(_j)\n            _j['m_volume'] = {'volume_%d' % i: True for i in range(1, 9)}",
+        1)
+    open(p, 'w', encoding='utf-8').write(t)
+    print('[overlay] gh293b: fz_boot_server.py -> fallback shenbing flags injected OK', flush=True)
+
+
 def patch_additem_diag():
     """gh279: Role_Item:1482 无法找到该资源 诊断——商城商品 getOneItemByKey 落空。"""
     p = os.path.join(DEST, 'src', 'app', 'models', 'role', 'Role_Item.lua')
@@ -1406,6 +1499,9 @@ def main():
     #   不是开发版）：baseskill1000/1500、7 个 med_*、xinshencap、shengongmateria、huishendan。
     patch_v37_pack_sync()
     patch_server_test_packs()
+    # gh293: 私服回退路径补神兵两个成对 flag（单机版实际走的路径）。
+    patch_shenbing_suidi_flag()
+    patch_shenbing_flags_fallback()
     # ★ gh251 说明：原 gh249/gh250 不再调用。
     #   那两轮我按**本地开发树** ink_dec/fangzhi_lua_dec 分析，以为 game.zip 里带
     #   开发版 v57 遗留（按钮改名『经营』『科举』、跳过标题页）。实测 CI 实际用的
