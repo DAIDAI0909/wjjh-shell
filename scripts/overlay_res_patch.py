@@ -1109,6 +1109,60 @@ def patch_server_test_packs():
     print('[overlay] gh287: %s -> +%d packs (total %d) OK' % (p, added, len(rows)), flush=True)
 
 
+def patch_shenbing_unlock():
+    """gh289: 神兵系统直接解锁（老板要求：单机版 v37 可直接解锁神兵）。
+
+    iOS 现状（MainLayer.lua:603-614）：神兵按钮显示需满足任一条件——
+      role:getInheritFlag("可进入苏州水底") == 1
+      role:getFlag("开启神兵系统") == 1
+      role:getExp() > CAN_SHENBING_EXP
+    SHENBINGSYS 在 Definition.lua 里已是 true（点按钮能进 ShenBingLayer），
+    只差"按钮显示"这一关。
+    修：改成无条件显示（单机交付场景玩家要能直接使用）。
+    """
+    p = os.path.join(DEST, 'src', 'app', 'views', 'layer', 'MainLayer.lua')
+    if not os.path.exists(p):
+        print('[overlay] gh289: WARN MainLayer.lua not found', flush=True)
+        return
+    raw = open(p, 'rb').read()
+    if ('gh289' in raw.decode('utf-8', 'replace')):
+        print('[overlay] gh289: MainLayer already patched, skip', flush=True)
+        return
+    text = raw.decode('utf-8', 'replace')
+    crlf = chr(13) + chr(10)
+    nl = crlf if crlf in text[:4000] else chr(10)
+    old = nl.join([
+        '\t--判断神兵系统是否开启',
+        '\tif role:getInheritFlag("可进入苏州水底") == 1 and not self.Curr_Button_State5 then',
+        '\t\tself.Curr_Button_State5 = true',
+        '\t\trole:setFlag("神兵","Y")',
+        '\t\tself._UI.Button_shenbing:setVisible(true)',
+        '\telse',
+        '\t\tif (role:getFlag("开启神兵系统") == 1 or role:getExp() > CAN_SHENBING_EXP) and not self.Curr_Button_State5 then',
+        '\t\t\tself.Curr_Button_State5 = true',
+        '\t\t\trole:setFlag("神兵","Y")',
+        '\t\t\tself._UI.Button_shenbing:setVisible(true)',
+        '\t\tend',
+        '\tend',
+    ])
+    new = nl.join([
+        '\t-- gh289: 神兵系统直接解锁（单机版）',
+        '\tif not self.Curr_Button_State5 then',
+        '\t\tself.Curr_Button_State5 = true',
+        '\t\trole:setFlag("神兵","Y")',
+        '\t\tself._UI.Button_shenbing:setVisible(true)',
+        '\tend',
+    ])
+    n = text.count(old)
+    if n != 1:
+        print('[overlay] gh289: WARN MainLayer shenbing anchor expected 1 got %d -> unchanged' % n,
+              flush=True)
+        return
+    open(p, 'wb').write(text.replace(old, new).encode('utf-8'))
+    print('[overlay] gh289: MainLayer.lua -> shenbing always unlocked OK', flush=True)
+
+
+
 def patch_additem_diag():
     """gh279: Role_Item:1482 无法找到该资源 诊断——商城商品 getOneItemByKey 落空。"""
     p = os.path.join(DEST, 'src', 'app', 'models', 'role', 'Role_Item.lua')
@@ -1350,6 +1404,8 @@ def main():
     patch_v37_pack_sync()
     # gh287: add new packs to server shelf list (test_packs.json).
     patch_server_test_packs()
+    # gh289: 神兵系统直接解锁（单机版）。
+    patch_shenbing_unlock()
     # ★ gh251 说明：原 gh249/gh250 不再调用。
     #   那两轮我按**本地开发树** ink_dec/fangzhi_lua_dec 分析，以为 game.zip 里带
     #   开发版 v57 遗留（按钮改名『经营』『科举』、跳过标题页）。实测 CI 实际用的
