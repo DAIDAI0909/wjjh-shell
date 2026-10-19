@@ -1079,18 +1079,18 @@ def patch_server_test_packs():
         print('[overlay] gh287: WARN test_packs.json not found under %s' % BUILD_DIR, flush=True)
         return
     NEW_ROWS_JSON = [
-        '{"key": "testpack_baseskill1000", "name": "基础武学1000级包", "dsc": "打开后 12 门基础武学（拳脚/剑法/刀法/内功/轻功/招架/暗器/鞭法/棍法/毒技/乐器/双持）立刻全部升到 1000 级（官方突破表的原生高度）。可重复购买。", "price": 1, "group": "general"}',
-        '{"key": "testpack_baseskill1500", "name": "基础武学1500级包", "dsc": "打开后 12 门基础武学立刻全部升到 1500 级（突破阶段同时拉满；超出官方上限，强度非常猛）。可重复购买。", "price": 1, "group": "general"}',
+        '{"key": "testpack_med_liangong", "name": "练功加速礼包", "dsc": "打开获得 5 份行功散（每份立刻减少 1 小时练功/修炼时间）+ 5 份福缘丹、灵智草、狗皮膏、轻身药（福缘+1／悟性+1~2／根骨+1~2／身法+1~2）。★ 行功散要在「练功／修炼」界面里点行功散按钮使用，不是背包里点使用；练功已完成时用不了。", "price": 1, "group": "general"}',
+        '{"key": "testpack_med_jingli", "name": "精力恢复礼包", "dsc": "打开获得 5 种精力药各 5 份：流云甘露（精力+100，最猛的一种）、天香玉露（精力+50，有几率抬精力上限）×2 种、万年灵芝（经验+潜能）、冰糖葫芦（经验+潜能）。打坐修炼都吃精力，精力见底就靠它补；精力满时吃不下会提示。", "price": 1, "group": "general"}',
+        '{"key": "testpack_med_exp", "name": "经验潜能礼包", "dsc": "打开获得 5 种修炼药各 5 份：潜能丹（潜能 10000+58×等级）、玄黄紫清丹（经验 20000+115×等级）、万年灵芝、冰糖葫芦、九转金丹（随机一项属性+1）。★ 潜能丹／玄黄紫清丹每天上限 20 颗，超了会提示\\"再吃就上瘾了\\"。", "price": 1, "group": "general"}',
+        '{"key": "testpack_med_neili", "name": "内力礼包", "dsc": "打开获得 5 种提升内力修为的药各 5 份：无尘果（内力上限+1000，最猛）、明境丹（+500）、菩提子（+300）×2 种、万年雪莲（+10）。", "price": 1, "group": "general"}',
+        '{"key": "testpack_med_siwei", "name": "四维成长礼包", "dsc": "打开获得 5 种成长药各 5 份：神力散（臂力+1~2）、轻身药（身法+1~2）、狗皮膏（根骨+1~2）、灵智草（悟性+1~2）、洗颜水（颜值+1）。★ 这类药每日限吃 3 颗（有月卡 +1）。", "price": 1, "group": "general"}',
+        '{"key": "testpack_med_yanzhi", "name": "颜值礼包", "dsc": "打开获得 2 种颜值药各 5 份：洗颜水（颜值+1，必成）、美容丸（20% 概率颜值+1）。（颜值这一类的药原版就只有这两种）", "price": 1, "group": "general"}',
+        '{"key": "testpack_med_special", "name": "特殊功能礼包", "dsc": "打开获得 5 种功能道具各 5 份：大补丸（挂机收益最大化）、静心丸（闭关必成功、不走火入魔）、三才丹（培元一次免真气）、遁地符（瞬移回家/任务点）、分身符（同时打工练功打坐）。★ 这几种都要在对应界面里用（挂机/闭关/培元/地图），背包里点\\"使用\\"没反应。", "price": 1, "group": "general"}',
+        '{"key": "testpack_shengongmateria", "name": "自创神功材料包", "dsc": "打开获得全套自创材料各 20 份：启发/灵感/神思（创作必成）/节源卷轴，精研/超群/跃兴/复思/弃定/重思之书（提升招式品质、重置词缀）。打开后在「家园书房→神功书案→自创武学」的道具面板里使用。可重复购买。", "price": 1, "group": "general"}',
+        '{"key": "testpack_xinshencap", "name": "心神上限提升礼包", "dsc": "打开后心神上限立刻提升到 99999，并回满心神（打开练功/心神面板即可见）。可重复购买（重复使用无副作用）。", "price": 1, "group": "general"}',
         '{"key": "testpack_huishendan", "name": "回神丹礼包", "dsc": "打开获得 10 颗九转凝神露（心神恢复面板里使用，一颗直接回满全部心神）。可重复购买。", "price": 1, "group": "general"}',
-        '{"key": "testpack_xinshencap", "name": "心神上限提升礼包", "dsc": "打开后心神上限立刻提升到 99999，并回满心神。可重复购买（重复使用无副作用）。", "price": 1, "group": "general"}',
-        '{"key": "testpack_shengongmateria", "name": "自创神功材料包", "dsc": "打开获得全套自创材料各 20 份：启发/灵感/神思/节源卷轴，精研/超群/跃兴/复思/弃定/重思之书。可重复购买。", "price": 1, "group": "general"}',
-        '{"key": "testpack_med_exp", "name": "经验潜能礼包", "dsc": "打开获得 5 种修炼药各 5 份：潜能丹、玄黄紫清丹、万年灵芝、冰糖葫芦、九转金丹。", "price": 1, "group": "general"}',
-        '{"key": "testpack_med_jingli", "name": "精力礼包", "dsc": "打开获得 5 种恢复精力/体力的丹药各 5 份。", "price": 1, "group": "general"}',
-        '{"key": "testpack_med_liangong", "name": "练功礼包", "dsc": "打开获得 5 种辅助练功的丹药各 5 份。", "price": 1, "group": "general"}',
-        '{"key": "testpack_med_neili", "name": "内力礼包", "dsc": "打开获得 5 种恢复/提升内力的丹药各 5 份。", "price": 1, "group": "general"}',
-        '{"key": "testpack_med_siwei", "name": "四维礼包", "dsc": "打开获得 5 种提升四维（臂力/悟性/根骨/身法）的丹药各 5 份。", "price": 1, "group": "general"}',
-        '{"key": "testpack_med_special", "name": "特殊丹药礼包", "dsc": "打开获得 5 种特殊效果的丹药各 5 份。", "price": 1, "group": "general"}',
-        '{"key": "testpack_med_yanzhi", "name": "颜值礼包", "dsc": "打开获得 2 种提升颜值的丹药各 5 份。", "price": 1, "group": "general"}'
+        '{"key": "testpack_baseskill1000", "name": "基础武学1000级包", "dsc": "打开后 12 门基础武学（拳脚/剑法/刀法/内功/轻功/招架/暗器/鞭法/棍法/毒技/乐器/双持）立刻全部升到 1000 级（官方突破表的原生高度）。可重复购买。", "price": 1, "group": "general"}',
+        '{"key": "testpack_baseskill1500", "name": "基础武学1500级包", "dsc": "打开后 12 门基础武学（拳脚/剑法/刀法/内功/轻功/招架/暗器/鞭法/棍法/毒技/乐器/双持）立刻全部升到 1500 级（突破阶段同时拉满；超出官方上限的高度，强度非常猛）。可重复购买。", "price": 1, "group": "general"}'
     ]
     try:
         rows = _json.load(open(p, encoding='utf-8'))
@@ -1402,6 +1402,10 @@ def main():
     patch_bagdesc_nil_guard()
     # gh291: 神兵系统无条件解锁（老板明确要求，与单机版内容同步无关）。
     patch_shenbing_unlock()
+    # gh292: 恢复单机版 v37 的 12 个礼包（已确认来自 v37 的 jhserver/test_packs.json，
+    #   不是开发版）：baseskill1000/1500、7 个 med_*、xinshencap、shengongmateria、huishendan。
+    patch_v37_pack_sync()
+    patch_server_test_packs()
     # ★ gh251 说明：原 gh249/gh250 不再调用。
     #   那两轮我按**本地开发树** ink_dec/fangzhi_lua_dec 分析，以为 game.zip 里带
     #   开发版 v57 遗留（按钮改名『经营』『科举』、跳过标题页）。实测 CI 实际用的
