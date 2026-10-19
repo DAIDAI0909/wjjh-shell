@@ -1400,12 +1400,6 @@ def main():
     patch_bagupgrade_diag()
     # gh285: BagDescLayer nil 防御（离开背包页 9 次报错）。
     patch_bagdesc_nil_guard()
-    # gh286: v37 单机版礼包同步（基础武学1000/1500级包等 12 个）。
-    patch_v37_pack_sync()
-    # gh287: add new packs to server shelf list (test_packs.json).
-    patch_server_test_packs()
-    # gh289: 神兵系统直接解锁（单机版）。
-    patch_shenbing_unlock()
     # ★ gh251 说明：原 gh249/gh250 不再调用。
     #   那两轮我按**本地开发树** ink_dec/fangzhi_lua_dec 分析，以为 game.zip 里带
     #   开发版 v57 遗留（按钮改名『经营』『科举』、跳过标题页）。实测 CI 实际用的
