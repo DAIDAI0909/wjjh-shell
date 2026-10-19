@@ -822,6 +822,18 @@ def patch_bagupgrade_diag():
             print('[overlay] gh282: BagUI Button_add click probe OK', flush=True)
         else:
             print('[overlay] gh282: WARN BagUI anchor=%d' % raw.count(old), flush=True)
+        # gh283: 绑定当时检查 Button_add 是否未找到/已是死节点（iOS 死节点疾病）
+        raw = open(p1, 'rb').read()
+        o = b'\tself.Button_add:releaseFunc(function()' + NL
+        n = (b'\tprint("[WJJH_BAGUP] Button_add=" .. tostring(self.Button_add)'
+             b' .. " dead=" .. tostring(self.Button_add ~= nil and tolua ~= nil'
+             b' and tolua.isnull ~= nil and tolua.isnull(self.Button_add) and true or false))' + NL +
+             o)
+        if raw.count(o) == 1:
+            open(p1, 'wb').write(raw.replace(o, n))
+            print('[overlay] gh283: BagUI Button_add liveness probe OK', flush=True)
+        else:
+            print('[overlay] gh283: WARN BagUI liveness anchor=%d' % raw.count(o), flush=True)
     # ---- 2) BagUpgradePresenters: 关键节点留痕 ----
     p2 = os.path.join(DEST, 'src', 'app', 'presenters', 'BagUpgrade', 'BagUpgradePresenters.lua')
     if os.path.exists(p2):
@@ -861,6 +873,20 @@ def patch_bagupgrade_diag():
             print('[overlay] gh282: PopupLayerController showFunc pcall+log OK', flush=True)
         else:
             print('[overlay] gh282: WARN PopupLayerController anchor=%d' % raw.count(old), flush=True)
+        # gh283: getLayer（require + create）若报错也不能静默——点升级无反应的嫌疑点之一
+        raw = open(p3, 'rb').read()
+        o = (b'\tlocal layer = self:getLayer(name)' + NL +
+             b'\tprint("PopupLayerController:showLayer = ", name, layer)' + NL)
+        n = (b'\tlocal layer' + NL +
+             b'\tlocal __okL, __errL = pcall(function() layer = self:getLayer(name) end)' + NL +
+             b'\tif not __okL then print("[WJJH_POPUP] getLayer error " .. tostring(name)'
+             b' .. " : " .. tostring(__errL)) return end' + NL +
+             b'\tprint("PopupLayerController:showLayer = ", name, layer)' + NL)
+        if raw.count(o) == 1:
+            open(p3, 'wb').write(raw.replace(o, n))
+            print('[overlay] gh283: PopupLayerController getLayer pcall+log OK', flush=True)
+        else:
+            print('[overlay] gh283: WARN PopupLayerController getLayer anchor=%d' % raw.count(o), flush=True)
 
 
 def patch_additem_diag():
