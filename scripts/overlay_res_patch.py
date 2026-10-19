@@ -932,6 +932,132 @@ def patch_bagdesc_nil_guard():
     print('[overlay] gh285: AttrControllLayer BagDescLayer nil-guard OK', flush=True)
 
 
+def patch_v37_pack_sync():
+    """gh286: 单机版 v37 礼包同步（基础武学1000/1500级包等 12 个）。
+
+    老板实测：安卓单机版 v37 商城里有的礼包，iOS 没有。差异实测量化：
+      v37 多 12 个礼包（baseskill1000/1500、6 个 med_* 属性包、回神丹/心神上限/
+      自创神功材料包等）。这些礼包定义在 v37 的 Items.lua，奖励在 Rewards.lua，
+      两个伪属性（testBaseSkillMax1000/1500）在 Role_Attr.lua。
+
+    ★ rid 冲突：v37 用的 9647-9683 在 iOS 已被"锻造材料"占用 ⇒ 全部重映射到
+      9920-9956（iOS 实测该区间空闲）。礼包定义里的 rwId1/rewardid 引用同步改写。
+    ★ 奖励物品（冰糖葫芦/遁地符/灵芝草等 18 种）iOS 的 storeItem.shangchengwupin
+      **本来就有**（已核验），所以开包能出真物品。
+    """
+    PACKS = [
+        ('testpack_baseskill1000', '["testpack_baseskill1000"]={["buyPrice"]=1,["canUse"]=1,["deposit"]=0,["dsc"]=[[打开后 12 门基础武学（拳脚/剑法/刀法/内功/轻功/招架/暗器/鞭法/棍法/毒技/乐器/双持）立刻全部升到 1000 级（官方突破表的原生高度）。可重复购买。]],["id"]=[[testpack_baseskill1000]],["name"]=[[基础武学1000级包]],["priceUnit"]=[[money]],["rwId1"]=[[{9920}]],["salePrice"]=0,["type"]=[[宝箱]],["unit"]=[[个]],["useDsc"]=[[HIY你打开了基础武学1000级包！NOR]]}'),
+        ('testpack_baseskill1500', '["testpack_baseskill1500"]={["buyPrice"]=1,["canUse"]=1,["deposit"]=0,["dsc"]=[[打开后 12 门基础武学（拳脚/剑法/刀法/内功/轻功/招架/暗器/鞭法/棍法/毒技/乐器/双持）立刻全部升到 1500 级（突破阶段同时拉满；超出官方上限的高度，强度非常猛）。可重复购买。]],["id"]=[[testpack_baseskill1500]],["name"]=[[基础武学1500级包]],["priceUnit"]=[[money]],["rwId1"]=[[{9921}]],["salePrice"]=0,["type"]=[[宝箱]],["unit"]=[[个]],["useDsc"]=[[HIY你打开了基础武学1500级包！NOR]]}'),
+        ('testpack_huishendan', '["testpack_huishendan"]={["buyPrice"]=1,["canUse"]=1,["deposit"]=0,["dsc"]=[[打开获得 10 颗九转凝神露（心神恢复面板里使用，一颗直接回满全部心神）。可重复购买。]],["id"]=[[testpack_huishendan]],["name"]=[[回神丹礼包]],["priceUnit"]=[[money]],["rewardid"]=[[9922]],["salePrice"]=0,["type"]=[[特殊]],["unit"]=[[个]],["useDsc"]=[[HIY你打开了回神丹礼包！NOR]]}'),
+        ('testpack_med_exp', '["testpack_med_exp"]={["buyPrice"]=1,["canUse"]=1,["deposit"]=0,["dsc"]=[[打开获得 5 种修炼药各 5 份：潜能丹（潜能 10000+58×等级）、玄黄紫清丹（经验 20000+115×等级）、万年灵芝、冰糖葫芦、九转金丹（随机一项属性+1）。★ 潜能丹／玄黄紫清丹每天上限 20 颗，超了会提示"再吃就上瘾了"。]],["id"]=[[testpack_med_exp]],["name"]=[[经验潜能礼包]],["priceUnit"]=[[money]],["rwId1"]=[[{9923,9924,9925,9926,9927}]],["salePrice"]=0,["type"]=[[宝箱]],["unit"]=[[个]],["useDsc"]=[[HIY你打开了经验潜能礼包！NOR]]}'),
+        ('testpack_med_jingli', '["testpack_med_jingli"]={["buyPrice"]=1,["canUse"]=1,["deposit"]=0,["dsc"]=[[打开获得 5 种精力药各 5 份：流云甘露（精力+100，最猛的一种）、天香玉露（精力+50，有几率抬精力上限）×2 种、万年灵芝（经验+潜能）、冰糖葫芦（经验+潜能）。打坐修炼都吃精力，精力见底就靠它补；精力满时吃不下会提示。]],["id"]=[[testpack_med_jingli]],["name"]=[[精力恢复礼包]],["priceUnit"]=[[money]],["rwId1"]=[[{9928,9929,9930,9931,9932}]],["salePrice"]=0,["type"]=[[宝箱]],["unit"]=[[个]],["useDsc"]=[[HIY你打开了精力恢复礼包！NOR]]}'),
+        ('testpack_med_liangong', '["testpack_med_liangong"]={["buyPrice"]=1,["canUse"]=1,["deposit"]=0,["dsc"]=[[打开获得 5 份行功散（每份立刻减少 1 小时练功/修炼时间）+ 5 份福缘丹、灵智草、狗皮膏、轻身药（福缘+1／悟性+1~2／根骨+1~2／身法+1~2）。★ 行功散要在「练功／修炼」界面里点行功散按钮使用，不是背包里点使用；练功已完成时用不了。]],["id"]=[[testpack_med_liangong]],["name"]=[[练功加速礼包]],["priceUnit"]=[[money]],["rwId1"]=[[{9933,9934,9935,9936,9937}]],["salePrice"]=0,["type"]=[[宝箱]],["unit"]=[[个]],["useDsc"]=[[HIY你打开了练功加速礼包！NOR]]}'),
+        ('testpack_med_neili', '["testpack_med_neili"]={["buyPrice"]=1,["canUse"]=1,["deposit"]=0,["dsc"]=[[打开获得 5 种提升内力修为的药各 5 份：无尘果（内力上限+1000，最猛）、明境丹（+500）、菩提子（+300）×2 种、万年雪莲（+10）。]],["id"]=[[testpack_med_neili]],["name"]=[[内力礼包]],["priceUnit"]=[[money]],["rwId1"]=[[{9938,9939,9940,9941,9942}]],["salePrice"]=0,["type"]=[[宝箱]],["unit"]=[[个]],["useDsc"]=[[HIY你打开了内力礼包！NOR]]}'),
+        ('testpack_med_siwei', '["testpack_med_siwei"]={["buyPrice"]=1,["canUse"]=1,["deposit"]=0,["dsc"]=[[打开获得 5 种成长药各 5 份：神力散（臂力+1~2）、轻身药（身法+1~2）、狗皮膏（根骨+1~2）、灵智草（悟性+1~2）、洗颜水（颜值+1）。★ 这类药每日限吃 3 颗（有月卡 +1）。]],["id"]=[[testpack_med_siwei]],["name"]=[[四维成长礼包]],["priceUnit"]=[[money]],["rwId1"]=[[{9943,9944,9945,9946,9947}]],["salePrice"]=0,["type"]=[[宝箱]],["unit"]=[[个]],["useDsc"]=[[HIY你打开了四维成长礼包！NOR]]}'),
+        ('testpack_med_special', '["testpack_med_special"]={["buyPrice"]=1,["canUse"]=1,["deposit"]=0,["dsc"]=[[打开获得 5 种功能道具各 5 份：大补丸（挂机收益最大化）、静心丸（闭关必成功、不走火入魔）、三才丹（培元一次免真气）、遁地符（瞬移回家/任务点）、分身符（同时打工练功打坐）。★ 这几种都要在对应界面里用（挂机/闭关/培元/地图），背包里点"使用"没反应。]],["id"]=[[testpack_med_special]],["name"]=[[特殊功能礼包]],["priceUnit"]=[[money]],["rwId1"]=[[{9948,9949,9950,9951,9952}]],["salePrice"]=0,["type"]=[[宝箱]],["unit"]=[[个]],["useDsc"]=[[HIY你打开了特殊功能礼包！NOR]]}'),
+        ('testpack_med_yanzhi', '["testpack_med_yanzhi"]={["buyPrice"]=1,["canUse"]=1,["deposit"]=0,["dsc"]=[[打开获得 2 种颜值药各 5 份：洗颜水（颜值+1，必成）、美容丸（20% 概率颜值+1）。（颜值这一类的药原版就只有这两种）]],["id"]=[[testpack_med_yanzhi]],["name"]=[[颜值礼包]],["priceUnit"]=[[money]],["rwId1"]=[[{9953,9954}]],["salePrice"]=0,["type"]=[[宝箱]],["unit"]=[[个]],["useDsc"]=[[HIY你打开了颜值礼包！NOR]]}'),
+        ('testpack_shengongmateria', '["testpack_shengongmateria"]={["buyPrice"]=1,["canUse"]=1,["deposit"]=0,["dsc"]=[[打开获得全套自创材料各 20 份：启发/灵感/神思（创作必成）/节源卷轴，精研/超群/跃兴/复思/弃定/重思之书（提升招式品质、重置词缀）。打开后在「家园书房→神功书案→自创武学」的道具面板里使用。可重复购买。]],["id"]=[[testpack_shengongmateria]],["name"]=[[自创神功材料包]],["priceUnit"]=[[money]],["rewardid"]=[[9955]],["salePrice"]=0,["type"]=[[特殊]],["unit"]=[[个]],["useDsc"]=[[HIY你打开了自创神功材料包！NOR]]}'),
+        ('testpack_xinshencap', '["testpack_xinshencap"]={["buyPrice"]=1,["canUse"]=1,["deposit"]=0,["dsc"]=[[打开后心神上限立刻提升到 99999，并回满心神（打开练功/心神面板即可见）。可重复购买（重复使用无副作用）。]],["id"]=[[testpack_xinshencap]],["name"]=[[心神上限提升礼包]],["priceUnit"]=[[money]],["rewardid"]=[[9956]],["salePrice"]=0,["type"]=[[特殊]],["unit"]=[[个]],["useDsc"]=[[HIY你打开了心神上限提升礼包！NOR]]}'),
+    ]
+    REWARDS = [
+        ('9920', '["9920"]={["calcType"]=[[固定类]],["id"]=9920,["rwName"]=[[testBaseSkillMax1000]],["rwNumber"]=1,["rwType"]=[[属性]]}'),
+        ('9921', '["9921"]={["calcType"]=[[固定类]],["id"]=9921,["rwName"]=[[testBaseSkillMax1500]],["rwNumber"]=1,["rwType"]=[[属性]]}'),
+        ('9922', '["9922"]={["calcType"]=[[固定类]],["id"]=9922,["rwName"]=[[exp]],["rwNumber"]=5000,["rwType"]=[[属性]]}'),
+        ('9923', '["9923"]={["calcType"]=[[固定类]],["id"]=9923,["rwName"]=[[qiannengdan]],["rwNumber"]=5,["rwType"]=[[物品]]}'),
+        ('9924', '["9924"]={["calcType"]=[[固定类]],["id"]=9924,["rwName"]=[[xuanhuangziqingdan]],["rwNumber"]=5,["rwType"]=[[物品]]}'),
+        ('9925', '["9925"]={["calcType"]=[[固定类]],["id"]=9925,["rwName"]=[[wannianlingzhi]],["rwNumber"]=5,["rwType"]=[[物品]]}'),
+        ('9926', '["9926"]={["calcType"]=[[固定类]],["id"]=9926,["rwName"]=[[bingtanghulu]],["rwNumber"]=5,["rwType"]=[[物品]]}'),
+        ('9927', '["9927"]={["calcType"]=[[固定类]],["id"]=9927,["rwName"]=[[jiuzhuanjindan]],["rwNumber"]=5,["rwType"]=[[物品]]}'),
+        ('9928', '["9928"]={["calcType"]=[[固定类]],["id"]=9928,["rwName"]=[[liuyunganlu]],["rwNumber"]=5,["rwType"]=[[物品]]}'),
+        ('9929', '["9929"]={["calcType"]=[[固定类]],["id"]=9929,["rwName"]=[[tianxiangyulu1]],["rwNumber"]=5,["rwType"]=[[物品]]}'),
+        ('9930', '["9930"]={["calcType"]=[[固定类]],["id"]=9930,["rwName"]=[[jinglidan]],["rwNumber"]=5,["rwType"]=[[物品]]}'),
+        ('9931', '["9931"]={["calcType"]=[[固定类]],["id"]=9931,["rwName"]=[[wannianlingzhi]],["rwNumber"]=5,["rwType"]=[[物品]]}'),
+        ('9932', '["9932"]={["calcType"]=[[固定类]],["id"]=9932,["rwName"]=[[bingtanghulu]],["rwNumber"]=5,["rwType"]=[[物品]]}'),
+        ('9933', '["9933"]={["calcType"]=[[固定类]],["id"]=9933,["rwName"]=[[xinggongsan]],["rwNumber"]=5,["rwType"]=[[物品]]}'),
+        ('9934', '["9934"]={["calcType"]=[[固定类]],["id"]=9934,["rwName"]=[[fuyuandan]],["rwNumber"]=5,["rwType"]=[[物品]]}'),
+        ('9935', '["9935"]={["calcType"]=[[固定类]],["id"]=9935,["rwName"]=[[lingzhicao]],["rwNumber"]=5,["rwType"]=[[物品]]}'),
+        ('9936', '["9936"]={["calcType"]=[[固定类]],["id"]=9936,["rwName"]=[[goupigao]],["rwNumber"]=5,["rwType"]=[[物品]]}'),
+        ('9937', '["9937"]={["calcType"]=[[固定类]],["id"]=9937,["rwName"]=[[qingshenyao]],["rwNumber"]=5,["rwType"]=[[物品]]}'),
+        ('9938', '["9938"]={["calcType"]=[[固定类]],["id"]=9938,["rwName"]=[[wuchenguo1]],["rwNumber"]=5,["rwType"]=[[物品]]}'),
+        ('9939', '["9939"]={["calcType"]=[[固定类]],["id"]=9939,["rwName"]=[[mingjingdan1]],["rwNumber"]=5,["rwType"]=[[物品]]}'),
+        ('9940', '["9940"]={["calcType"]=[[固定类]],["id"]=9940,["rwName"]=[[putizi1]],["rwNumber"]=5,["rwType"]=[[物品]]}'),
+        ('9941', '["9941"]={["calcType"]=[[固定类]],["id"]=9941,["rwName"]=[[neilidan]],["rwNumber"]=5,["rwType"]=[[物品]]}'),
+        ('9942', '["9942"]={["calcType"]=[[固定类]],["id"]=9942,["rwName"]=[[wannianxuelian]],["rwNumber"]=5,["rwType"]=[[物品]]}'),
+        ('9943', '["9943"]={["calcType"]=[[固定类]],["id"]=9943,["rwName"]=[[shenlishan]],["rwNumber"]=5,["rwType"]=[[物品]]}'),
+        ('9944', '["9944"]={["calcType"]=[[固定类]],["id"]=9944,["rwName"]=[[qingshenyao]],["rwNumber"]=5,["rwType"]=[[物品]]}'),
+        ('9945', '["9945"]={["calcType"]=[[固定类]],["id"]=9945,["rwName"]=[[goupigao]],["rwNumber"]=5,["rwType"]=[[物品]]}'),
+        ('9946', '["9946"]={["calcType"]=[[固定类]],["id"]=9946,["rwName"]=[[lingzhicao]],["rwNumber"]=5,["rwType"]=[[物品]]}'),
+        ('9947', '["9947"]={["calcType"]=[[固定类]],["id"]=9947,["rwName"]=[[xiyanshui]],["rwNumber"]=5,["rwType"]=[[物品]]}'),
+        ('9948', '["9948"]={["calcType"]=[[固定类]],["id"]=9948,["rwName"]=[[dabuwan]],["rwNumber"]=5,["rwType"]=[[物品]]}'),
+        ('9949', '["9949"]={["calcType"]=[[固定类]],["id"]=9949,["rwName"]=[[jingxinwan]],["rwNumber"]=5,["rwType"]=[[物品]]}'),
+        ('9950', '["9950"]={["calcType"]=[[固定类]],["id"]=9950,["rwName"]=[[sancaidan]],["rwNumber"]=5,["rwType"]=[[物品]]}'),
+        ('9951', '["9951"]={["calcType"]=[[固定类]],["id"]=9951,["rwName"]=[[dundifu]],["rwNumber"]=5,["rwType"]=[[物品]]}'),
+        ('9952', '["9952"]={["calcType"]=[[固定类]],["id"]=9952,["rwName"]=[[fenshenfu]],["rwNumber"]=5,["rwType"]=[[物品]]}'),
+        ('9953', '["9953"]={["calcType"]=[[固定类]],["id"]=9953,["rwName"]=[[xiyanshui]],["rwNumber"]=5,["rwType"]=[[物品]]}'),
+        ('9954', '["9954"]={["calcType"]=[[固定类]],["id"]=9954,["rwName"]=[[meirongwan]],["rwNumber"]=5,["rwType"]=[[物品]]}'),
+        ('9955', '["9955"]={["calcType"]=[[固定类]],["id"]=9955,["rwName"]=[[exp]],["rwNumber"]=5000,["rwType"]=[[属性]]}'),
+        ('9956', '["9956"]={["calcType"]=[[固定类]],["id"]=9956,["rwName"]=[[exp]],["rwNumber"]=5000,["rwType"]=[[属性]]}'),
+    ]
+    ATTRS = [
+        ('testBaseSkillMax1000', '\tif name == "testBaseSkillMax1000" then\r\n\t\t-- ★ 2026-10-17 v35（客户要求）：基础武学一键 1000 级。\r\n\t\t--   默认突破档 100001 的 Blevel 就是 1000（官方原生），setSkillLv 的 clamp 正好。\r\n\t\tlocal SkillHelper = require("app.models.skill.SkillHelper")\r\n\t\tlocal ids = { "jibenquanjiao", "jibenjianfa", "jibendaofa", "jibenneigong",\r\n\t\t              "jibenqinggong", "jibenzhaojia", "jibenanqi", "jibenbianfa",\r\n\t\t              "jibengunfa", "jibenduji", "jibenqinfa", "jibenshuangchi" }\r\n\t\tlocal n = 0\r\n\t\tfor _, sid in ipairs(ids) do\r\n\t\t\tSkillHelper:setSkillLv(self, sid, 1000)\r\n\t\t\tn = n + 1\r\n\t\tend\r\n\t\tPopText("基础武学已设为 1000 级（" .. n .. " 门）")\r\n\t\treturn\r\n\tend\r\n'),
+        ('testBaseSkillMax1500', '\tif name == "testBaseSkillMax1500" then\r\n\t\t-- ★ 2026-10-17 v35（客户要求）：基础武学一键 1500 级。\r\n\t\t--   官方突破表最高 100011（class=11，Blevel=1100）⇒ 先把突破阶段拉满（面板"已满"），\r\n\t\t--   再按公式直写 1500 级经验（等级→经验是公式 0.015×lv³+1，写入底层不 clamp）。\r\n\t\tlocal SkillHelper = require("app.models.skill.SkillHelper")\r\n\t\tlocal BreakRes = require("app.models.skill.skillBreakThrough.SkillBreakThroughResManager")\r\n\t\tlocal ids = { "jibenquanjiao", "jibenjianfa", "jibendaofa", "jibenneigong",\r\n\t\t              "jibenqinggong", "jibenzhaojia", "jibenanqi", "jibenbianfa",\r\n\t\t              "jibengunfa", "jibenduji", "jibenqinfa", "jibenshuangchi" }\r\n\t\tlocal maxBreId = BreakRes:getSkillBreakThroughMapByLevel(11).id\r\n\t\tlocal n = 0\r\n\t\tfor _, sid in ipairs(ids) do\r\n\t\t\tself:setSkillBreId(sid, maxBreId)\r\n\t\t\tSkillHelper:setRoleSkill(self, sid, { id = sid, exp = SkillHelper:getExp(sid, 1500) })\r\n\t\t\tn = n + 1\r\n\t\tend\r\n\t\tPopText("基础武学已设为 1500 级（" .. n .. " 门）")\r\n\t\treturn\r\n\tend\r\n'),
+    ]
+
+    # ---- 1) Items.lua：末尾 }} 前插入礼包定义 ----
+    p = os.path.join(DEST, 'res', 'script', 'map', 'mapItemAttr', 'Items.lua')
+    if os.path.exists(p):
+        raw = open(p, 'rb').read()
+        if b'testpack_baseskill1000' in raw:
+            print('[overlay] gh286: Items.lua already synced, skip', flush=True)
+        else:
+            text = raw.decode('utf-8', 'replace')
+            if text.rstrip().endswith('}}'):
+                idx = text.rstrip().rfind('}}')
+                ins = ',' + ','.join(defn for _k, defn in PACKS)
+                text = text[:idx] + ins + text[idx:]
+                open(p, 'wb').write(text.encode('utf-8'))
+                print('[overlay] gh286: Items.lua -> %d packs injected OK' % len(PACKS), flush=True)
+            else:
+                print('[overlay] gh286: WARN Items.lua tail unexpected', flush=True)
+    # ---- 2) Rewards.lua ----
+    p = os.path.join(DEST, 'res', 'script', 'map', 'mapItemAttr', 'Rewards.lua')
+    if os.path.exists(p):
+        raw = open(p, 'rb').read()
+        if b'["9920"]' in raw:
+            print('[overlay] gh286: Rewards.lua already synced, skip', flush=True)
+        else:
+            text = raw.decode('utf-8', 'replace')
+            if text.rstrip().endswith('}}'):
+                idx = text.rstrip().rfind('}}')
+                ins = ',' + ','.join(defn for _k, defn in REWARDS)
+                text = text[:idx] + ins + text[idx:]
+                open(p, 'wb').write(text.encode('utf-8'))
+                print('[overlay] gh286: Rewards.lua -> %d rewards injected OK' % len(REWARDS), flush=True)
+            else:
+                print('[overlay] gh286: WARN Rewards.lua tail unexpected', flush=True)
+    # ---- 3) Role_Attr.lua：500 级分支后插入两个新伪属性 ----
+    p = os.path.join(DEST, 'src', 'app', 'models', 'role', 'Role_Attr.lua')
+    if os.path.exists(p):
+        raw = open(p, 'rb').read()
+        if b'testBaseSkillMax1000' in raw:
+            print('[overlay] gh286: Role_Attr already synced, skip', flush=True)
+        else:
+            text = raw.decode('utf-8', 'replace')
+            crlf = chr(13) + chr(10)
+            nl = crlf if crlf in text[:4000] else chr(10)
+            anchor = ('\t\tPopText("基础武学已设为 500 级（" .. n .. " 门）")' + nl +
+                      '\t\treturn' + nl + '\tend' + nl)
+            if text.count(anchor) == 1:
+                ins = ''.join(a for _k, a in ATTRS)
+                if nl != crlf:
+                    ins = ins.replace(crlf, nl)
+                text = text.replace(anchor, anchor + ins)
+                open(p, 'wb').write(text.encode('utf-8'))
+                print('[overlay] gh286: Role_Attr.lua -> %d pseudo-attrs injected OK' % len(ATTRS), flush=True)
+            else:
+                print('[overlay] gh286: WARN Role_Attr anchor=%d' % text.count(anchor), flush=True)
+
+
 def patch_additem_diag():
     """gh279: Role_Item:1482 无法找到该资源 诊断——商城商品 getOneItemByKey 落空。"""
     p = os.path.join(DEST, 'src', 'app', 'models', 'role', 'Role_Item.lua')
@@ -1169,6 +1295,8 @@ def main():
     patch_bagupgrade_diag()
     # gh285: BagDescLayer nil 防御（离开背包页 9 次报错）。
     patch_bagdesc_nil_guard()
+    # gh286: v37 单机版礼包同步（基础武学1000/1500级包等 12 个）。
+    patch_v37_pack_sync()
     # ★ gh251 说明：原 gh249/gh250 不再调用。
     #   那两轮我按**本地开发树** ink_dec/fangzhi_lua_dec 分析，以为 game.zip 里带
     #   开发版 v57 遗留（按钮改名『经营』『科举』、跳过标题页）。实测 CI 实际用的
