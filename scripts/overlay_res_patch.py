@@ -1400,6 +1400,8 @@ def main():
     patch_bagupgrade_diag()
     # gh285: BagDescLayer nil 防御（离开背包页 9 次报错）。
     patch_bagdesc_nil_guard()
+    # gh291: 神兵系统无条件解锁（老板明确要求，与单机版内容同步无关）。
+    patch_shenbing_unlock()
     # ★ gh251 说明：原 gh249/gh250 不再调用。
     #   那两轮我按**本地开发树** ink_dec/fangzhi_lua_dec 分析，以为 game.zip 里带
     #   开发版 v57 遗留（按钮改名『经营』『科举』、跳过标题页）。实测 CI 实际用的
