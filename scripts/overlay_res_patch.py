@@ -1058,6 +1058,57 @@ def patch_v37_pack_sync():
                 print('[overlay] gh286: WARN Role_Attr anchor=%d' % text.count(anchor), flush=True)
 
 
+def patch_server_test_packs():
+    """gh287: 把 v37 新增的 12 个礼包加进私服货架清单（test_packs.json）。
+
+    gh286 只把礼包定义注入客户端（Items/Rewards/Role_Attr），但商城货架由**私服的**
+    test_packs.json 决定（fz_api/shop_store.py 读它 → 按 group 分栏）。
+    gh286 实测：服务端应答仍是「限时 29」，新礼包没上架 ⇒ 商城里看不到。
+    """
+    import json as _json
+    cands = [
+        os.path.join(BUILD_DIR, 'py_ios_server', 'jhserver', 'test_packs.json'),
+        os.path.join(BUILD_DIR, 'gamelua', 'test_packs.json'),
+    ]
+    p = next((c for c in cands if os.path.exists(c)), None)
+    if p is None:
+        import glob as _glob
+        hits = _glob.glob(os.path.join(BUILD_DIR, '**', 'test_packs.json'), recursive=True)
+        p = hits[0] if hits else None
+    if p is None:
+        print('[overlay] gh287: WARN test_packs.json not found under %s' % BUILD_DIR, flush=True)
+        return
+    NEW_ROWS_JSON = [
+        '{"key": "testpack_baseskill1000", "name": "基础武学1000级包", "dsc": "打开后 12 门基础武学（拳脚/剑法/刀法/内功/轻功/招架/暗器/鞭法/棍法/毒技/乐器/双持）立刻全部升到 1000 级（官方突破表的原生高度）。可重复购买。", "price": 1, "group": "general"}',
+        '{"key": "testpack_baseskill1500", "name": "基础武学1500级包", "dsc": "打开后 12 门基础武学立刻全部升到 1500 级（突破阶段同时拉满；超出官方上限，强度非常猛）。可重复购买。", "price": 1, "group": "general"}',
+        '{"key": "testpack_huishendan", "name": "回神丹礼包", "dsc": "打开获得 10 颗九转凝神露（心神恢复面板里使用，一颗直接回满全部心神）。可重复购买。", "price": 1, "group": "general"}',
+        '{"key": "testpack_xinshencap", "name": "心神上限提升礼包", "dsc": "打开后心神上限立刻提升到 99999，并回满心神。可重复购买（重复使用无副作用）。", "price": 1, "group": "general"}',
+        '{"key": "testpack_shengongmateria", "name": "自创神功材料包", "dsc": "打开获得全套自创材料各 20 份：启发/灵感/神思/节源卷轴，精研/超群/跃兴/复思/弃定/重思之书。可重复购买。", "price": 1, "group": "general"}',
+        '{"key": "testpack_med_exp", "name": "经验潜能礼包", "dsc": "打开获得 5 种修炼药各 5 份：潜能丹、玄黄紫清丹、万年灵芝、冰糖葫芦、九转金丹。", "price": 1, "group": "general"}',
+        '{"key": "testpack_med_jingli", "name": "精力礼包", "dsc": "打开获得 5 种恢复精力/体力的丹药各 5 份。", "price": 1, "group": "general"}',
+        '{"key": "testpack_med_liangong", "name": "练功礼包", "dsc": "打开获得 5 种辅助练功的丹药各 5 份。", "price": 1, "group": "general"}',
+        '{"key": "testpack_med_neili", "name": "内力礼包", "dsc": "打开获得 5 种恢复/提升内力的丹药各 5 份。", "price": 1, "group": "general"}',
+        '{"key": "testpack_med_siwei", "name": "四维礼包", "dsc": "打开获得 5 种提升四维（臂力/悟性/根骨/身法）的丹药各 5 份。", "price": 1, "group": "general"}',
+        '{"key": "testpack_med_special", "name": "特殊丹药礼包", "dsc": "打开获得 5 种特殊效果的丹药各 5 份。", "price": 1, "group": "general"}',
+        '{"key": "testpack_med_yanzhi", "name": "颜值礼包", "dsc": "打开获得 2 种提升颜值的丹药各 5 份。", "price": 1, "group": "general"}'
+    ]
+    try:
+        rows = _json.load(open(p, encoding='utf-8'))
+    except Exception as e:
+        print('[overlay] gh287: WARN cannot parse test_packs.json (%r)' % e, flush=True)
+        return
+    have = {r.get('key') for r in rows if isinstance(r, dict)}
+    added = 0
+    for blob in NEW_ROWS_JSON:
+        r = _json.loads(blob)
+        if r['key'] not in have:
+            rows.append(r)
+            added += 1
+    if added:
+        _json.dump(rows, open(p, 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
+    print('[overlay] gh287: %s -> +%d packs (total %d) OK' % (p, added, len(rows)), flush=True)
+
+
 def patch_additem_diag():
     """gh279: Role_Item:1482 无法找到该资源 诊断——商城商品 getOneItemByKey 落空。"""
     p = os.path.join(DEST, 'src', 'app', 'models', 'role', 'Role_Item.lua')
@@ -1297,6 +1348,8 @@ def main():
     patch_bagdesc_nil_guard()
     # gh286: v37 单机版礼包同步（基础武学1000/1500级包等 12 个）。
     patch_v37_pack_sync()
+    # gh287: add new packs to server shelf list (test_packs.json).
+    patch_server_test_packs()
     # ★ gh251 说明：原 gh249/gh250 不再调用。
     #   那两轮我按**本地开发树** ink_dec/fangzhi_lua_dec 分析，以为 game.zip 里带
     #   开发版 v57 遗留（按钮改名『经营』『科举』、跳过标题页）。实测 CI 实际用的
