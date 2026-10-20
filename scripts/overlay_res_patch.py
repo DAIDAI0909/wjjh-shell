@@ -1175,6 +1175,27 @@ def patch_shop_zero_price():
     sp = _find_server_file(('fz_api', 'shop_store.py'))
     if sp:
         t = open(sp, encoding='utf-8').read()
+        # ★★★ gh296 关键修复：**`or 1` 把 price=0 又变回 1**。
+        #   shop_store.py 载入 test_packs.json 的那行是：
+        #       TEST_PACKS[_k] = (_row.get('name') or _k, int(_row.get('price') or 1))
+        #   Python 里 `0 or 1 == 1`（0 是 falsy）⇒ 我 gh295 把 JSON 全改成 0 后，
+        #   这里**又全部还原成 1**。老板实测「小部分零、大部分 1」正是这个：
+        #     关卡卷(VOLUME_PRICE 硬编码) / 商城 11 件(MALL_GOODS) / 特权 2 件 = 0 ✓
+        #     限时 41 + 神功 173 + 商城资源 14 = 1 ✗（全走 test_packs → or 1）
+        #   修：改成 `0 if price is None else int(price)`，语义="缺字段才用 1"。
+        _old_pk = ("TEST_PACKS[_k] = (_row.get('name') or _k, "
+                   "int(_row.get('price') or 1))")
+        _new_pk = ("# gh296: 0 是合法价格（零元购），不能用 `or 1` 兜底\n"
+                   "                _p = _row.get('price')\n"
+                   "                TEST_PACKS[_k] = (_row.get('name') or _k,\n"
+                   "                                  1 if _p is None else int(_p))")
+        if _old_pk in t:
+            t = t.replace(_old_pk, _new_pk, 1)
+            changed.append('or1-fix')
+        elif "_p = _row.get('price')" in t:
+            changed.append('or1-already')
+        else:
+            print('[overlay] gh296: WARN TEST_PACKS or1 anchor not found', flush=True)
         # B: MALL_GOODS 价格位（元组第 3 元素）
         mall_re = _re.compile(
             r"(\('[A-Za-z0-9_]+',\s*'[^']*',\s*)(\d+)(,\s*\d+,\s*'[^']*',)")
@@ -1277,6 +1298,56 @@ def patch_shenbing_unlock():
     open(p, 'wb').write(text.replace(old, new).encode('utf-8'))
     print('[overlay] gh289: MainLayer.lua -> shenbing always unlocked OK', flush=True)
 
+
+
+def patch_bagui_desc_nil_guard():
+    """gh296: BagUI 里 4 处 `PopupLayerController:hideLayer("BagDescLayer", ...)`
+    的 layer nil 防御（gh285 只修了 AttrControllLayer 那一处）。
+
+    老板 gh295 实测日志实锤 10 次：
+      [string "app/views/ui/AttrUI/BagUI.lua"]:711:
+        attempt to call method 'hideLayer' (a nil value)
+      stack: WidgetEx.lua:180 hideLayer <- BagUI.lua:711 hideFunc
+             <- PopupLayerController.lua:748 hideLayer <- BagUI.lua:710 clickOneItem
+    即：点背包物品时 `PopupLayerController:hideLayer` 取到的 layer 是 nil，
+    回调里直接 `layer:hideLayer()` 就炸。每点一次报一次，背包状态半残。
+
+    做法：把所有 `function(layer) layer:hideLayer() end` 的**单行/多行**写法
+    统一改成带 nil 判断（nil 只记日志并 return，不中断后续链）。
+    """
+    p = os.path.join(DEST, 'src', 'app', 'views', 'ui', 'AttrUI', 'BagUI.lua')
+    if not os.path.exists(p):
+        print('[overlay] gh296: WARN BagUI.lua not found', flush=True)
+        return
+    raw = open(p, 'rb').read()
+    if b'WJJH_BAGDESC_NIL' in raw:
+        print('[overlay] gh296: BagUI already patched, skip', flush=True)
+        return
+    NL = b'\r\n'
+    guard = (b'if layer == nil then ' +
+             b'print("[WJJH_BAGDESC_NIL] BagUI hideLayer(nil) skipped") return end ')
+    # 形如 `function ( layer )` / `function(layer)` 后面紧跟 layer:hideLayer()
+    variants = [
+        (b'function ( layer )' + NL + b'\t\t\t\t\tlayer:hideLayer()',
+         b'function ( layer )' + NL + b'\t\t\t\t\t' + guard + b'layer:hideLayer()'),
+        (b'function(layer)' + NL + b'\t\t\tlayer:hideLayer()',
+         b'function(layer)' + NL + b'\t\t\t' + guard + b'layer:hideLayer()'),
+        (b'function(layer)' + NL + b'\t\t\t\t\tlayer:hideLayer()',
+         b'function(layer)' + NL + b'\t\t\t\t\t' + guard + b'layer:hideLayer()'),
+    ]
+    new, total = raw, 0
+    for old, repl in variants:
+        n = new.count(old)
+        if n:
+            new = new.replace(old, repl)
+            total += n
+    if total == 0:
+        print('[overlay] gh296: WARN BagUI hideLayer anchor matched 0 -> unchanged',
+              flush=True)
+        return
+    open(p, 'wb').write(new)
+    print('[overlay] gh296: BagUI.lua -> %d hideLayer(nil) guards OK' % total,
+          flush=True)
 
 
 def patch_shenbing_suidi_flag():
@@ -1696,6 +1767,9 @@ def main():
     #   只压标价不动扣费函数：total=0 ⇒ 不拦不扣，购买天然免费。
     #   覆盖 test_packs.json / MALL_GOODS / PRIVILEGE_GOODS / _VOL_PRICE 四处。
     patch_shop_zero_price()
+    # gh296: BagUI 里 4 处 hideLayer("BagDescLayer") 的 layer nil 防御
+    #   （gh285 只修了 AttrControllLayer 一处；老板日志实锤 BagUI:711 报错 10 次）。
+    patch_bagui_desc_nil_guard()
     # ★ gh251 说明：原 gh249/gh250 不再调用。
     #   那两轮我按**本地开发树** ink_dec/fangzhi_lua_dec 分析，以为 game.zip 里带
     #   开发版 v57 遗留（按钮改名『经营』『科举』、跳过标题页）。实测 CI 实际用的

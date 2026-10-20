@@ -281,8 +281,22 @@ if cc and cc.Node then
     if __isnull == nil then return true end
     local ok, dead = pcall(__isnull, obj)
     if not ok or not dead then return true end          -- isnull 说活 / 调不通 → 当活
-    local ok2, r = pcall(function() return obj:getTag() end)
-    return ok2 and r ~= nil                              -- 能取到 tag = 活节点
+    -- ★★★ gh296: gh288 的活体复核**漏判**导致 SIGSEGV。
+    --   老板 gh295 实测 WJJH-2026-10-20-205710.ips：
+    --     lua_cocos2dx_Node_getParent 解引用 0x0（SIGSEGV），
+    --     而 WJJH_GUARD 在 23 万行日志里**一次都没触发** ⇒ 守卫把死节点判成了活。
+    --   根因：这里只测 getTag()。节点释放后内存被复用成别的对象时，
+    --     getTag 仍可能返回非 nil ⇒ 误判为活 ⇒ 守卫放行 ⇒ 崩在 getParent。
+    --   修：**三重复核**——getTag/getName/getPosition 三个独立取值方法
+    --     都调得通（且前两个结果合理）才算活。内存复用后三者同时命中的概率极低。
+    --   注：不用 getChildren/getContentSize（可能返回 userdata，判空不可靠）。
+    local ok2, r2 = pcall(function() return obj:getTag() end)
+    if not ok2 or r2 == nil then return false end
+    local ok3, r3 = pcall(function() return obj:getName() end)
+    if not ok3 then return false end
+    local ok4, r4 = pcall(function() return obj:getPosition() end)
+    if not ok4 or r4 == nil then return false end
+    return true
   end
   -- gh275: 收窄到 getParent。gh277 又见 removeFromParentAndCleanup 裸调 SIGSEGV
   --   （同一疾病不同方法）⇒ 打地鼠失败，gh278 改**全量化**：遍历 cc.Node 类表上
@@ -1289,6 +1303,41 @@ local function __wjjh_instrument(name, M)
         --   真机走游戏自己的 33ms 调度（≈30fps 逻辑帧，与安卓一致）。
         if __WJJH_DEVICE then
           __wjjhlog('WJJH_FIGHT: frame-drive skipped (device build)')
+          -- ★ gh296: 真机战斗帧率探针（老板反馈"打斗抽帧/不流畅"，但日志无时间锚，
+          --   上轮推算不可靠已撤回）。这里在**真机路径**挂一个轻量计数：
+          --   每次 Fight.start 记下当前渲染帧计数与时间，并在 FightLayer 的
+          --   33ms 调度上累加逻辑帧，战斗结束时打出 逻辑帧/秒 与 渲染帧/秒。
+          --   ★开销：每次 start 只做两次 director 取值 + 结束时一行日志，可忽略。
+          local __sc0 = cc.Director:getInstance():getRunningScene()
+          if __sc0 and __sc0.schedule then
+            self.__wjjh_fps = { t0 = os.clock(), n = 0, r0 = 0 }
+            -- 逻辑帧计数：包一层 updateFrame（只在本场有效，战斗结束自动停）
+            local __ouf = self.updateFrame
+            if type(__ouf) == 'function' and not self.__wjjh_fpsHooked then
+              self.__wjjh_fpsHooked = true
+              self.updateFrame = function(s, ...)
+                if s.__wjjh_fps then s.__wjjh_fps.n = s.__wjjh_fps.n + 1 end
+                return __ouf(s, ...)
+              end
+            end
+            -- 渲染帧计数：每渲染帧 +1（挂场景 schedule，interval=0）
+            __sc0:schedule(function()
+              local f = self.__wjjh_fps
+              if not f or self._state ~= (_G.FIGHT_STATE_RUNNING or 4) then
+                return
+              end
+              f.r0 = f.r0 + 1
+              local dt = os.clock() - f.t0
+              if dt >= 3 then
+                local lfps = f.n / dt
+                local rfps = f.r0 / dt
+                __wjjhlog(string.format(
+                  'WJJH_FPS: logic=%.1f fps  render=%.1f fps  frames=%d  dt=%.1fs',
+                  lfps, rfps, f.n, dt))
+                f.t0, f.n, f.r0 = os.clock(), 0, 0
+              end
+            end)
+          end
           return ost(self, ...)
         end
         if not self.__wjjh_frameHook then
