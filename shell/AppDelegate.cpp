@@ -276,26 +276,43 @@ if cc and cc.Node then
   --   BookCaseLayer 刚创建、peer 已挂，isnull 返回 true ⇒ getParent 守卫返回 nil
   --   ⇒ NodeEx:maxZ 崩 ⇒ showLayer 链断 ⇒ 书匣/武器点击全无反应）。
   --   加一道"活体复核"：isnull 说死时再实测一次轻量方法，能调通就当活的。
+  -- ★★★ gh297: 上一版 gh296 在这里写了**无限递归**，导致必崩，必须记死：
+  --   gh296 把复核改成 `obj:getTag()/getName()/getPosition()` 三个方法，
+  --   但这三个方法**全都在下面的 __methodList 里、都会被包装成
+  --   "先调 __wjjh_alive 再调原方法"**。于是：
+  --       cc.Node.getName(包装) -> __wjjh_alive -> obj:getName() -> 包装 -> ...
+  --   无限递归 ⇒ 栈爆/访问非法内存 ⇒ SIGSEGV @ lua_cocos2dx_Node_getName
+  --   （老板实测 WJJH-2026-10-20-223549.ips，且 WJJH_GUARD 仍是 0 次——
+  --     递归在守卫真正判定之前就把栈打爆了）。
+  --   gh288 那版只调 getTag，而 getTag 在 __guarded 里有**独立实现**（直接
+  --   return -1，不递归），所以侥幸没炸；gh296 加的两个走通用包装，必炸。
+  --
+  -- ★ 正解：复核**只能调"未被包装"的原函数**。做法是把原函数存进
+  --   __wjjh_orig，包装时写入，复核时优先取它；取不到就退回 pcall 原生调用
+  --   （且必须确认不是包装体——用 __wjjh_guardTag 标记区分）。
+  local __wjjh_orig = {}          -- name -> 原始 C 函数（包装前）
+  local function __wjjh_raw(obj, name)
+    local f = __wjjh_orig[name]
+    if f == nil then return nil end
+    local ok, r = pcall(f, obj)
+    if not ok then return nil end
+    return r
+  end
   local function __wjjh_alive(obj)
     if obj == nil or type(obj) ~= 'userdata' then return false end
     if __isnull == nil then return true end
     local ok, dead = pcall(__isnull, obj)
     if not ok or not dead then return true end          -- isnull 说活 / 调不通 → 当活
-    -- ★★★ gh296: gh288 的活体复核**漏判**导致 SIGSEGV。
-    --   老板 gh295 实测 WJJH-2026-10-20-205710.ips：
-    --     lua_cocos2dx_Node_getParent 解引用 0x0（SIGSEGV），
-    --     而 WJJH_GUARD 在 23 万行日志里**一次都没触发** ⇒ 守卫把死节点判成了活。
-    --   根因：这里只测 getTag()。节点释放后内存被复用成别的对象时，
-    --     getTag 仍可能返回非 nil ⇒ 误判为活 ⇒ 守卫放行 ⇒ 崩在 getParent。
-    --   修：**三重复核**——getTag/getName/getPosition 三个独立取值方法
-    --     都调得通（且前两个结果合理）才算活。内存复用后三者同时命中的概率极低。
-    --   注：不用 getChildren/getContentSize（可能返回 userdata，判空不可靠）。
-    local ok2, r2 = pcall(function() return obj:getTag() end)
-    if not ok2 or r2 == nil then return false end
-    local ok3, r3 = pcall(function() return obj:getName() end)
-    if not ok3 then return false end
-    local ok4, r4 = pcall(function() return obj:getPosition() end)
-    if not ok4 or r4 == nil then return false end
+    -- 复核：**只走 __wjjh_orig 里的原始函数**，绝不调用被包装的类表方法。
+    -- 若原函数还没登记（包装尚未执行），保守当活（与 gh288 行为一致）。
+    if __wjjh_orig.getTag == nil then return true end
+    -- getTag 是最强的活体信号：节点若真被释放，原始 getTag 会抛错 → __wjjh_raw 返回 nil
+    if __wjjh_raw(obj, 'getTag') == nil then return false end
+    -- 二次复核：原始 getPosition 也调得通才算活（多一个独立字段，抗内存复用）。
+    -- ★ 注意 getName 对无名节点本就返回 nil（合法值），不能拿它判死活，故不用。
+    if __wjjh_orig.getPosition ~= nil then
+      if __wjjh_raw(obj, 'getPosition') == nil then return false end
+    end
     return true
   end
   -- gh275: 收窄到 getParent。gh277 又见 removeFromParentAndCleanup 裸调 SIGSEGV
@@ -342,6 +359,9 @@ if cc and cc.Node then
       local okf, __orig = pcall(function() return cc.Node[__name] end)
       if okf and type(__orig) == 'function' and not rawget(cc.Node, __name) then
         __origTable[__name] = __orig
+        -- ★ gh297: 登记原始函数，供 __wjjh_alive 复核时**绕开包装**调用
+        --   （不登记 = 复核递归 = SIGSEGV，见上方 gh296 事故注释）。
+        __wjjh_orig[__name] = __orig
         cc.Node[__name] = function(self, ...)
           if not __wjjh_alive(self) then
             return nil
@@ -355,6 +375,8 @@ if cc and cc.Node then
   for __name, __fallback in pairs(__guarded) do
     local okg, __orig = pcall(function() return cc.Node[__name] end)
     if okg and type(__orig) == 'function' and not rawget(cc.Node, __name) then
+      -- ★ gh297: 同样登记原始函数（getTag 就在 __guarded 里，复核必须走原始版）
+      __wjjh_orig[__name] = __orig
       cc.Node[__name] = function(self, ...)
         if not __wjjh_alive(self) then
           -- gh274: 命中守卫必须留痕——"网络错误请重试"这类软错误（老板 gh272 实测
