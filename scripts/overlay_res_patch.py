@@ -1256,6 +1256,68 @@ def patch_shenbing_flags_fallback():
     print('[overlay] gh293b: fz_boot_server.py -> fallback shenbing flags injected OK', flush=True)
 
 
+def patch_shenbing_repair_guard():
+    """gh294: 神兵直开保底——补在**客户端** Role:repairUserData（v37 单机版原位）。
+
+    ★★★ 为什么 gh293（只改服务端）不生效（老板实测"神兵还需做任务"）：
+      v37 单机版 Role.lua:801-807 原注释写得很明白——
+        「正常登录**不用服务端下发的角色档，标志只在本地存档里**；服务端下载路径
+          另有同款保底」
+      ⇒ 单机版玩家走「登录读本地存档 → repairUserData 修复」这条链，
+        gh293 只补了私服下发路径，本地存档里的 flag 仍是 1/0 ⇒ 按钮在但打造不了。
+
+    这里按 v37 原文（逐字对齐，四块）注入 repairUserData 开头：
+      1. 「开始神兵任务」< 2 → 2   （免做唐门之乱剧情；神兵主界面/玄兵古洞NPC/家具）
+      2. 「可进入苏州水底」< 1 → 1 （主界面神兵按钮/地图锻造·熔炉·加工·修理/家具神兵台）
+      3. bagShenBingNumLimit < 99 → 99（v33 双上限保底；出厂 1 ⇒ 客户见"1/1"）
+      4. 「开启神功系统」< 1 → 1 + shenBingNumLimit < 99 → 99（v36 神功系统直开）
+    """
+    p = os.path.join(DEST, 'src', 'app', 'models', 'role', 'Role.lua')
+    if not os.path.exists(p):
+        print('[overlay] gh294: WARN Role.lua not found at %s' % p, flush=True)
+        return
+    raw = open(p, 'rb').read()
+    if b'WJJH_SHENBING_GUARD' in raw:
+        print('[overlay] gh294: Role.lua already patched, skip', flush=True)
+        return
+
+    NL = b'\r\n'
+    # 锚点：v37 与 CI 基线里该函数唯一，且下一行固定是 --@desc 注释
+    anchor = (b'function Role:repairUserData()' + NL +
+              b'\t--@desc ' + '修改角色状态存储数据结构'.encode('utf-8'))
+
+    guard = b''.join([
+        b'function Role:repairUserData()' + NL,
+        b'\t-- WJJH_SHENBING_GUARD (gh294): ' +
+        '神兵/神功直开保底——逐字对齐单机版 v37（Role.lua:801-833）'.encode('utf-8') + NL,
+        b'\tif self:getInheritFlag("' + '开始神兵任务'.encode('utf-8') + b'") < 2 then' + NL,
+        b'\t\tself:setInheritFlag("' + '开始神兵任务'.encode('utf-8') + b'", 2)' + NL,
+        b'\tend' + NL,
+        b'\tif self:getInheritFlag("' + '可进入苏州水底'.encode('utf-8') + b'") < 1 then' + NL,
+        b'\t\tself:setInheritFlag("' + '可进入苏州水底'.encode('utf-8') + b'", 1)' + NL,
+        b'\tend' + NL,
+        b'\tif (self:getAttr("bagShenBingNumLimit") or 0) < 99 then' + NL,
+        b'\t\tself:setAttr("bagShenBingNumLimit", 99)' + NL,
+        b'\tend' + NL,
+        b'\tif self:getInheritFlag("' + '开启神功系统'.encode('utf-8') + b'") < 1 then' + NL,
+        b'\t\tself:setInheritFlag("' + '开启神功系统'.encode('utf-8') + b'", 1)' + NL,
+        b'\tend' + NL,
+        b'\tif (self:getAttr("shenBingNumLimit") or 0) < 99 then' + NL,
+        b'\t\tself:setAttr("shenBingNumLimit", 99)' + NL,
+        b'\tend' + NL,
+        b'\t--@desc ' + '修改角色状态存储数据结构'.encode('utf-8'),
+    ])
+
+    n = raw.count(anchor)
+    if n != 1:
+        print('[overlay] gh294: WARN Role.lua repairUserData anchor expected 1 got %d '
+              '-> unchanged' % n, flush=True)
+        return
+    open(p, 'wb').write(raw.replace(anchor, guard, 1))
+    print('[overlay] gh294: Role.lua -> repairUserData shenbing/shengong guard OK',
+          flush=True)
+
+
 def patch_additem_diag():
     """gh279: Role_Item:1482 无法找到该资源 诊断——商城商品 getOneItemByKey 落空。"""
     p = os.path.join(DEST, 'src', 'app', 'models', 'role', 'Role_Item.lua')
@@ -1493,8 +1555,14 @@ def main():
     patch_bagupgrade_diag()
     # gh285: BagDescLayer nil 防御（离开背包页 9 次报错）。
     patch_bagdesc_nil_guard()
-    # gh291: 神兵系统无条件解锁（老板明确要求，与单机版内容同步无关）。
-    patch_shenbing_unlock()
+    # gh291/gh289: 神兵按钮「无条件显示」——**gh294 起停用**。
+    #   ★ 原因：老板实测 gh293 后仍是「神兵还需做任务」，而 v37 单机版 MainLayer
+    #   的神兵按钮条件与基线**逐字相同**（可进入苏州水底==1 / 开启神兵系统==1 /
+    #   exp>CAN_SHENBING_EXP），根本没有"无条件显示"这回事。
+    #   真正解锁靠 gh294 在客户端 repairUserData 把 flag 抬到已开启值 ——
+    #   flag 一旦=1，按钮按原版逻辑自然出现，无需再篡改显示条件。
+    #   函数定义保留，可一行恢复。
+    # patch_shenbing_unlock()
     # gh292: 恢复单机版 v37 的 12 个礼包（已确认来自 v37 的 jhserver/test_packs.json，
     #   不是开发版）：baseskill1000/1500、7 个 med_*、xinshencap、shengongmateria、huishendan。
     patch_v37_pack_sync()
@@ -1502,6 +1570,11 @@ def main():
     # gh293: 私服回退路径补神兵两个成对 flag（单机版实际走的路径）。
     patch_shenbing_suidi_flag()
     patch_shenbing_flags_fallback()
+    # gh294: 神兵/神功直开保底补在**客户端** Role:repairUserData。
+    #   gh293 只改服务端不生效（老板实测"神兵还需做任务"）：单机版登录读**本地存档**，
+    #   v37 原注释明确"正常登录不用服务端下发的角色档，标志只在本地存档里"。
+    #   逐字对齐 v37：开始神兵任务=2 / 可进入苏州水底=1 / 双上限 99 / 开启神功系统=1。
+    patch_shenbing_repair_guard()
     # ★ gh251 说明：原 gh249/gh250 不再调用。
     #   那两轮我按**本地开发树** ink_dec/fangzhi_lua_dec 分析，以为 game.zip 里带
     #   开发版 v57 遗留（按钮改名『经营』『科举』、跳过标题页）。实测 CI 实际用的
