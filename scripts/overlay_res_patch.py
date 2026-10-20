@@ -1109,6 +1109,122 @@ def patch_server_test_packs():
     print('[overlay] gh287: %s -> +%d packs (total %d) OK' % (p, added, len(rows)), flush=True)
 
 
+def _find_server_file(rel_parts):
+    """在构建目录里找私服文件（兼容 CI 的 py_ios_server/jhserver 布局）。"""
+    cands = [
+        os.path.join(BUILD_DIR, 'py_ios_server', 'jhserver', *rel_parts),
+        os.path.join(BUILD_DIR, 'py_ios_server', *rel_parts),
+        os.path.join(BUILD_DIR, 'jhserver', *rel_parts),
+    ]
+    for c in cands:
+        if os.path.exists(c):
+            return c
+    import glob as _glob
+    hits = _glob.glob(os.path.join(BUILD_DIR, '**', *rel_parts), recursive=True)
+    return hits[0] if hits else None
+
+
+def patch_shop_zero_price():
+    """gh295: 商城**四个页签全部零元购**（老板 2026-10-20 定）。
+
+    老板原话：「我后来设定的就是商城物品都是零元购」——范围选的是
+    「全部 0 元（含关卡卷），但『我的元宝』仍正常显示并可涨」。
+
+    ★ 为什么只压**标价**、不动扣费函数：
+      购买链 `shop_store._ep_buy_goods_3` 里
+          price = info['buyPrice'] or price_of(key,'trader')
+          total = price * num
+          if have < total: fail('元宝不足')      # total=0 时 0<0 为假 ⇒ 不拦
+          _spend_cur(ctx, YUANBAO, total)        # total=0 ⇒ -abs(0)=0 ⇒ 不扣
+      所以把标价压成 0，**购买天然免费**；绝不能改 `_spend_cur`（那是全局扣费入口，
+      黑市/门派贡献/名望/美貌等都在用，无差别清零会连锁破坏）。
+
+    覆盖四处标价来源：
+      A. test_packs.json 的 price  →「限时」「神功」「商城-资源礼包」三栏的礼包
+      B. MALL_GOODS 元组第 3 位    →「商城」原版 11 件（洗颜水50…包月分身符1800）
+      C. _VOL_PRICE 字面量         →「关卡」6 个卷（100/150/200）
+      D. PRIVILEGE_GOODS['price']  →「商城」名士/雅士特权（各 10）
+    """
+    import json as _json
+    import re as _re
+    changed = []
+
+    # ---------- A. test_packs.json：price 全 0 ----------
+    p = _find_server_file(('test_packs.json',))
+    if p:
+        try:
+            rows = _json.load(open(p, encoding='utf-8'))
+            n = 0
+            for r in rows:
+                if isinstance(r, dict) and r.get('price') not in (0, None):
+                    r['price'] = 0
+                    n += 1
+            if n:
+                _json.dump(rows, open(p, 'w', encoding='utf-8'),
+                           ensure_ascii=False, indent=1)
+            changed.append('test_packs.json(%d)' % n)
+        except Exception as e:                                  # noqa: BLE001
+            print('[overlay] gh295: WARN test_packs.json %r' % e, flush=True)
+    else:
+        print('[overlay] gh295: WARN test_packs.json not found', flush=True)
+
+    # ---------- B+D. shop_store.py ----------
+    #   ★ 注意：关卡卷价在 shop_store 里**还有第二份** `VOLUME_PRICE`
+    #     （`_extra_goods()` 实际读的是这份，不是 fz_boot_server 的 `_VOL_PRICE`）。
+    #     只改一处会出现「货架显示 0 元、付款仍扣 100」的幻觉，故两份都改。
+    sp = _find_server_file(('fz_api', 'shop_store.py'))
+    if sp:
+        t = open(sp, encoding='utf-8').read()
+        # B: MALL_GOODS 价格位（元组第 3 元素）
+        mall_re = _re.compile(
+            r"(\('[A-Za-z0-9_]+',\s*'[^']*',\s*)(\d+)(,\s*\d+,\s*'[^']*',)")
+        i = t.find('MALL_GOODS = [')
+        j = t.find('\n]', i)
+        if i > 0 and j > i:
+            seg = t[i:j]
+            seg2, nb = mall_re.subn(lambda m: m.group(1) + '0' + m.group(3), seg)
+            t = t[:i] + seg2 + t[j:]
+            changed.append('MALL_GOODS(%d)' % nb) if nb else \
+                print('[overlay] gh295: WARN MALL_GOODS matched 0', flush=True)
+        else:
+            print('[overlay] gh295: WARN MALL_GOODS block not found', flush=True)
+        # C2: VOLUME_PRICE 形如 ('声震武林卷', 100, 'fb11;...') -> 价改 0
+        m_v = _re.search(r"(VOLUME_PRICE\s*=\s*\{)(.*?)(\n\})", t, _re.S)
+        if m_v:
+            body, nv = _re.subn(r"(\('[^']*',\s*)(\d+)(,\s*')",
+                                lambda m: m.group(1) + '0' + m.group(3),
+                                m_v.group(2))
+            t = t[:m_v.start()] + m_v.group(1) + body + m_v.group(3) + t[m_v.end():]
+            changed.append('VOLUME_PRICE(%d)' % nv)
+        else:
+            print('[overlay] gh295: WARN VOLUME_PRICE anchor not found', flush=True)
+        # D: PRIVILEGE_GOODS 内的 'price': N
+        t, nd = _re.subn(r"('price':\s*)\d+", r"\g<1>0", t)
+        if nd:
+            changed.append('PRIVILEGE_GOODS(%d)' % nd)
+        open(sp, 'w', encoding='utf-8').write(t)
+    else:
+        print('[overlay] gh295: WARN fz_api/shop_store.py not found', flush=True)
+
+    # ---------- C. fz_boot_server.py：_VOL_PRICE ----------
+    bp = _find_server_file(('fz_boot_server.py',))
+    if bp:
+        t = open(bp, encoding='utf-8').read()
+        m = _re.search(r"(_VOL_PRICE\s*=\s*\{)(.*?)(\})", t, _re.S)
+        if m:
+            body = _re.sub(r":\s*\d+", ": 0", m.group(2))
+            t = t[:m.start()] + m.group(1) + body + m.group(3) + t[m.end():]
+            open(bp, 'w', encoding='utf-8').write(t)
+            changed.append('_VOL_PRICE')
+        else:
+            print('[overlay] gh295: WARN _VOL_PRICE anchor not found', flush=True)
+    else:
+        print('[overlay] gh295: WARN fz_boot_server.py not found', flush=True)
+
+    print('[overlay] gh295: 商城零元购 applied -> %s' %
+          (', '.join(changed) if changed else 'NOTHING'), flush=True)
+
+
 def patch_shenbing_unlock():
     """gh289: 神兵系统直接解锁（老板要求：单机版 v37 可直接解锁神兵）。
 
@@ -1575,6 +1691,11 @@ def main():
     #   v37 原注释明确"正常登录不用服务端下发的角色档，标志只在本地存档里"。
     #   逐字对齐 v37：开始神兵任务=2 / 可进入苏州水底=1 / 双上限 99 / 开启神功系统=1。
     patch_shenbing_repair_guard()
+    # gh295: 商城四个页签**全部零元购**（老板 2026-10-20 定：
+    #   "商城物品都是零元购"，范围=含关卡卷全 0，元宝仍显示可涨）。
+    #   只压标价不动扣费函数：total=0 ⇒ 不拦不扣，购买天然免费。
+    #   覆盖 test_packs.json / MALL_GOODS / PRIVILEGE_GOODS / _VOL_PRICE 四处。
+    patch_shop_zero_price()
     # ★ gh251 说明：原 gh249/gh250 不再调用。
     #   那两轮我按**本地开发树** ink_dec/fangzhi_lua_dec 分析，以为 game.zip 里带
     #   开发版 v57 遗留（按钮改名『经营』『科举』、跳过标题页）。实测 CI 实际用的
