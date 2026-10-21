@@ -960,6 +960,85 @@ def patch_popup_hidelayer_safe():
     print('[overlay] gh298: PopupLayerController hideLayer pcall+self-heal OK', flush=True)
 
 
+def patch_popup_remove_clear_tag():
+    """gh300: `PopupLayerController:removeLayer` —— 销毁前**先清 tag**，避免"找回已销毁节点"。
+
+    ★ 老板 2026-10-21 实测 gh299：仍然闪退，崩溃 `SIGSEGV @ lua_cocos2dx_Node_getParent`
+      （`si_addr=0x0`），`Node::update` 的 Lua 回调里。日志顺序实锤：
+        PopupLayerController:removeLayer(name) = BagDescLayer string
+        [WJJH_HIDEGUARD] hideFunc error BagDescLayer : BagUI.lua:711 hideLayer (a nil value)
+        [WJJH_HIDEGUARD] reset bad singleton: BagDescLayer
+        PopupLayerController:showLayer = BagDescLayer userdata: 0x0141361870
+        WJJH_SIG: signal 11 caught          ← 打印后立刻崩
+
+    ★★ 真因（读 `Helper.lua:145-172` 才看清）：
+      ```lua
+      l_class.getInstance = function(self)
+          local Node = runningScene:getChildByTag(NodeId)   -- 按 tag 找单例
+          if Node == nil then
+              Node = l_class:create(); Node:setTag(NodeId); runningScene:addChild(Node)
+          end
+          Node:setGlobalZOrder(1)
+          Node:maxZ()        -- ← maxZ 里 self:getParent()
+          return Node
+      end
+      ```
+      `removeLayer` 只做 `layer:removeFromParent()`，**没有清 tag**。
+      而这个引擎的 `getChildByTag` 是**纯 Lua polyfill**（原生不可靠，gh59 实测），
+      它遍历 `scene:getChildren()` 逐个比 `getTag()`。
+      一旦那个已销毁的节点仍留在 children 里（或 tag 未清），polyfill 就会把它**找回来**，
+      `getInstance` 随后对它调 `maxZ()` → `getParent()` → **解引用已释放对象 ⇒ SIGSEGV**。
+      （`tolua.isnull` 对这种"指针非空但已释放"的情况会漏报，所以 polyfill 的守卫拦不住。）
+
+    ★ 修法：销毁前 `setTag(0)`，让它**不可能**再被按 tag 找回；
+      下一轮 `getInstance` 必然 `getChildByTag→nil` ⇒ `create()` 全新节点 ⇒ 不会碰死对象。
+      同时把 `getLayer` 与 `removeFromParent` 包 pcall（单点异常不拖垮调用方）。
+      内存行为不变（该释放的还是释放）。
+    """
+    p = os.path.join(DEST, 'src', 'app', 'views', 'base', 'PopupLayerController.lua')
+    if not os.path.exists(p):
+        print('[overlay] gh300: WARN PopupLayerController.lua not found', flush=True)
+        return
+    raw = open(p, 'rb').read()
+    if b'WJJH_KEEPALIVE' in raw:
+        print('[overlay] gh300: already patched, skip', flush=True)
+        return
+    NL = b'\r\n'
+    old = (b'\tlocal layer = self:getLayer(name)' + NL +
+           b'\tif layer then' + NL +
+           b'\t\tlayer:removeFromParent()' + NL +
+           b'\t\tself[name] = nil' + NL +
+           b'\t\tself._layerCache[name] = nil' + NL +
+           b'\t\tGame:freeMemorySmart()' + NL +
+           b'\tend')
+    new = (b'\t-- WJJH_KEEPALIVE (gh300): ' +
+           '销毁前先清 tag，防止 getChildByTag 把已销毁节点找回来'.encode('utf-8') + NL +
+           b'\tlocal __rl' + NL +
+           b'\tlocal __okR = pcall(function() __rl = self:getLayer(name) end)' + NL +
+           b'\tif not __okR then' + NL +
+           b'\t\tprint("[WJJH_KEEPALIVE] getLayer failed: " .. tostring(name))' + NL +
+           b'\t\t__rl = nil' + NL +
+           b'\tend' + NL +
+           b'\tif __rl then' + NL +
+           b'\t\tpcall(function() __rl:setTag(0) end)' + NL +
+           b'\t\tlocal __okP, __errP = pcall(function() __rl:removeFromParent() end)' + NL +
+           b'\t\tif not __okP then' + NL +
+           b'\t\t\tprint("[WJJH_KEEPALIVE] removeFromParent error " .. tostring(name)'
+           b' .. " : " .. tostring(__errP))' + NL +
+           b'\t\tend' + NL +
+           b'\t\tself[name] = nil' + NL +
+           b'\t\tself._layerCache[name] = nil' + NL +
+           b'\t\tGame:freeMemorySmart()' + NL +
+           b'\tend')
+    n = raw.count(old)
+    if n != 1:
+        print('[overlay] gh300: WARN removeLayer anchor expected 1 got %d -> unchanged' % n,
+              flush=True)
+        return
+    open(p, 'wb').write(raw.replace(old, new, 1))
+    print('[overlay] gh300: PopupLayerController removeLayer clear-tag OK', flush=True)
+
+
 def patch_bagdesc_nil_guard():
     """gh285: BagDescLayer nil 防御 + 属性页文字重影排查点。
 
@@ -1846,6 +1925,9 @@ def main():
     #   （治「点人物属性没反应」：回调炸了缓存就不更新，后续切页全被挡）。
     #   单点覆盖 baseline 全部 69 处调用点；坏单例自动重建。
     patch_popup_hidelayer_safe()
+    # gh300: removeLayer 销毁前先 setTag(0)——防止 getChildByTag 把已销毁节点找回来
+    #   （getInstance 会对它调 maxZ() -> getParent() -> SIGSEGV，gh299 实测必崩）。
+    patch_popup_remove_clear_tag()
     # ★ gh251 说明：原 gh249/gh250 不再调用。
     #   那两轮我按**本地开发树** ink_dec/fangzhi_lua_dec 分析，以为 game.zip 里带
     #   开发版 v57 遗留（按钮改名『经营』『科举』、跳过标题页）。实测 CI 实际用的
