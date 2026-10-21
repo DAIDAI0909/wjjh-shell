@@ -1080,27 +1080,41 @@ def patch_popup_getlayer_guard():
     old = (b'\t\tlocal LayerClass = require(className)' + NL +
            b'\t\tself[name] = LayerClass:getInstance()' + NL +
            b'\t\tlayer = self[name]')
+    # ★ gh302 修正探测方式：用 **`__cname` 比对**，不再用 hideLayer。
+    #   实测（老板 gh301 日志）：BookCaseLayer **本来就没有 hideLayer**
+    #   （方法集 create/init/showLayer/initPlayer/… 共 15 个，无 hideLayer）
+    #   ⇒ 用 hideLayer 当探针会把它误判成坏对象，白重建 3 次。
+    #   真正的坏对象（占着 BagDescLayer 位置那个）`__cname` 是 **nil**（根本不是类实例）。
+    #   __cname 是纯 Lua 字段读取，不碰原生方法（gh296/gh298 的教训）。
     new = (b'\t\tlocal LayerClass = require(className)' + NL +
            b'\t\tself[name] = LayerClass:getInstance()' + NL +
            b'\t\tlayer = self[name]' + NL +
-           b'\t\t-- WJJH_LAYERGUARD (gh301): ' +
-           '校验拿到的对象是否真是本类实例；坏的就地重建'.encode('utf-8') + NL +
-           b'\t\tif layer ~= nil and type(layer.hideLayer) ~= "function" then' + NL +
+           b'\t\t-- WJJH_LAYERGUARD (gh301/gh302): ' +
+           '用 __cname 校验类型；不符则清 tag + 重建'.encode('utf-8') + NL +
+           b'\t\tlocal __want = LayerClass.__cname' + NL +
+           b'\t\tif layer ~= nil and __want ~= nil and layer.__cname ~= __want then' + NL +
            b'\t\t\tprint("[WJJH_LAYERGUARD] bad instance name=" .. tostring(name)'
            b' .. " self=" .. tostring(layer)'
-           b' .. " cname=" .. tostring(layer.__cname)'
-           b' .. " class=" .. tostring(className))' + NL +
-           b'\t\t\tlocal __okC, __fresh = pcall(function() return LayerClass:create() end)' + NL +
-           b'\t\t\tif __okC and __fresh ~= nil then' + NL +
-           b'\t\t\t\tlocal __sc = cc.Director:getInstance():getRunningScene()' + NL +
-           b'\t\t\t\tif __sc ~= nil then pcall(function() __fresh:addTo(__sc) end) end' + NL +
-           b'\t\t\t\tpcall(function() __fresh:setGlobalZOrder(1) end)' + NL +
-           b'\t\t\t\tlayer = __fresh' + NL +
-           b'\t\t\t\tself[name] = __fresh' + NL +
-           b'\t\t\t\tprint("[WJJH_LAYERGUARD] recovered via create() name=" .. tostring(name))' + NL +
+           b' .. " got=" .. tostring(layer.__cname)'
+           b' .. " want=" .. tostring(__want))' + NL +
+           b'\t\t\tpcall(function() layer:setTag(0) end)' + NL +
+           b'\t\t\tlocal __okR, __retry = pcall(function() return LayerClass:getInstance() end)' + NL +
+           b'\t\t\tif __okR and __retry ~= nil and __retry.__cname == __want then' + NL +
+           b'\t\t\t\tlayer = __retry' + NL +
+           b'\t\t\t\tself[name] = __retry' + NL +
+           b'\t\t\t\tprint("[WJJH_LAYERGUARD] recovered via getInstance retry name="'
+           b' .. tostring(name))' + NL +
            b'\t\t\telse' + NL +
-           b'\t\t\t\tprint("[WJJH_LAYERGUARD] create() failed name=" .. tostring(name)'
-           b' .. " err=" .. tostring(__fresh))' + NL +
+           b'\t\t\t\tlocal __okC, __fresh = pcall(function() return LayerClass:create() end)' + NL +
+           b'\t\t\t\tif __okC and __fresh ~= nil then' + NL +
+           b'\t\t\t\t\tlocal __sc = cc.Director:getInstance():getRunningScene()' + NL +
+           b'\t\t\t\t\tif __sc ~= nil then pcall(function() __fresh:addTo(__sc) end) end' + NL +
+           b'\t\t\t\t\tpcall(function() __fresh:setGlobalZOrder(1) end)' + NL +
+           b'\t\t\t\t\tlayer = __fresh' + NL +
+           b'\t\t\t\t\tself[name] = __fresh' + NL +
+           b'\t\t\t\t\tprint("[WJJH_LAYERGUARD] recovered via create() name="'
+           b' .. tostring(name))' + NL +
+           b'\t\t\t\tend' + NL +
            b'\t\t\tend' + NL +
            b'\t\tend')
     n = raw.count(old)

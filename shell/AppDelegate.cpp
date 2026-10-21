@@ -870,6 +870,32 @@ do
       setCompleteListener = function(self, cb) end,
       setEventCallback = function(self, cb) end,
       registerScriptHandler = function(self, cb) end,
+      -- ★★★ gh302: registerSpineEventHandler —— 主动技能展示缺的就是它。
+      --   老板反馈：「查看技能时看不到主动技能展示…以前点击主动技能会出现界面并有
+      --   动态展示，现在静态」。日志实锤（gh297/gh301 两轮都有）：
+      --     [WJJH_POPUP] showFunc error TuJianSkillInFoPopLayer :
+      --       TuJianSkillInFoPopLayer.lua:345: attempt to call method
+      --       'registerSpineEventHandler' (a nil value)
+      --   全库 0 处 Lua 定义、7 处调用（TuJianSkillInFoPopLayer:345/:536、
+      --   SkillGoodsInfoPresenter、ZhaoInfoUI、CreatedZhaoUI…）——
+      --   它是**原版 C++ spine 绑定**提供的 API，我们的 spine38 桥没实现，
+      --   ⇒ 回调注册失败 ⇒ 演示循环（出招→靠近木桩→下一招）永不推进 ⇒ 画面静止。
+      --   实装：用骨架节点自身的 schedule 周期触发回调（节点销毁自动停，不会泄漏）。
+      --   回调只需要"事件发生"这一事实（游戏侧没用 event 字段），故传最小事件表。
+      --   间隔取 0.9s：接近一段出招动画时长，避免与上层 Sequence 动作叠加过密。
+      registerSpineEventHandler = function(self, cb)
+        if type(cb) ~= 'function' then return nil end
+        local ok = pcall(function()
+          self:schedule(function()
+            pcall(cb, { name = 'complete', trackIndex = 0, time = 0 })
+          end, 0.9)
+        end)
+        if not ok then
+          __wjjhlog('WJJH_SPINE38: registerSpineEventHandler schedule failed')
+        end
+        return nil
+      end,
+      unregisterSpineEventHandler = function(self) end,
       runActionWithName = function(self, name, action) if action then self:runAction(action) end end,
       -- gh262: playAnim 系——YXSkeletonAnimationEx.lua 把它们定义在 YX 类表上，
       --   而 userdata 实例的方法解析不过 Lua 类表 ⇒ 真节点上全是 nil。
@@ -1293,10 +1319,10 @@ local __wjjh_flowSpecs = {
   ['app.controllers.Audio'] = { { 'playMusic' }, { 'playEffect' }, { 'playBackgroundMusic' }, { 'stopMusic' } },
   ['app.views.layer.MainLayer'] = { { 'init' }, { 'create' }, { 'update', 'hot' }, { 'showLayer' }, { 'onShow' }, { 'onAwake' }, { 'initCheck' }, { 'isShow' }, { 'checkIsHaveOfficial' }, { 'checkIsFamilyPrestige' }, { 'checkCanOpenDengLuJiangLi' }, { 'checkCanOpenVisitTask' } },
   ['app.views.layer.MenuLayer.MenuLayer'] = { { 'init' }, { 'create' }, { 'StartGame' }, { 'onAwake' } },
-  ['third.coroutine.CoroutinePool'] = { { 'update', 'hot' }, { 'doUpdate', 'hot' }, { 'add' }, { 'addAsync' } },
-  ['third.coroutine.Coroutine'] = { { 'resume', 'hot' }, { 'init' } },
-  ['third.coroutine.CoroutineStack'] = { { 'resume', 'hot' }, { 'push' } },
-  ['third.async.AsyncFunction'] = { { 'create' } },
+    -- ★ gh302: 删掉协程相关的 4 条探针（CoroutinePool / Coroutine / CoroutineStack / AsyncFunction）。
+    --   它们每帧打多条 WJJH_FLOW，实测单场会话产生 **46 万行**日志（每次 fprintf 到 stderr），
+    --   iOS 的 CPU 资源报告直接命中：「159 秒内 90 秒 CPU（平均 57%），超过 50% 上限」。
+    --   这些是早期排查协程卡死用的，早已完成使命；保留里程碑类探针（pushLayer/showLayer 等）。
   ['app.extends.LifeCycleSupport'] = { { 'awake' }, { 'onAwake' }, { 'register' } },
   ['app.models.MonitorPool.MonitorPool'] = { { 'update', 'hot' } },
   ['app.views.ui.MainUI'] = { { 'init' }, { 'create' }, { 'updataSkinAnim', 'hot' } },
@@ -1562,7 +1588,11 @@ local function __wjjh_instrument(name, M)
           local cnt = 0
           M[mn] = function(self, ...)
             cnt = cnt + 1
-            if mode == 'every' or cnt % 5 == 1 then
+            -- gh302: hot 模式从「每 5 次」放宽到「每 200 次」。
+            --   原来单场会话产生 46 万行 WJJH_FLOW，把 CPU 打到 57%
+            --   （iOS 资源报告：159 秒内 90 秒 CPU，超过 50% 上限）。
+            --   热路径探针只需证明"在跑"，不需要这么密。
+            if mode == 'every' or cnt % 200 == 1 then
               __wjjhlog('WJJH_FLOW: ' .. name .. '.' .. mn .. ' #' .. cnt)
             end
             return of(self, ...)
