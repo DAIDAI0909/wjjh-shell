@@ -1039,6 +1039,79 @@ def patch_popup_remove_clear_tag():
     print('[overlay] gh300: PopupLayerController removeLayer clear-tag OK', flush=True)
 
 
+def patch_popup_getlayer_guard():
+    """gh301: `PopupLayerController:getLayer` —— 对「坏单例」诊断 + 用 create() 兜底重建。
+
+    老板 2026-10-21 实测 gh300：仍闪退，且日志证明 gh300 的清 tag 逻辑正常执行
+    （`WJJH_KEEPALIVE` 计数 0 = 没有走报错分支），但 `getLayer("BagDescLayer")`
+    仍然返回了一个「非 nil 但没有 hideLayer 方法」的对象：
+      PopupLayerController:removeLayer(name) = BagDescLayer string
+      [WJJH_HIDEGUARD] hideFunc error BagDescLayer : BagUI.lua:711 hideLayer (a nil value)
+      [WJJH_HIDEGUARD] reset bad singleton: BagDescLayer
+      PopupLayerController:showLayer = BagDescLayer userdata: 0x014d6dbb30
+      WJJH_SIG: signal 11 caught        <- showLayer 里 layer:maxZ() -> getParent()
+    注意 BagUI.lua:711 的 `if layer == nil then ... return end` 没触发
+    （错误是 call method 'hideLayer' 而不是 index a nil value）
+    => `layer` 非 nil，但**不是 BagDescLayer 实例**（缺 hideLayer）。
+
+    真因（Helper.lua:145-172 的 getInstance）：
+      local Node = runningScene:getChildByTag(NodeId)
+      if Node == nil then Node = l_class:create(); Node:setTag(NodeId); addChild end
+      Node:setGlobalZOrder(1); Node:maxZ(); return Node
+    这个引擎的 getChildByTag 是**纯 Lua polyfill**（原生不可靠，gh59），
+    它按 tag 遍历 scene children。一旦 children 里存在**同 tag 的其他对象**，
+    getInstance 就会把**不是本类的对象**当单例返回，
+    后续 `layer:maxZ()` -> `getParent()` -> 解引用非法对象 -> SIGSEGV。
+
+    修法：getLayer 拿到对象后**校验它是否具备本类应有的方法**（用 hideLayer 作探针）；
+    不合格就打印诊断（名字/地址/__cname，都是纯 Lua 读字段，不碰原生方法），
+    并用 `LayerClass:create()` **直接造一个干净实例**挂到运行场景，替换坏单例。
+    => 既止血（不把坏对象交给调用方），又留证（下轮日志直接看到坏对象是什么类）。
+    """
+    p = os.path.join(DEST, 'src', 'app', 'views', 'base', 'PopupLayerController.lua')
+    if not os.path.exists(p):
+        print('[overlay] gh301: WARN PopupLayerController.lua not found', flush=True)
+        return
+    raw = open(p, 'rb').read()
+    if b'WJJH_LAYERGUARD' in raw:
+        print('[overlay] gh301: already patched, skip', flush=True)
+        return
+    NL = b'\r\n'
+    old = (b'\t\tlocal LayerClass = require(className)' + NL +
+           b'\t\tself[name] = LayerClass:getInstance()' + NL +
+           b'\t\tlayer = self[name]')
+    new = (b'\t\tlocal LayerClass = require(className)' + NL +
+           b'\t\tself[name] = LayerClass:getInstance()' + NL +
+           b'\t\tlayer = self[name]' + NL +
+           b'\t\t-- WJJH_LAYERGUARD (gh301): ' +
+           '校验拿到的对象是否真是本类实例；坏的就地重建'.encode('utf-8') + NL +
+           b'\t\tif layer ~= nil and type(layer.hideLayer) ~= "function" then' + NL +
+           b'\t\t\tprint("[WJJH_LAYERGUARD] bad instance name=" .. tostring(name)'
+           b' .. " self=" .. tostring(layer)'
+           b' .. " cname=" .. tostring(layer.__cname)'
+           b' .. " class=" .. tostring(className))' + NL +
+           b'\t\t\tlocal __okC, __fresh = pcall(function() return LayerClass:create() end)' + NL +
+           b'\t\t\tif __okC and __fresh ~= nil then' + NL +
+           b'\t\t\t\tlocal __sc = cc.Director:getInstance():getRunningScene()' + NL +
+           b'\t\t\t\tif __sc ~= nil then pcall(function() __fresh:addTo(__sc) end) end' + NL +
+           b'\t\t\t\tpcall(function() __fresh:setGlobalZOrder(1) end)' + NL +
+           b'\t\t\t\tlayer = __fresh' + NL +
+           b'\t\t\t\tself[name] = __fresh' + NL +
+           b'\t\t\t\tprint("[WJJH_LAYERGUARD] recovered via create() name=" .. tostring(name))' + NL +
+           b'\t\t\telse' + NL +
+           b'\t\t\t\tprint("[WJJH_LAYERGUARD] create() failed name=" .. tostring(name)'
+           b' .. " err=" .. tostring(__fresh))' + NL +
+           b'\t\t\tend' + NL +
+           b'\t\tend')
+    n = raw.count(old)
+    if n != 1:
+        print('[overlay] gh301: WARN getLayer anchor expected 1 got %d -> unchanged' % n,
+              flush=True)
+        return
+    open(p, 'wb').write(raw.replace(old, new, 1))
+    print('[overlay] gh301: PopupLayerController getLayer guard+recover OK', flush=True)
+
+
 def patch_bagdesc_nil_guard():
     """gh285: BagDescLayer nil 防御 + 属性页文字重影排查点。
 
@@ -1928,6 +2001,9 @@ def main():
     # gh300: removeLayer 销毁前先 setTag(0)——防止 getChildByTag 把已销毁节点找回来
     #   （getInstance 会对它调 maxZ() -> getParent() -> SIGSEGV，gh299 实测必崩）。
     patch_popup_remove_clear_tag()
+    # gh301: getLayer 校验 + 坏单例用 create() 兜底重建
+    #   （gh300 清 tag 后仍返回非 nil 但缺 hideLayer 的对象 ⇒ 必崩）
+    patch_popup_getlayer_guard()
     # ★ gh251 说明：原 gh249/gh250 不再调用。
     #   那两轮我按**本地开发树** ink_dec/fangzhi_lua_dec 分析，以为 game.zip 里带
     #   开发版 v57 遗留（按钮改名『经营』『科举』、跳过标题页）。实测 CI 实际用的
