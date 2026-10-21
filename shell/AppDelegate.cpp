@@ -299,25 +299,25 @@ if cc and cc.Node then
     return r
   end
   local function __wjjh_alive(obj)
-    if obj == nil or type(obj) ~= 'userdata' then return false end
-    if __isnull == nil then return true end
-    local ok, dead = pcall(__isnull, obj)
-    if not ok or not dead then return true end          -- isnull 说活 / 调不通 → 当活
-    -- gh298 修正：gh297 这里写的是 `if __wjjh_orig.getTag == nil then return true end`，
-    --   而 getTag 早在 gh153 就被注册成**raw Lua 函数**（`rawget(cc.Node,'getTag') ~= nil`）
-    --   ⇒ 下面的包装循环会**跳过**它 ⇒ `__wjjh_orig.getTag` 永远 nil
-    --   ⇒ 该分支永远 return true ⇒ 探测从不执行 ⇒ 守卫实际上一直放行
-    --   （实测印证：老板日志里 WJJH_GUARD 在各种版本里都是 0 次）。
-    --   现在：优先用已登记的原始函数；没登记就直接 pcall 调 `obj:getTag()`
-    --   —— 这条路走 gh153 的 getTag 守卫（它对 isnull=true 会返回 0，不再进 native），
-    --   所以**不会递归**（getTag 不归我们的包装管，绕不到 __wjjh_alive）。
-    local ok2, r2
-    if __wjjh_orig.getTag ~= nil then
-      ok2, r2 = pcall(__wjjh_orig.getTag, obj)
-    else
-      ok2, r2 = pcall(function() return obj:getTag() end)
-    end
-    return ok2 and r2 ~= nil
+    -- ★★★ gh299: 这里**绝对不能调用任何原生方法**（getTag/getName/getParent…）。
+    --   三次事故都出在这个函数：
+    --     gh288: isnull 对「带 peer 的活节点」误报 true（BookCaseLayer）⇒ 守卫返回 nil
+    --            ⇒ NodeEx:maxZ 崩 ⇒ 书匣/武器点击失效。
+    --     gh296: 改为调 getName/getPosition ⇒ 这两个方法本身在包装名单里 ⇒ 无限递归 ⇒ 必崩。
+    --     gh298: 改为调 getTag 探测 ⇒ 老板实测 88 秒必崩：
+    --              showLayer("BagDescLayer") -> layer:maxZ() -> getParent 守卫
+    --              -> __wjjh_alive -> isnull 对**活节点**误报死 -> 调原生 getTag
+    --              -> lua_cocos2dx_Node_getTag 解引用 → SIGSEGV(si_addr=0x0)
+    --   结论：**isnull 不可信，而探测本身又不安全**（原生方法对已释放/空指针直接段错误，
+    --   pcall 拦不住 SIGSEGV）。两头堵死 ⇒ 这个守卫**只能做纯 Lua 的安全判定**。
+    --
+    --   现在的语义：只挡「明显不是节点」的值（nil / 非 userdata）。
+    --   真正的死节点交给下游 xpcall 兜（Lua 错误可捕获，比 SIGSEGV 好一个量级）。
+    --   ⇒ 守卫退化为「零风险直通 + 空值拦截」，不再尝试判定 C++ 对象死活。
+    if obj == nil then return false end
+    local t = type(obj)
+    if t ~= 'userdata' then return false end
+    return true
   end
   -- gh275: 收窄到 getParent。gh277 又见 removeFromParentAndCleanup 裸调 SIGSEGV
   --   （同一疾病不同方法）⇒ 打地鼠失败，gh278 改**全量化**：遍历 cc.Node 类表上
@@ -358,7 +358,26 @@ if cc and cc.Node then
     'retain','release','onEnter','onExit','visit','update','getWorldPosition','convertToNodeSpace',
     'convertToWorldSpace','convertTouchToNodeSpace','getNumberOfRunningActions','hasAncestor'
   }
-  for _, __name in ipairs(__methodList) do
+  -- ★★★ gh299 决定性决策：**停用死节点方法包装**（下面两个循环全部跳过）。
+  --
+  -- 为什么停用（实证，不是猜）：
+  --   · `WJJH_GUARD` 在**所有版本**的老板日志里都是 **0 次** —— 这套守卫
+  --     从 gh272 加上至今，**一次都没有真正拦住过任何调用**，等于纯开销。
+  --   · 它却接连造成三次回归事故：
+  --       gh288：isnull 对带 peer 的活节点误报死 ⇒ 守卫返回 nil ⇒ 书匣/武器点击失效
+  --       gh296：复核里调 getName/getPosition（本身在包装名单）⇒ 无限递归 ⇒ 必崩
+  --       gh298：复核里调 getTag ⇒ showLayer("BagDescLayer")→maxZ() 链上
+  --              isnull 误报 + 原生 getTag 解引用 ⇒ SIGSEGV(si_addr=0x0)，88 秒必崩
+  --   · 根因是**双死结**：isnull 不可信（既误报死也漏报死），而任何"探测"都要调原生
+  --     方法，原生方法遇到已释放/空指针直接段错误，`pcall` 拦不住 SIGSEGV。
+  --     ⇒ 在 Lua 层安全判定 C++ 对象死活这件事**原理上做不到**。
+  --
+  -- 停用后的行为 = 回到 cocos 原生：cc.Node 的方法不做任何包装。
+  -- 死节点引发的 Lua 错误仍会被游戏既有 xpcall 捕获（可恢复），
+  -- 真段错误则与未打守卫时一致（本来也拦不住）。
+  -- 需要恢复时把下面 `__WJJH_NODE_GUARD` 改 true 即可（代码保留）。
+  local __WJJH_NODE_GUARD = false
+  for _, __name in ipairs(__WJJH_NODE_GUARD and __methodList or {}) do
     if __guarded[__name] == nil then
       local okf, __orig = pcall(function() return cc.Node[__name] end)
       if okf and type(__orig) == 'function' and not rawget(cc.Node, __name) then
@@ -376,7 +395,7 @@ if cc and cc.Node then
       end
     end
   end
-  for __name, __fallback in pairs(__guarded) do
+  for __name, __fallback in pairs(__WJJH_NODE_GUARD and __guarded or {}) do
     local okg, __orig = pcall(function() return cc.Node[__name] end)
     if okg and type(__orig) == 'function' and not rawget(cc.Node, __name) then
       -- ★ gh297: 同样登记原始函数（getTag 就在 __guarded 里，复核必须走原始版）
@@ -1765,9 +1784,12 @@ local function __wjjh_dumpState()
   local n = 0
   local tags = {}
   if type(kids) == 'table' then
+    -- ★ gh299: 不再对每个子节点调 `getTag()`。
+    --   原因：场景子节点里混有已释放节点，原生 getTag 解引用会直接 SIGSEGV
+    --   （pcall 拦不住）。旧版这里每次 dump 都刷一串 WJJH_TAGGUARD（实测 80 次），
+    --   说明它确实频繁踩到死节点，是个真实的崩溃向量。诊断只需知道个数。
     for i = 1, #kids do
       n = n + 1
-      tags[#tags + 1] = __ts(kids[i]:getTag())
     end
   end
   __wjjhlog('WJJH_CEN: kids=' .. n .. ' tags=[' .. table.concat(tags, ',') .. '] upd=' .. __llUpdates .. ' blk=' .. __llBlocked .. ' pass=' .. __llPass .. ' WEB_TIME=' .. __ts(WEB_TIME))
@@ -1784,7 +1806,9 @@ local function __wjjh_dumpState()
     if s.LoadingBar ~= nil then barp = __ts(s.LoadingBar:getPercent()) end
     local txt = 'nilTxt'
     if s.Text_zaiRuZhong ~= nil then txt = __ts(s.Text_zaiRuZhong:getString()) end
-    __wjjhlog('WJJH_LLst: self=' .. tostring(s) .. ' tag=' .. __ts(s:getTag()) .. ' t=' .. __ts(s._updateTime) .. ' ci=' .. __ts(s.currIndex) .. ' cpi=' .. __ts(s.currParentIndex) .. ' li=' .. __ts(s._loadingIndex) .. ' tc=' .. __ts(s._totalCount) .. ' done=' .. __ts(s.isSuccess) .. ' ft=' .. type(ftt) .. extra .. ' bar=' .. barp .. ' txt=' .. txt)
+    -- ★ gh299: 去掉 `s:getTag()`——__llSelf 可能是已释放节点，原生 getTag 会 SIGSEGV。
+    --   诊断不需要 tag，改打类型。
+    __wjjhlog('WJJH_LLst: self=' .. tostring(s) .. ' tag=(skip) ' .. ' t=' .. __ts(s._updateTime) .. ' ci=' .. __ts(s.currIndex) .. ' cpi=' .. __ts(s.currParentIndex) .. ' li=' .. __ts(s._loadingIndex) .. ' tc=' .. __ts(s._totalCount) .. ' done=' .. __ts(s.isSuccess) .. ' ft=' .. type(ftt) .. extra .. ' bar=' .. barp .. ' txt=' .. txt)
   end
 end
 
