@@ -1011,8 +1011,17 @@ def patch_popup_remove_clear_tag():
            b'\t\tself._layerCache[name] = nil' + NL +
            b'\t\tGame:freeMemorySmart()' + NL +
            b'\tend')
-    new = (b'\t-- WJJH_KEEPALIVE (gh300): ' +
-           '销毁前先清 tag，防止 getChildByTag 把已销毁节点找回来'.encode('utf-8') + NL +
+    new = (b'\t-- WJJH_KEEPALIVE (gh300/gh303): ' +
+           '已标记为坏单例的页面只隐藏不销毁，避免反复重建+脏 tag'.encode('utf-8') + NL +
+           b'\tif self.__wjjhBad ~= nil and self.__wjjhBad[name] then' + NL +
+           b'\t\tlocal __keep = self[name]' + NL +
+           b'\t\tif __keep ~= nil then' + NL +
+           b'\t\t\tpcall(function() __keep:setVisible(false) end)' + NL +
+           b'\t\tend' + NL +
+           b'\t\tself._layerCache[name] = nil' + NL +
+           b'\t\tprint("[WJJH_KEEPALIVE] keep bad-named layer alive: " .. tostring(name))' + NL +
+           b'\t\treturn' + NL +
+           b'\tend' + NL +
            b'\tlocal __rl' + NL +
            b'\tlocal __okR = pcall(function() __rl = self:getLayer(name) end)' + NL +
            b'\tif not __okR then' + NL +
@@ -1086,35 +1095,37 @@ def patch_popup_getlayer_guard():
     #   ⇒ 用 hideLayer 当探针会把它误判成坏对象，白重建 3 次。
     #   真正的坏对象（占着 BagDescLayer 位置那个）`__cname` 是 **nil**（根本不是类实例）。
     #   __cname 是纯 Lua 字段读取，不碰原生方法（gh296/gh298 的教训）。
+    # ★★★ gh303：**绝不能碰坏对象**。老板 gh302 实测崩溃：
+    #     [WJJH_LAYERGUARD] bad instance ... got=nil want=BagDescLayer
+    #     WJJH_SIG: signal 11 → lua_cocos2dx_Node_setTag   ← 就是我下面那句 setTag(0)
+    #   这个坏对象是**悬空指针**（指针非空但内存已释放），任何方法调用都直接段错误，
+    #   `pcall` 拦不住 SIGSEGV。⇒ 只打印诊断（纯 Lua 字段），**不对它调任何原生方法**。
+    #   恢复只用 `LayerClass:create()` 造新实例，并把它钉在 self[name] 上。
+    #   同时在 `__wjjhBad` 里记下该名字；removeLayer 见到它就**只隐藏不销毁**，
+    #   避免"销毁→重建→又拿到坏对象"的死循环（gh301/302 实测刷了 53 次）。
     new = (b'\t\tlocal LayerClass = require(className)' + NL +
            b'\t\tself[name] = LayerClass:getInstance()' + NL +
            b'\t\tlayer = self[name]' + NL +
-           b'\t\t-- WJJH_LAYERGUARD (gh301/gh302): ' +
-           '用 __cname 校验类型；不符则清 tag + 重建'.encode('utf-8') + NL +
+           b'\t\t-- WJJH_LAYERGUARD (gh301/302/303): ' +
+           '用 __cname 校验类型；坏对象只记录不触碰'.encode('utf-8') + NL +
            b'\t\tlocal __want = LayerClass.__cname' + NL +
            b'\t\tif layer ~= nil and __want ~= nil and layer.__cname ~= __want then' + NL +
            b'\t\t\tprint("[WJJH_LAYERGUARD] bad instance name=" .. tostring(name)'
            b' .. " self=" .. tostring(layer)'
            b' .. " got=" .. tostring(layer.__cname)'
            b' .. " want=" .. tostring(__want))' + NL +
-           b'\t\t\tpcall(function() layer:setTag(0) end)' + NL +
-           b'\t\t\tlocal __okR, __retry = pcall(function() return LayerClass:getInstance() end)' + NL +
-           b'\t\t\tif __okR and __retry ~= nil and __retry.__cname == __want then' + NL +
-           b'\t\t\t\tlayer = __retry' + NL +
-           b'\t\t\t\tself[name] = __retry' + NL +
-           b'\t\t\t\tprint("[WJJH_LAYERGUARD] recovered via getInstance retry name="'
+           b'\t\t\t-- note: do NOT call any method on layer here (dangling ptr => SIGSEGV)' + NL +
+           b'\t\t\tself.__wjjhBad = self.__wjjhBad or {}' + NL +
+           b'\t\t\tself.__wjjhBad[name] = true' + NL +
+           b'\t\t\tlocal __okC, __fresh = pcall(function() return LayerClass:create() end)' + NL +
+           b'\t\t\tif __okC and __fresh ~= nil then' + NL +
+           b'\t\t\t\tlocal __sc = cc.Director:getInstance():getRunningScene()' + NL +
+           b'\t\t\t\tif __sc ~= nil then pcall(function() __fresh:addTo(__sc) end) end' + NL +
+           b'\t\t\t\tpcall(function() __fresh:setGlobalZOrder(1) end)' + NL +
+           b'\t\t\t\tlayer = __fresh' + NL +
+           b'\t\t\t\tself[name] = __fresh' + NL +
+           b'\t\t\t\tprint("[WJJH_LAYERGUARD] recovered via create() name="'
            b' .. tostring(name))' + NL +
-           b'\t\t\telse' + NL +
-           b'\t\t\t\tlocal __okC, __fresh = pcall(function() return LayerClass:create() end)' + NL +
-           b'\t\t\t\tif __okC and __fresh ~= nil then' + NL +
-           b'\t\t\t\t\tlocal __sc = cc.Director:getInstance():getRunningScene()' + NL +
-           b'\t\t\t\t\tif __sc ~= nil then pcall(function() __fresh:addTo(__sc) end) end' + NL +
-           b'\t\t\t\t\tpcall(function() __fresh:setGlobalZOrder(1) end)' + NL +
-           b'\t\t\t\t\tlayer = __fresh' + NL +
-           b'\t\t\t\t\tself[name] = __fresh' + NL +
-           b'\t\t\t\t\tprint("[WJJH_LAYERGUARD] recovered via create() name="'
-           b' .. tostring(name))' + NL +
-           b'\t\t\t\tend' + NL +
            b'\t\t\tend' + NL +
            b'\t\tend')
     n = raw.count(old)

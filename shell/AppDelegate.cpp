@@ -1091,7 +1091,7 @@ if ExtRichTextScroll and rawget(ExtRichTextScroll, '__wjjh_real') ~= true then
   -- 原生直通（安装期捕获；缺了就靠 peer 未命中回落原生）
   for _, name in ipairs({'jumpToTop','jumpToBottom','scrollToBottom','jumpToPercentVertical',
       'setScrollBarEnabled','setBounceEnabled','setInertiaScrollEnabled','setTouchEnabled',
-      'setInnerContainerSize','getInnerContainerSize','getInnerContainer',
+      'setClippingEnabled','setInnerContainerSize','getInnerContainerSize','getInnerContainer',
       'addEventListener','addTouchEventListener','setContentSize','getContentSize',
       'addChild','removeFromParent','setAnchorPoint','setPosition','getPosition',
       'setLocalZOrder','setTag','setName','setVisible','setCascadeOpacity',
@@ -1105,6 +1105,21 @@ if ExtRichTextScroll and rawget(ExtRichTextScroll, '__wjjh_real') ~= true then
   if __natDir then
     __cls.setDirection = function(self, dir)
       if dir == nil then dir = 1 end  -- kCCScrollViewDirectionVertical 在个别环境可能未定义,默认竖向
+      -- gh303: 记录"这个实例要滚动"；配合 setSize 一起出现时自动开触摸。
+      --   背景：gh262 为防战斗日志框吞技能按钮触摸，把默认触摸关掉了；
+      --   但武学详情(TuJianSkillInFoPopLayer)只调 setSize/setDirection、从不调
+      --   setTouchEnabled(true) ⇒ 永远滚不动（老板实测"那块区域滑动不了"）。
+      local s = st(self)
+      if s then
+        s.gotDir = true
+        if s.gotSize and s.touchFixed ~= true then
+          s.touchFixed = true
+          pcall(function() self:setTouchEnabled(true) end)
+          if s.flow and s.flow.setSwallowTouches then
+            pcall(function() s.flow:setSwallowTouches(false) end)
+          end
+        end
+      end
       return __natDir(self, dir)
     end
   end
@@ -1234,8 +1249,20 @@ if ExtRichTextScroll and rawget(ExtRichTextScroll, '__wjjh_real') ~= true then
     local okh, h = pcall(function() return size.height end)
     if okw and okh and type(w) == 'number' and type(h) == 'number' then
       s.W = w
+      s.gotSize = true
       if __natSetContentSize then pcall(function() __natSetContentSize(self, size) end) end
+      -- gh303: 开裁剪，内容超高时不再溢出到下方区域（武学详情里那块会盖住
+      --   "可准备为/需要装备"文本，老板实测被遮挡）。
+      pcall(function() self:setClippingEnabled(true) end)
       refit(self)
+      -- gh303: size+direction 都设过 ⇒ 这是要滚动的界面，补开触摸
+      if s.gotDir and s.touchFixed ~= true then
+        s.touchFixed = true
+        pcall(function() self:setTouchEnabled(true) end)
+        if s.flow and s.flow.setSwallowTouches then
+          pcall(function() s.flow:setSwallowTouches(false) end)
+        end
+      end
     end
   end
   __cls.setString = function(self, str)
