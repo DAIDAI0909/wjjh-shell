@@ -1109,7 +1109,19 @@ if ExtRichTextScroll and rawget(ExtRichTextScroll, '__wjjh_real') ~= true then
       --   背景：gh262 为防战斗日志框吞技能按钮触摸，把默认触摸关掉了；
       --   但武学详情(TuJianSkillInFoPopLayer)只调 setSize/setDirection、从不调
       --   setTouchEnabled(true) ⇒ 永远滚不动（老板实测"那块区域滑动不了"）。
-      local s = st(self)
+      -- ★★★ gh304 事故修正：这里**不能调 st(self)**！
+      --   `st` 是 `local function`，定义在本函数**之后**（L1127）⇒ 此处解析成全局查找
+      --   ⇒ `attempt to call global 'st' (a nil value)`（老板实测 chunk:877）。
+      --   后果极严重：PrintUI.initRichText → setDirection 抛错 → ControllLayer:init
+      --   中断 → 客户端初始化失败 → 弹「网络错误，请重试」。
+      --   现在改为**内联读 peer**，不依赖后定义的局部函数。
+      local __peer = nil
+      if tolua and tolua.getpeer then
+        local __p = tolua.getpeer(self)
+        if type(__p) == 'table' then __peer = __p end
+      end
+      local s = nil
+      if __peer ~= nil then s = __peer.st end
       if s then
         s.gotDir = true
         if s.gotSize and s.touchFixed ~= true then
