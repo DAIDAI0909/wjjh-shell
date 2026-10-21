@@ -888,6 +888,78 @@ def patch_bagupgrade_diag():
         else:
             print('[overlay] gh283: WARN PopupLayerController getLayer anchor=%d' % raw.count(o), flush=True)
 
+def patch_popup_hidelayer_safe():
+    """gh298: `PopupLayerController:hideLayer` —— 回调报错不再拖垮缓存（治「点属性没反应」）。
+
+    ★ 老板 2026-10-21 实测（gh297）：点「人物属性」后**没反应，然后闪退**。
+      日志实锤 14 次：
+        AttrControllLayer.lua:43: attempt to call method 'hideLayer' (a nil value)
+        stack: WidgetEx.lua:180 hideLayer <- AttrControllLayer.lua:43 hideFunc
+               <- PopupLayerController.lua:748 hideLayer <- AttrControllLayer.lua:36
+               <- ControllLayer.lua:342 callBack <- baseSwitchAnim <- playSwitchAnim
+               <- switchLayer <- pushLayer <- AttrControllLayer.lua:96
+      即：切页动画收尾时 hideLayer 回调里 layer:hideLayer() 炸了。
+
+    ★★ 关键补充（我 gh295/296 的防御为何没拦住）：
+      `[WJJH_BAG]` / `WJJH_BAGDESC_NIL` 计数都是 **0** ⇒ 我加的 `if layer == nil` 从没命中。
+      因为 Lua 里 `layer:hideLayer()` 的两种报错含义不同：
+        · layer 是 nil          -> "attempt to index a nil value"
+        · layer 非 nil 但没该方法 -> "attempt to call method 'hideLayer' (a nil value)"  ← 实际是这种
+      `getLayer` 返回 `LayerClass:getInstance()` 单例；实例失效后仍是**非 nil 的坏对象**，
+      `hideLayer` 字段为 nil。所以只判 nil 根本不够。
+
+    ★★★ 为什么这一处必须修（比 69 个调用点逐个加防御更根本）：
+      原实现：
+          if hideFunc then hideFunc(self:getLayer(name)) end
+          self._layerCache[name] = { isShow = false, time = GetTime() }
+      回调一报错，**下一行 `_layerCache[name] = {isShow=false}` 永远不执行**
+      ⇒ 缓存一直认为该页"正在显示" ⇒ 后续 show/hide/switch 判断全被挡住
+      ⇒ 表现就是「点了没反应」。
+      修法：把回调包进 pcall（异常不再中断），并在回调失败且 layer 无 hideLayer 时
+      **把 `self[name] = nil` 自愈**（下次 getLayer 会重建），缓存照常更新。
+      ⇒ 一处补丁覆盖 baseline 里全部 **69 处** `PopupLayerController:hideLayer(...)` 调用。
+    """
+    p = os.path.join(DEST, 'src', 'app', 'views', 'base', 'PopupLayerController.lua')
+    if not os.path.exists(p):
+        print('[overlay] gh298: WARN PopupLayerController.lua not found', flush=True)
+        return
+    raw = open(p, 'rb').read()
+    if b'WJJH_HIDEGUARD' in raw:
+        print('[overlay] gh298: PopupLayerController already patched, skip', flush=True)
+        return
+    NL = b'\r\n'
+    # 注意：gh282 已把 showLayer 里的 showFunc 包了 pcall；hideLayer 这段仍是原样
+    old = (b'\tif hideFunc then' + NL +
+           b'\t\thideFunc(self:getLayer(name))' + NL +
+           b'\tend' + NL +
+           b'\tself._layerCache[name] = ')
+    new = (b'\t-- WJJH_HIDEGUARD (gh298): ' +
+           '回调异常不得中断缓存更新；坏单例自愈'.encode('utf-8') + NL +
+           b'\tif hideFunc then' + NL +
+           b'\t\tlocal __hl' + NL +
+           b'\t\tlocal __ok, __err = pcall(function()' + NL +
+           b'\t\t\t__hl = self:getLayer(name)' + NL +
+           b'\t\t\thideFunc(__hl)' + NL +
+           b'\t\tend)' + NL +
+           b'\t\tif not __ok then' + NL +
+           b'\t\t\tprint("[WJJH_HIDEGUARD] hideFunc error " .. tostring(name)'
+           b' .. " : " .. tostring(__err))' + NL +
+           b'\t\t\tif __hl == nil or type(__hl.hideLayer) ~= "function" then' + NL +
+           b'\t\t\t\tself[name] = nil' + NL +
+           b'\t\t\t\tprint("[WJJH_HIDEGUARD] reset bad singleton: " .. tostring(name))' + NL +
+           b'\t\t\tend' + NL +
+           b'\t\tend' + NL +
+           b'\tend' + NL +
+           b'\tself._layerCache[name] = ')
+    n = raw.count(old)
+    if n != 1:
+        print('[overlay] gh298: WARN hideLayer anchor expected 1 got %d -> unchanged' % n,
+              flush=True)
+        return
+    open(p, 'wb').write(raw.replace(old, new, 1))
+    print('[overlay] gh298: PopupLayerController hideLayer pcall+self-heal OK', flush=True)
+
+
 def patch_bagdesc_nil_guard():
     """gh285: BagDescLayer nil 防御 + 属性页文字重影排查点。
 
@@ -1770,6 +1842,10 @@ def main():
     # gh296: BagUI 里 4 处 hideLayer("BagDescLayer") 的 layer nil 防御
     #   （gh285 只修了 AttrControllLayer 一处；老板日志实锤 BagUI:711 报错 10 次）。
     patch_bagui_desc_nil_guard()
+    # gh298: PopupLayerController:hideLayer —— 回调报错不再拖垮 _layerCache
+    #   （治「点人物属性没反应」：回调炸了缓存就不更新，后续切页全被挡）。
+    #   单点覆盖 baseline 全部 69 处调用点；坏单例自动重建。
+    patch_popup_hidelayer_safe()
     # ★ gh251 说明：原 gh249/gh250 不再调用。
     #   那两轮我按**本地开发树** ink_dec/fangzhi_lua_dec 分析，以为 game.zip 里带
     #   开发版 v57 遗留（按钮改名『经营』『科举』、跳过标题页）。实测 CI 实际用的

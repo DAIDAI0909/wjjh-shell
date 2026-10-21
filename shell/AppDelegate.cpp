@@ -303,17 +303,21 @@ if cc and cc.Node then
     if __isnull == nil then return true end
     local ok, dead = pcall(__isnull, obj)
     if not ok or not dead then return true end          -- isnull 说活 / 调不通 → 当活
-    -- 复核：**只走 __wjjh_orig 里的原始函数**，绝不调用被包装的类表方法。
-    -- 若原函数还没登记（包装尚未执行），保守当活（与 gh288 行为一致）。
-    if __wjjh_orig.getTag == nil then return true end
-    -- getTag 是最强的活体信号：节点若真被释放，原始 getTag 会抛错 → __wjjh_raw 返回 nil
-    if __wjjh_raw(obj, 'getTag') == nil then return false end
-    -- 二次复核：原始 getPosition 也调得通才算活（多一个独立字段，抗内存复用）。
-    -- ★ 注意 getName 对无名节点本就返回 nil（合法值），不能拿它判死活，故不用。
-    if __wjjh_orig.getPosition ~= nil then
-      if __wjjh_raw(obj, 'getPosition') == nil then return false end
+    -- gh298 修正：gh297 这里写的是 `if __wjjh_orig.getTag == nil then return true end`，
+    --   而 getTag 早在 gh153 就被注册成**raw Lua 函数**（`rawget(cc.Node,'getTag') ~= nil`）
+    --   ⇒ 下面的包装循环会**跳过**它 ⇒ `__wjjh_orig.getTag` 永远 nil
+    --   ⇒ 该分支永远 return true ⇒ 探测从不执行 ⇒ 守卫实际上一直放行
+    --   （实测印证：老板日志里 WJJH_GUARD 在各种版本里都是 0 次）。
+    --   现在：优先用已登记的原始函数；没登记就直接 pcall 调 `obj:getTag()`
+    --   —— 这条路走 gh153 的 getTag 守卫（它对 isnull=true 会返回 0，不再进 native），
+    --   所以**不会递归**（getTag 不归我们的包装管，绕不到 __wjjh_alive）。
+    local ok2, r2
+    if __wjjh_orig.getTag ~= nil then
+      ok2, r2 = pcall(__wjjh_orig.getTag, obj)
+    else
+      ok2, r2 = pcall(function() return obj:getTag() end)
     end
-    return true
+    return ok2 and r2 ~= nil
   end
   -- gh275: 收窄到 getParent。gh277 又见 removeFromParentAndCleanup 裸调 SIGSEGV
   --   （同一疾病不同方法）⇒ 打地鼠失败，gh278 改**全量化**：遍历 cc.Node 类表上
