@@ -852,7 +852,22 @@ do
       setBonesToSetupPose = function(self) return wjjh_spine38_setBonesToSetupPose(skelptr) end,
       setToSetupPose = function(self) return wjjh_spine38_setToSetupPose(skelptr) end,
       updateWorldTransform = function(self) return wjjh_spine38_updateWorldTransform(skelptr) end,
-      setAttachment = function(self, slot, name) return wjjh_spine38_setAttachment(skelptr, slot, name) end,
+      setAttachment = function(self, slot, name)
+        -- ★★★ gh306: 记录"玩家/战斗给这个槽位挂的附件"（主要是 weapon）。
+        --   原因：`playAnim` 里会调 `setBonesToSetupPose()`，它把**所有槽位附件
+        --   重置回骨架默认值** ⇒ 站桩/待机动画一播，武器就没了（老板实测：
+        --   「战斗时能看到刀，静立时刀有时会消失」）。
+        --   原版引擎的 YXSkeletonAnimationEx:useCustom() 就是靠
+        --   `_slotAttachmentNameMap` 在每次 playAnim 后重新贴回去的；
+        --   而我们的 peer 版 setAttachment 直接转 C 桥、没记账 ⇒ 一重置就丢。
+        --   这里自己记一份，playAnim 末尾统一重贴。
+        pcall(function()
+          local m = rawget(self, '_wjjhSlotAttach')
+          if type(m) ~= 'table' then m = {}; rawset(self, '_wjjhSlotAttach', m) end
+          m[slot] = name
+        end)
+        return wjjh_spine38_setAttachment(skelptr, slot, name)
+      end,
       -- YX 专有
       -- gh233: setSlotColor 实装（游戏用它给战斗角色染色，如 body/body_back 染黄）。
       --   cc.c4f(r,g,b,a) 返回普通 table {r=,g=,b=,a=}（Cocos2d.lua:288），这里取好分量再传给 C。
@@ -909,6 +924,19 @@ do
         self:resetAnimState()
         self:setSpeedScale(1)
         self:setBonesToSetupPose()
+        -- ★★★ gh306: setBonesToSetupPose 会把槽位附件重置回骨架默认值
+        --   ⇒ 武器(weapon 槽)在待机动画里消失（老板实测"静立时刀会消失"）。
+        --   把 setAttachment 记下来的附件重新贴回去，再播动画。
+        pcall(function()
+          local m = rawget(self, '_wjjhSlotAttach')
+          if type(m) == 'table' then
+            for slot, att in pairs(m) do
+              if att ~= nil and att ~= '' then
+                wjjh_spine38_setAttachment(skelptr, slot, att)
+              end
+            end
+          end
+        end)
         self:setBackwards(false)
         return self:setAnimation(0, name, S.normLoop(loop))
       end,

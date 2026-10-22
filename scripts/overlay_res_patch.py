@@ -1191,6 +1191,48 @@ def patch_tujian_animleak():
     print('[overlay] gh305: TuJianSkillInFoPopLayer -> %d animLayer release OK' % n, flush=True)
 
 
+def patch_home_always_open():
+    """gh306: 家园系统**常开**（治「家园引导做完仍提示该系统未开放」）。
+
+    老板 2026-10-22 实测：家园引导任务做完后点杨掮客购房，弹「该系统未开放」。
+
+    机制（`fz_boot_server.py:1628-1643` + `ControllLayer.lua:2633-2648`）：
+      · 登录接口 `get_game_user_info_2` 下发 `jiayuantch`（家园总开关）与
+        `hometch.switchs`；客户端据此设置 `JIAYUAN_SYSTEM_IS_OPEN`，
+        并在 `switchs==1` 时把 `家园引导` 标记补成 2。
+      · 本私服按存档里的 `家园引导` 决定：`>=2` 才开。
+      · 但 `_canonical_save_path()` = `<Documents>/jhserver/saves/<key>.json`，
+        实测老板容器里 **saves / roles 目录都不存在** ⇒ 读不到标记 ⇒ 恒为 0
+        ⇒ `jiayuantch=false` ⇒ 家园永远关着。
+        服务端 boot_log 实锤：`★ 账号信息（…家园引导=0→家园引导中，reset=0）`
+
+    单机版取舍：**直接常开**（`jiayuantch=True` / `switchs=1`）。
+      代价：尤三的家园引导剧情不再自动出现（该剧情是新手一次性引导，老板已完成）。
+      需要重玩引导时把 `_JIAYUAN_FORCE_OPEN` 改 False 即可。
+      另外 `switchs=1` 会让客户端把 `家园引导` 补成 2，标记从此自洽。
+    """
+    p = _find_server_file(('fz_boot_server.py',))
+    if not p:
+        print('[overlay] gh306: WARN fz_boot_server.py not found', flush=True)
+        return
+    raw = open(p, 'rb').read()
+    if b'WJJH_HOME_FORCE_OPEN' in raw:
+        print('[overlay] gh306: already patched, skip', flush=True)
+        return
+    old = b"_jy_done = _jy_flag >= 2"
+    new = (b"# WJJH_HOME_FORCE_OPEN (gh306): " +
+           "单机版家园常开——saves 目录可能不存在导致标记恒 0，家园永久关闭".encode('utf-8') + b"\n"
+           b"_JIAYUAN_FORCE_OPEN = True\n"
+           b"_jy_done = _JIAYUAN_FORCE_OPEN or (_jy_flag >= 2)")
+    n = raw.count(old)
+    if n != 1:
+        print('[overlay] gh306: WARN _jy_done anchor expected 1 got %d -> unchanged' % n,
+              flush=True)
+        return
+    open(p, 'wb').write(raw.replace(old, new, 1))
+    print('[overlay] gh306: fz_boot_server -> home force-open OK', flush=True)
+
+
 def patch_bagdesc_nil_guard():
     """gh285: BagDescLayer nil 防御 + 属性页文字重影排查点。
 
@@ -1315,11 +1357,20 @@ def patch_v37_pack_sync():
         else:
             text = raw.decode('utf-8', 'replace')
             if text.rstrip().endswith('}}'):
-                idx = text.rstrip().rfind('}}')
+                # ★★★ gh306 关键修正：插入点必须 +1。
+                #   文件尾部形如 `...["type"]=[[乐器]]}}`：
+                #     倒数第 2 个 `}` = 最后一个物品的闭合；最后 1 个 `}` = 外层表闭合。
+                #   旧代码在 `rfind('}}')`（即倒数第 2 个 `}` 的位置）插入，
+                #   等于把新礼包塞进**最后一个物品的表格内部** ⇒ 变成嵌套字段，
+                #   `getOneItemByKey` 按顶层键查找自然找不到 ⇒
+                #   老板实测「商城买自创神功材料包/特殊功能礼包弹无法找到该资源」。
+                #   （日志实锤 `[WJJH_ITEM] missing testpack_shengongmateria mapItemAttr=no`）
+                #   正确位置 = idx+1（越过物品闭合括号，落在外层表内、紧邻最后的 `}`）。
+                idx = text.rstrip().rfind('}}') + 1
                 ins = ',' + ','.join(defn for _k, defn in PACKS)
                 text = text[:idx] + ins + text[idx:]
                 open(p, 'wb').write(text.encode('utf-8'))
-                print('[overlay] gh286: Items.lua -> %d packs injected OK' % len(PACKS), flush=True)
+                print('[overlay] gh286/gh306: Items.lua -> %d packs injected OK (top-level)' % len(PACKS), flush=True)
             else:
                 print('[overlay] gh286: WARN Items.lua tail unexpected', flush=True)
     # ---- 2) Rewards.lua ----
@@ -1331,11 +1382,12 @@ def patch_v37_pack_sync():
         else:
             text = raw.decode('utf-8', 'replace')
             if text.rstrip().endswith('}}'):
-                idx = text.rstrip().rfind('}}')
+                # gh306: 同 Items.lua —— +1，否则奖励也嵌套进最后一个条目内部
+                idx = text.rstrip().rfind('}}') + 1
                 ins = ',' + ','.join(defn for _k, defn in REWARDS)
                 text = text[:idx] + ins + text[idx:]
                 open(p, 'wb').write(text.encode('utf-8'))
-                print('[overlay] gh286: Rewards.lua -> %d rewards injected OK' % len(REWARDS), flush=True)
+                print('[overlay] gh286/gh306: Rewards.lua -> %d rewards injected OK (top-level)' % len(REWARDS), flush=True)
             else:
                 print('[overlay] gh286: WARN Rewards.lua tail unexpected', flush=True)
     # ---- 3) Role_Attr.lua：500 级分支后插入两个新伪属性 ----
@@ -2085,6 +2137,8 @@ def main():
     patch_popup_getlayer_guard()
     # gh305: 武学详情切页时销毁旧 AnimFightLayer（spine 骨架泄漏 → Jetsam）
     patch_tujian_animleak()
+    # gh306: 家园常开（服务端读不到存档 ⇒ 标记恒 0 ⇒ 家园永久关闭）
+    patch_home_always_open()
     # ★ gh251 说明：原 gh249/gh250 不再调用。
     #   那两轮我按**本地开发树** ink_dec/fangzhi_lua_dec 分析，以为 game.zip 里带
     #   开发版 v57 遗留（按钮改名『经营』『科举』、跳过标题页）。实测 CI 实际用的
