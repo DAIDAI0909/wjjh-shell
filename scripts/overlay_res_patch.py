@@ -1219,18 +1219,35 @@ def patch_home_always_open():
     if b'WJJH_HOME_FORCE_OPEN' in raw:
         print('[overlay] gh306: already patched, skip', flush=True)
         return
-    old = b"_jy_done = _jy_flag >= 2"
-    new = (b"# WJJH_HOME_FORCE_OPEN (gh306): " +
+    # ★★★ gh307 事故修正：**必须带 8 空格缩进**。
+    #   gh306 只替换了子串 `_jy_done = _jy_flag >= 2`（不含前导空格），
+    #   新加的两行顶格 ⇒ 在 `try:` 块（8 空格）里出现 0 缩进语句 ⇒ IndentationError
+    #   ⇒ `fz_boot_server.py` 导入失败 ⇒ 私服起不来 ⇒ 客户端 `waitServerPort:`
+    #   死等端口超时 ⇒ 被 SIGKILL（老板实测：进游戏黑屏闪退，
+    #   崩溃栈 `application:didFinishLaunchingWithOptions → waitServerPort:`）。
+    #   教训：**改 Python 时 old/new 都要含完整缩进，改完必须 py_compile 验证。**
+    IND = b"        "          # 原行 `_jy_done = _jy_flag >= 2` 实测缩进 8 空格
+    old = IND + b"_jy_done = _jy_flag >= 2"
+    new = (IND + b"# WJJH_HOME_FORCE_OPEN (gh306/gh307): " +
            "单机版家园常开——saves 目录可能不存在导致标记恒 0，家园永久关闭".encode('utf-8') + b"\n"
-           b"_JIAYUAN_FORCE_OPEN = True\n"
-           b"_jy_done = _JIAYUAN_FORCE_OPEN or (_jy_flag >= 2)")
+           + IND + b"_JIAYUAN_FORCE_OPEN = True\n"
+           + IND + b"_jy_done = _JIAYUAN_FORCE_OPEN or (_jy_flag >= 2)")
     n = raw.count(old)
     if n != 1:
         print('[overlay] gh306: WARN _jy_done anchor expected 1 got %d -> unchanged' % n,
               flush=True)
         return
-    open(p, 'wb').write(raw.replace(old, new, 1))
-    print('[overlay] gh306: fz_boot_server -> home force-open OK', flush=True)
+    patched = raw.replace(old, new, 1)
+    open(p, 'wb').write(patched)
+    # ★ gh307: 落地后立刻做 Python 语法自检，语法错就回滚，绝不让坏文件进包
+    try:
+        compile(patched, p, 'exec')
+        print('[overlay] gh306/gh307: fz_boot_server -> home force-open OK (syntax ok)',
+              flush=True)
+    except SyntaxError as e:
+        open(p, 'wb').write(raw)
+        print('[overlay] gh306: FAIL fz_boot_server syntax error -> rolled back: %s' % e,
+              flush=True)
 
 
 def patch_bagdesc_nil_guard():
