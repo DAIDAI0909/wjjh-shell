@@ -1137,6 +1137,60 @@ def patch_popup_getlayer_guard():
     print('[overlay] gh301: PopupLayerController getLayer guard+recover OK', flush=True)
 
 
+def patch_tujian_animleak():
+    """gh305: 武学详情切换时**销毁旧的 AnimFightLayer**（内存泄漏，导致 Jetsam 查杀）。
+
+    老板 2026-10-22 实测：玩一会儿后 App 被系统杀（`JetsamEvent`）。
+    报告：`WJJH rpages=92800 footprint=1450MB reason=per-process-limit`
+    （iPad6,11 单进程上限约 1.4GB）。
+
+    日志证据：
+      · 内存曲线 978MB → 1403MB 持续爬升不回落（中途场景切换能 -500MB，说明回收机制本身正常）
+      · 最后阶段 `WJJH_SPINE38 CTOR updateCache-done` 执行 **736 次**，
+        其中 **734 次是 cache hit** —— 即"复用骨架数据"但仍每次新建完整 SkeletonAnimation
+      · 纹理只占 22MB ⇒ 泄漏在 spine 骨架对象本身，不在贴图
+
+    真因（`TuJianSkillInFoPopLayer.lua:282` 与 `:436`，两处同款）：
+      ```lua
+      if self._animRoleLayer then
+          self._animRoleLayer = nil        -- ← 只断引用！
+      end
+      self._animRoleLayer = AnimFightLayer:createInPanel(self.Panel_animFightArea)  -- 新建
+      ```
+      旧的 `AnimFightLayer`（内含多套 spine 骨架 + 角色节点）**从未 removeFromParent**，
+      只是 Lua 侧引用没了 ⇒ 节点仍挂在 `Panel_animFightArea` 下，C++ 侧永不释放。
+      每切一次武学/招式就漏一整套，几百次后撞上限被杀。
+
+    修法：置 nil 前先 `removeFromParent()`（并 pcall 兜底）。
+    """
+    p = os.path.join(DEST, 'src', 'app', 'views', 'layer', 'TuJianLayer',
+                     'TuJianSkillInFoPopLayer.lua')
+    if not os.path.exists(p):
+        print('[overlay] gh305: WARN TuJianSkillInFoPopLayer.lua not found', flush=True)
+        return
+    raw = open(p, 'rb').read()
+    if b'WJJH_ANIMLEAK' in raw:
+        print('[overlay] gh305: already patched, skip', flush=True)
+        return
+    NL = b'\r\n'
+    # 锚点：4 空格 + "if self._animRoleLayer then" + CRLF + 8 空格 + 赋值 + CRLF + tab + end
+    old = (b'    if self._animRoleLayer then' + NL +
+           b'        self._animRoleLayer = nil' + NL +
+           b'\tend')
+    new = (b'    -- WJJH_ANIMLEAK (gh305): ' +
+           '置 nil 前必须移除，否则旧 AnimFightLayer 的 spine 骨架永不释放'.encode('utf-8') + NL +
+           b'    if self._animRoleLayer then' + NL +
+           b'        pcall(function() self._animRoleLayer:removeFromParent() end)' + NL +
+           b'        self._animRoleLayer = nil' + NL +
+           b'\tend')
+    n = raw.count(old)
+    if n != 2:
+        print('[overlay] gh305: WARN anchor expected 2 got %d -> unchanged' % n, flush=True)
+        return
+    open(p, 'wb').write(raw.replace(old, new))
+    print('[overlay] gh305: TuJianSkillInFoPopLayer -> %d animLayer release OK' % n, flush=True)
+
+
 def patch_bagdesc_nil_guard():
     """gh285: BagDescLayer nil 防御 + 属性页文字重影排查点。
 
@@ -2029,6 +2083,8 @@ def main():
     # gh301: getLayer 校验 + 坏单例用 create() 兜底重建
     #   （gh300 清 tag 后仍返回非 nil 但缺 hideLayer 的对象 ⇒ 必崩）
     patch_popup_getlayer_guard()
+    # gh305: 武学详情切页时销毁旧 AnimFightLayer（spine 骨架泄漏 → Jetsam）
+    patch_tujian_animleak()
     # ★ gh251 说明：原 gh249/gh250 不再调用。
     #   那两轮我按**本地开发树** ink_dec/fangzhi_lua_dec 分析，以为 game.zip 里带
     #   开发版 v57 遗留（按钮改名『经营』『科举』、跳过标题页）。实测 CI 实际用的
