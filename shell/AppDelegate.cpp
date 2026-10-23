@@ -564,31 +564,49 @@ do
   end
   if (rawget(_G, '__WJJH_TEXT_GHOST_FIX') == true)
      and ccui and ccui.Text and type(ccui.Text.setString) == 'function' then
-    -- gh310: 3 字母颜色码表懒加载（GetColorTb 由 Definition.lua 提供；拿不到就降级不剥）
+    -- gh311: 3 字母战斗颜色码(WHT/HIG/HIW/BLU/RED...) -> 颜色。
+    --   ★ gh310 的 bug：早期 setString 在 GetColorTb 定义之前就跑了，把结果缓存成 false 后
+    --     永久不再剥 ⇒ 整个颜色码剥离完全失效（老板实测主页称号左边仍是 "WHT"）。本版：
+    --     ① 只在成功拿到真色表时才缓存，失败下次重试；② 再加内置兜底色表，
+    --     只要前 3 字母是已知颜色码就**无条件剥掉**（即便取不到颜色对象也不显示 WHT）。
     local __colorTb = nil
+    local __HARDCOLOR = {
+      RED = {255, 0, 0}, GRN = {0, 255, 0}, YEL = {255, 255, 0}, BLU = {0, 0, 255},
+      MAG = {255, 0, 255}, CYN = {0, 255, 255}, WHT = {255, 255, 255}, NOR = {255, 255, 255},
+      HIR = {255, 80, 80}, HIG = {80, 255, 80}, HIY = {255, 255, 80}, HIB = {80, 80, 255},
+      HIM = {255, 80, 255}, HIC = {80, 255, 255}, HIW = {255, 255, 255},
+    }
+    local __cc3b = (cc and cc.c3b) or nil
     local function __findColor(code)
-      if __colorTb == nil then
+      if type(__colorTb) ~= 'table' then
         local ok, tb = pcall(function()
-          return (type(GetColorTb) == 'function') and GetColorTb() or false
+          return (type(GetColorTb) == 'function') and GetColorTb() or nil
         end)
-        __colorTb = (ok and type(tb) == 'table') and tb or false
+        if ok and type(tb) == 'table' then __colorTb = tb end
       end
-      if __colorTb == false then return nil end
-      local cmd = __colorTb[code]
-      if cmd and cmd.type == '颜色' then return cmd.color end
+      if type(__colorTb) == 'table' then
+        local cmd = __colorTb[code]
+        if cmd and cmd.type == '颜色' and cmd.color then return cmd.color end
+      end
+      local h = __HARDCOLOR[code]
+      if h and __cc3b then return __cc3b(h[1], h[2], h[3]) end
       return nil
     end
+    local __colorDiag = 0
     local __otext = ccui.Text.setString
     rawset(ccui.Text, 'setString', function(self, s)
       s = s or ''
-      -- gh310: 战斗浮字/角色头顶文字带 3 字母颜色码(WHT/HIG/HIW/BLU/RED...)。原版 YX 引擎
-      --   的 ccui.Text 会解析并剥掉该颜色码；stock cocos2d-x 不解析 ⇒ 把 "WHT"/"HIW" 原样
-      --   显示（老板实测：闪避时头顶冒出 "wht"）。这里剥掉前 3 字母颜色码并套用对应颜色。
       if type(s) == 'string' and #s > 3 then
-        local __c = __findColor(string.sub(s, 1, 3))
-        if __c ~= nil then
-          pcall(function() self:setTextColor(__c) end)
+        local code = string.sub(s, 1, 3)
+        local __c = __findColor(code)
+        -- 已知颜色码就剥（即便 __c 为空也剥，优先保证不显示 WHT 等前缀）
+        if __c ~= nil or __HARDCOLOR[code] ~= nil then
+          if __c ~= nil then pcall(function() self:setTextColor(__c) end) end
           s = string.sub(s, 4)
+          if __colorDiag < 8 then
+            __colorDiag = __colorDiag + 1
+            __wjjhlog('WJJH_COLOR: strip ' .. code .. ' -> ' .. tostring(string.sub(s, 1, 12)))
+          end
         end
       end
       -- gh309 残影修复：未变化走原生(内部对相同串早返回,零开销)，变化先清 RenderTexture 再写真值
@@ -599,7 +617,7 @@ do
       __otext(self, '')
       return __otext(self, s)
     end)
-    __wjjhlog('WJJH_TEXT: color-code+ghost setString shim installed (gh310)')
+    __wjjhlog('WJJH_TEXT: color-code+ghost setString shim installed (gh311)')
   else
     __wjjhlog('WJJH_TEXT: ghost-fix disabled')
   end
