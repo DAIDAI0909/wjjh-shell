@@ -2050,6 +2050,31 @@ def patch_menu_resolution():
     print('[overlay] gh265: MenuLayer.lua -> aspect-adaptive design resolution OK', flush=True)
 
 
+def patch_ios_license_gate():
+    """gh312: iOS 启动也走单机授权闸。
+
+    客户端 MainScene.lua 的 startGame() 里 iOS 分支原本走 startGameForIOS()（无授权闸）；
+    改为走带闸的 startGameForAndroid()（其内部：轮询 /fz_license → 显示设备码/放行进/
+    拉黑停用）。是否真卡授权由服务端 license_required.flag 决定：带 flag 的单机包才卡；
+    无 flag（模拟器/开发包）服务端 /fz_license 直接返回 activated=true ⇒ 秒进，无副作用。
+    字节级锚定（CRLF+tab），命中数不符即 WARN 且整文件不动。
+    """
+    p = os.path.join(DEST, 'src', 'app', 'views', 'MainScene.lua')
+    if not os.path.exists(p):
+        print('[overlay] gh312: WARN MainScene.lua not found at %s' % p, flush=True)
+        return
+    raw = open(p, 'rb').read()
+    old = b'elseif device.platform == "ios" then\r\n\t\tself:startGameForIOS()'
+    new = b'elseif device.platform == "ios" then\r\n\t\tself:startGameForAndroid()'
+    n = raw.count(old)
+    if n == 1:
+        open(p, 'wb').write(raw.replace(old, new))
+        print('[overlay] gh312: MainScene.lua -> iOS 启动改走授权闸 OK', flush=True)
+    else:
+        print('[overlay] gh312: WARN expected 1 match for ios-dispatch, got %d -> left unchanged' % n,
+              flush=True)
+
+
 def main():
     # gamelua/src 不存在 = game.zip 还没解（CMake 配置期才解）→ 先替它解掉
     if not os.path.isdir(os.path.join(DEST, 'src')):
@@ -2156,6 +2181,8 @@ def main():
     patch_tujian_animleak()
     # gh306: 家园常开（服务端读不到存档 ⇒ 标记恒 0 ⇒ 家园永久关闭）
     patch_home_always_open()
+    # gh312: iOS 启动也走单机授权闸（设备码→面板放行→进游戏/拉黑→停用）
+    patch_ios_license_gate()
     # ★ gh251 说明：原 gh249/gh250 不再调用。
     #   那两轮我按**本地开发树** ink_dec/fangzhi_lua_dec 分析，以为 game.zip 里带
     #   开发版 v57 遗留（按钮改名『经营』『科举』、跳过标题页）。实测 CI 实际用的
