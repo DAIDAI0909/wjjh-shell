@@ -299,6 +299,37 @@ def main():
                     _info['UISupportedInterfaceOrientations~ipad'] = \
                         _info['UISupportedInterfaceOrientations']
                     _changed.append('orientations~ipad')
+                # ★★ gh296: CFBundleVersion 跟随 CI run 号，否则**覆盖安装无反应**。
+                #   老板实测：gh295 签名成功、点安装毫无反应。根因不是包坏了（sha256 与
+                #   GitHub release digest 逐字节一致），而是**版本标识从不变化**：
+                #   本脚本此前只改 UIDeviceFamily 等字段，CFBundleVersion 恒为模板里的 '1'，
+                #   CFBundleShortVersionString 恒为 '1.0' ⇒ 对 iOS 而言每个包都是
+                #   「同一个 App 的同一个版本」⇒ 覆盖安装被判为"无更新"而**静默跳过**
+                #   （签名工具那边显示成功，设备上却毫无动静）。
+                #   修：build 号 = GITHUB_RUN_NUMBER（单调递增），每次出新包都能正常升级
+                #   覆盖安装，且**不丢存档**（bundle id 不变）。
+                _run_no = (os.environ.get('GITHUB_RUN_NUMBER') or '').strip()
+                if _run_no.isdigit():
+                    if str(_info.get('CFBundleVersion')) != _run_no:
+                        _info['CFBundleVersion'] = _run_no
+                        _changed.append('CFBundleVersion=%s' % _run_no)
+                    # 版本号也给成 gh 系列，便于在设备"设置"里一眼看出装的是哪一版
+                    if _info.get('CFBundleShortVersionString') != '1.0.%s' % _run_no:
+                        _info['CFBundleShortVersionString'] = '1.0.%s' % _run_no
+                        _changed.append('ShortVersion=1.0.%s' % _run_no)
+                else:
+                    # 本地/非 CI 环境：退化成时间戳，保证仍然单调递增
+                    import time as _t
+                    _bv = _t.strftime('%Y%m%d%H%M')
+                    _info['CFBundleVersion'] = _bv
+                    _changed.append('CFBundleVersion=%s(fallback)' % _bv)
+                # 顺手补齐两个 iOS 安装器常挑刺的字段（缺失时部分签名/安装工具会拒装）
+                if not _info.get('MinimumOSVersion'):
+                    _info['MinimumOSVersion'] = '12.0'
+                    _changed.append('MinimumOSVersion=12.0')
+                if not _info.get('CFBundleSupportedPlatforms'):
+                    _info['CFBundleSupportedPlatforms'] = ['iPhoneOS']
+                    _changed.append('CFBundleSupportedPlatforms')
                 with open(_pl, 'wb') as _f:
                     plistlib.dump(_info, _f)
                 log('gh263: Info.plist patched: %s' % ('; '.join(_changed) or 'no change'))

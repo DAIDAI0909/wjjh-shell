@@ -550,6 +550,38 @@ if ccui and ccui.Text and type(ccui.Text.setFontName) == 'function' then
   __wjjhlog('WJJH_FONT: setFontName guard installed')
 end
 
+-- ===== ccui.Text:setString 残影修复(gh309: 属性页文本重影/残影) =====
+-- 根因：cocos2d-x 3.15.1 的 ccui.Text(UILabel) 在 iOS 上走 TTF+outline 渲染时，
+--   内部 Label 的 RenderTexture 在 setString 改短/改长后不会清掉旧字形像素
+--   （尤其 enableOutline + ignoreContentAdaptWithSize(true) 的属性页文本），
+--   于是新值叠在旧值上 = 重影/残影。安卓原版引擎对该路径有修正，iOS 这版没有。
+-- 修复：包一层 —— 先 setString("") 把内部渲染目标清空，再 setString(真实值) 重绘，
+--   强制 RenderTexture 整体重建，去除残留像素。nil 兜底为空串。
+-- 开关 __WJJH_TEXT_GHOST_FIX（默认 true=开；设 false 退回原生 setString 行为）。
+do
+  if rawget(_G, '__WJJH_TEXT_GHOST_FIX') == nil then
+    rawset(_G, '__WJJH_TEXT_GHOST_FIX', true)
+  end
+  if (rawget(_G, '__WJJH_TEXT_GHOST_FIX') == true)
+     and ccui and ccui.Text and type(ccui.Text.setString) == 'function' then
+    local __otext = ccui.Text.setString
+    rawset(ccui.Text, 'setString', function(self, s)
+      s = s or ''
+      -- 未变化:走原生(其内部对相同字符串早返回,零开销),避免双渲染拖累战斗 HUD 热路径
+      local cur = (type(self.getString) == 'function') and self:getString() or nil
+      if cur == s then
+        return __otext(self, s)
+      end
+      -- 变化(尤其长度变化):先清空内部 RenderTexture,再写入真值,去除残影
+      __otext(self, '')
+      return __otext(self, s)
+    end)
+    __wjjhlog('WJJH_TEXT: ghost-fix setString shim installed (gh309)')
+  else
+    __wjjhlog('WJJH_TEXT: ghost-fix disabled')
+  end
+end
+
 -- ===== GC step 守卫(gh65 定案:ControllLayer:collectGarbageStep 只在 iOS 每帧
 --      collectgarbage("step",安卓官方注释明说关闭及时内存清理;崩溃窗口=循环安装后
 --      ~2 秒内且崩溃点漂移=GC 不确定性。iOS 与安卓口径一致:step 改 no-op) =====
@@ -769,6 +801,8 @@ local __wjjh_skelPeerExtra = function()
     getAnimEvents = function(self, animName) return events end,
     getAnimDuration = function(self, animName) return 0.1 end,
     getBoneSetupPosePosition = function(self, a, b) return { x = 0, y = 0 } end,
+    -- gh309: 哑节点下返回安全默认值（真实坐标取不到）；真节点走上面 peerOf 的 C 桥。
+    getBonePosition = function(self, boneName) return { x = 0, y = 0 } end,
     setSlotsToSetupPose = function(self) end,
     setBonesToSetupPose = function(self) end,
     setSlotColor = function(self, slot, color) end,
@@ -848,6 +882,8 @@ do
       getAnimDuration = function(self, name) return wjjh_spine38_getAnimDuration(skelptr, name) end,
       getAnimEvents = function(self, name) return wjjh_spine38_getAnimEvents(skelptr, name) end,
       getBoneSetupPosePosition = function(self, a, b) return wjjh_spine38_getBoneSetupPosePosition(skelptr, a, b) end,
+      -- gh309: 取骨骼当前帧世界坐标（影子/标签/特效定位用）。
+      getBonePosition = function(self, boneName) return wjjh_spine38_getBonePosition(skelptr, boneName) end,
       setSlotsToSetupPose = function(self) return wjjh_spine38_setSlotsToSetupPose(skelptr) end,
       setBonesToSetupPose = function(self) return wjjh_spine38_setBonesToSetupPose(skelptr) end,
       setToSetupPose = function(self) return wjjh_spine38_setToSetupPose(skelptr) end,

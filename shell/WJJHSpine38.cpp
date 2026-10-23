@@ -483,6 +483,38 @@ int l_getBoneSetupPosePosition(lua_State* L) {
     return 1;
 }
 
+// ---- getBonePosition(skelptr, boneName) -> {x,y} ----
+// gh309: 游戏在 7+ 处调用 YXSkeletonAnimation:getBonePosition(boneName)，取骨骼
+//   **当前帧**的世界坐标，用于把影子/标签/特效挂到角色脚底（CharacterAnimViewUI:
+//   onUpdate L55 每帧取 "body1"）。此前该方法端到端缺失：真节点 peer 无此方法、
+//   哑节点 catch-all 返回 nil → onUpdate 每帧抛错、打断特效更新循环，表现就是
+//   「特效和动作不太匹配」。这里补真实现：取当前姿势下骨骼的 worldX/worldY。
+//   ★注意：setTrackTime 已经 apply 姿势并 updateWorldTransform，所以读到的就是
+//   当前帧位置，无需再算。与 getBoneSetupPosePosition（setup pose、静态）不同，
+//   这里是运动中的实时坐标。
+int l_getBonePosition(lua_State* L) {
+    spine38::SkeletonAnimation* sk = skel_of(L, 1);
+    const char* boneName = luaL_checkstring(L, 2);
+    float x = 0.0f, y = 0.0f;
+    if (sk && sk->getSkeleton() && boneName) {
+        spine38::Bone* b = sk->getSkeleton()->findBone(spine38::String(boneName));
+        if (b) {
+            // gh309: 游戏把骨骼节点当普通 cc.Node 用（addChild 到角色层），
+            //   容器自身不再二次缩放，所以直接取 worldX/worldY（已含骨架根缩放，
+            //   对应安卓原版 YXSkeletonAnimation:getBonePosition 的语义）。
+            sk->getSkeleton()->updateWorldTransform();
+            x = b->getWorldX();
+            y = b->getWorldY();
+        }
+    }
+    lua_newtable(L);
+    lua_pushnumber(L, (lua_Number)x);
+    lua_setfield(L, -2, "x");
+    lua_pushnumber(L, (lua_Number)y);
+    lua_setfield(L, -2, "y");
+    return 1;
+}
+
 // ---- YX 专有补充（真节点上也给到，避免 Lua 侧 "call nil"）----
 int l_setSlotsToSetupPose(lua_State* L) {
     spine38::SkeletonAnimation* sk = skel_of(L, 1);
@@ -618,6 +650,7 @@ void wjjh_spine38_register(lua_State* L) {
     lua_register(L, "wjjh_spine38_getAnimDuration", l_getAnimDuration);
     lua_register(L, "wjjh_spine38_getAnimEvents", l_getAnimEvents);
     lua_register(L, "wjjh_spine38_getBoneSetupPosePosition", l_getBoneSetupPosePosition);
+    lua_register(L, "wjjh_spine38_getBonePosition", l_getBonePosition);
     lua_register(L, "wjjh_spine38_setSlotsToSetupPose", l_setSlotsToSetupPose);
     lua_register(L, "wjjh_spine38_setBonesToSetupPose", l_setBonesToSetupPose);
     lua_register(L, "wjjh_spine38_setToSetupPose", l_setToSetupPose);
