@@ -14,6 +14,7 @@ import os
 import sys
 import tarfile
 import shutil
+import zipfile   # gh315: gh314 漏了这个 import -> NameError，服务端 v46 覆盖整段没跑
 
 BUILD_DIR = os.environ.get('CM_BUILD_DIR', os.getcwd())
 OUT = os.path.join(BUILD_DIR, 'py_ios')
@@ -118,17 +119,23 @@ def setup_py_ios(xcfw):
     #     要被 gh312 的 iOS 版替换掉；顺序反了就会盖回安卓逻辑（iOS 上算出同一常量码）。
     #   ★ 只覆盖 v46 有差异的 .py；iOS 专有件（wjjh_aes/stub_server/role_action/
     #     cryptography 垫片）不在包内，原样保留。
-    _v46srv = os.path.join(BUILD_DIR, 'res_patch_v46_server.zip')
-    if os.path.exists(_v46srv):
-        with zipfile.ZipFile(_v46srv) as _z:
-            _n = _z.namelist()
-            _z.extractall(app_dir)
-        print('[py-ios] gh314: v46 server overlay applied %d py files' % len(_n))
-    else:
-        print('[py-ios] gh314: res_patch_v46_server.zip not found, keep current server')
+    # gh315: 整段用 try 包住——任何异常都**大声打日志**而不是像 gh314 那样
+    #   NameError 直接把整个 bootstrap 打断（服务端升级被静默跳过，白跑一轮构建）。
+    try:
+        _v46srv = os.path.join(BUILD_DIR, 'res_patch_v46_server.zip')
+        if os.path.exists(_v46srv):
+            with zipfile.ZipFile(_v46srv) as _z:
+                _n = _z.namelist()
+                _z.extractall(app_dir)
+            print('[py-ios] gh314: v46 server overlay applied %d py files' % len(_n), flush=True)
+        else:
+            print('[py-ios] gh314: res_patch_v46_server.zip not found, keep current server', flush=True)
+    except Exception as _e:                                  # noqa: BLE001
+        print('[py-ios] gh315: !! v46 server overlay FAILED: %r' % _e, flush=True)
 
     _srv = os.path.join(app_dir, 'fz_boot_server.py')
-    if os.path.exists(_srv):
+    try:
+      if os.path.exists(_srv):
         _t = open(_srv, 'r', encoding='utf-8', errors='replace').read()
         _old_act = "out = {'activated': act, 'device_code': dc, 'danji': _DANJI is True,"
         _new_act = "out = {'activated': (act or (not _DANJI)), 'device_code': dc, 'danji': _DANJI is True,"
@@ -189,6 +196,8 @@ def setup_py_ios(xcfw):
                 _lf.write('danji')
             print('[py-ios] gh312: license_required.flag written -> 授权闸 ON')
         open(_srv, 'w', encoding='utf-8').write(_t)
+    except Exception as _e2:                                 # noqa: BLE001
+        print('[py-ios] gh315: !! gh312 server patch FAILED: %r' % _e2, flush=True)
 
 
 def main():
