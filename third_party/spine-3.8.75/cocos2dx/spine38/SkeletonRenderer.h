@@ -32,6 +32,8 @@
 
 #include "cocos2d.h"
 #include <spine38/spine.h>
+#include <map>
+#include <string>
 
 namespace spine38 {
 
@@ -105,6 +107,12 @@ namespace spine38 {
 		/* @param attachmentName May be 0 for no attachment. */
 		bool setAttachment (const std::string& slotName, const char* attachmentName);
 
+		/* gh310: 把游戏通过 setAttachment 设置的自定义附件（武器等）在所有动画 apply 之后
+		 * 重新套用。原版 YX 引擎的待机动画其 AttachmentTimeline 会在每帧 apply 时把武器槽
+		 * 清空（安卓引擎内部会重放自定义附件；stock 3.8 不会）⇒ iOS 站立时武器消失、
+		 * 攻击时又出现。这里复刻引擎语义：记住 setAttachment 过的槽位并在每帧 apply 后重放。 */
+		void reapplyCustomAttachments ();
+
 		/* Enables/disables two color tinting for this instance. May break batching */
 		void setTwoColorTint(bool enabled);
 		/* Whether two color tinting is enabled */
@@ -166,6 +174,7 @@ namespace spine38 {
 		int _startSlotIndex;
 		int _endSlotIndex;
 		bool _twoColorTint;
+		std::map<std::string, std::string> _customAttachments; // gh310: slotName -> attachmentName（游戏自定义附件）
 	};
 
 }

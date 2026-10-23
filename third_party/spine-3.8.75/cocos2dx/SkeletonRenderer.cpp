@@ -827,12 +827,22 @@ Attachment* SkeletonRenderer::getAttachment (const std::string& slotName, const 
 bool SkeletonRenderer::setAttachment (const std::string& slotName, const std::string& attachmentName) {
 	bool result = _skeleton->getAttachment(slotName.c_str(), attachmentName.empty() ? 0 : attachmentName.c_str()) ? true : false;
 	_skeleton->setAttachment(slotName.c_str(), attachmentName.empty() ? 0 : attachmentName.c_str());
+	_customAttachments[slotName] = attachmentName;   // gh310: 记住游戏设的自定义附件（武器等）
 	return result;
 }
 bool SkeletonRenderer::setAttachment (const std::string& slotName, const char* attachmentName) {
 	bool result = _skeleton->getAttachment(slotName.c_str(), attachmentName) ? true : false;
 	_skeleton->setAttachment(slotName.c_str(), attachmentName);
+	_customAttachments[slotName] = attachmentName ? std::string(attachmentName) : std::string();   // gh310
 	return result;
+}
+
+void SkeletonRenderer::reapplyCustomAttachments () {
+	if (_skeleton == nullptr) return;
+	for (std::map<std::string, std::string>::iterator it = _customAttachments.begin();
+	     it != _customAttachments.end(); ++it) {
+		_skeleton->setAttachment(it->first.c_str(), it->second.empty() ? 0 : it->second.c_str());
+	}
 }
 
 void SkeletonRenderer::setTwoColorTint(bool enabled) {

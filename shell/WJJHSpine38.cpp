@@ -403,6 +403,9 @@ int l_setTrackTime(lua_State* L) {
         e->setTrackTime(t);
         // 立即把该时间的姿势应用到骨架，避免等下一帧 scheduler 才刷新
         sk->getState()->apply(*sk->getSkeleton());
+        // gh310: 手驱路径同样要在 apply 后重放游戏自定义附件（武器），否则待机等动画的
+        //   AttachmentTimeline 每帧把武器槽清空 ⇒ 站立时武器消失（攻击时又出现）。
+        sk->reapplyCustomAttachments();
         sk->getSkeleton()->updateWorldTransform();
     }
     return 0;

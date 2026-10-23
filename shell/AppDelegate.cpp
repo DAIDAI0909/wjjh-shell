@@ -564,19 +564,42 @@ do
   end
   if (rawget(_G, '__WJJH_TEXT_GHOST_FIX') == true)
      and ccui and ccui.Text and type(ccui.Text.setString) == 'function' then
+    -- gh310: 3 字母颜色码表懒加载（GetColorTb 由 Definition.lua 提供；拿不到就降级不剥）
+    local __colorTb = nil
+    local function __findColor(code)
+      if __colorTb == nil then
+        local ok, tb = pcall(function()
+          return (type(GetColorTb) == 'function') and GetColorTb() or false
+        end)
+        __colorTb = (ok and type(tb) == 'table') and tb or false
+      end
+      if __colorTb == false then return nil end
+      local cmd = __colorTb[code]
+      if cmd and cmd.type == '颜色' then return cmd.color end
+      return nil
+    end
     local __otext = ccui.Text.setString
     rawset(ccui.Text, 'setString', function(self, s)
       s = s or ''
-      -- 未变化:走原生(其内部对相同字符串早返回,零开销),避免双渲染拖累战斗 HUD 热路径
+      -- gh310: 战斗浮字/角色头顶文字带 3 字母颜色码(WHT/HIG/HIW/BLU/RED...)。原版 YX 引擎
+      --   的 ccui.Text 会解析并剥掉该颜色码；stock cocos2d-x 不解析 ⇒ 把 "WHT"/"HIW" 原样
+      --   显示（老板实测：闪避时头顶冒出 "wht"）。这里剥掉前 3 字母颜色码并套用对应颜色。
+      if type(s) == 'string' and #s > 3 then
+        local __c = __findColor(string.sub(s, 1, 3))
+        if __c ~= nil then
+          pcall(function() self:setTextColor(__c) end)
+          s = string.sub(s, 4)
+        end
+      end
+      -- gh309 残影修复：未变化走原生(内部对相同串早返回,零开销)，变化先清 RenderTexture 再写真值
       local cur = (type(self.getString) == 'function') and self:getString() or nil
       if cur == s then
         return __otext(self, s)
       end
-      -- 变化(尤其长度变化):先清空内部 RenderTexture,再写入真值,去除残影
       __otext(self, '')
       return __otext(self, s)
     end)
-    __wjjhlog('WJJH_TEXT: ghost-fix setString shim installed (gh309)')
+    __wjjhlog('WJJH_TEXT: color-code+ghost setString shim installed (gh310)')
   else
     __wjjhlog('WJJH_TEXT: ghost-fix disabled')
   end

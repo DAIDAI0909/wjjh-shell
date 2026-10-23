@@ -159,6 +159,7 @@ void SkeletonAnimation::update (float deltaTime) {
 	if (_preUpdateListener) _preUpdateListener(this);
 	_state->update(deltaTime);
 	_state->apply(*_skeleton);
+	reapplyCustomAttachments();   // gh310: 动画 apply 后重放游戏自定义附件（武器），防止待机动画清空武器槽
 	_skeleton->updateWorldTransform();
 	if (_postUpdateListener) _postUpdateListener(this);
 }
