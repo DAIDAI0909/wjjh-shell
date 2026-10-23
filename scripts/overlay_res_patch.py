@@ -2115,6 +2115,28 @@ def main():
     else:
         print('[overlay] gh273: res_patch_sync.zip not found, skip version sync', flush=True)
 
+    # gh313: 单机安卓版 v46 内容同步（老板指定源 Z:\我叫江湖-单机特别版v46.apk）。
+    #   差异已实测：src 40 个 / res 28 个不同，0 增 0 删（iOS 基线本就极接近 v46）。
+    #   本包只含 v46 的新版文件（独孤九剑那条按老板指示跳过）。
+    #   ★ 解压位置刻意放在所有 patch_* 之前 ⇒ 其中带 iOS 补丁的 4 个文件
+    #     （MainScene/BagDescLayer/ControllLayer/BagUI）会在此之后被补丁重新打上，
+    #     等价于「v46 内容 + 重放 iOS 补丁」。锚点已在 v46 文件里逐条验证命中。
+    V46 = os.path.join(BUILD_DIR, 'res_patch_v46.zip')
+    if os.path.exists(V46):
+        with zipfile.ZipFile(V46) as z:
+            names = z.namelist()
+            z.extractall(DEST)
+        print('[overlay] gh313: v46 sync applied %d files:' % len(names), flush=True)
+        miss = [n for n in names if not os.path.exists(os.path.join(DEST, n))]
+        for n in names:
+            print('   %-64s %d bytes' % (n, os.path.getsize(os.path.join(DEST, n))
+                                         if os.path.exists(os.path.join(DEST, n)) else -1))
+        if miss:
+            print('[overlay] gh313: WARN %d files missing after extract: %s'
+                  % (len(miss), miss[:5]), flush=True)
+    else:
+        print('[overlay] gh313: res_patch_v46.zip not found, skip v46 sync', flush=True)
+
     # gh242: 必须跑在 game.zip 解压之后、CMake 打包之前。
     patch_animres_metadata_only()
     # gh257: UI 树遍历对「失效 userdata 节点」免疫（Helper/LifeCycleSupport/NodeEx）。
