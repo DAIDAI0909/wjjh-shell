@@ -112,6 +112,21 @@ def setup_py_ios(xcfw):
     #     ⇒ 客户端即使走了授权闸也秒进；只有带 flag 的单机包才真正卡授权。
     #  ② 真机构建：写入 license_required.flag（开门）+ 把 _fz_device_code 换成 iOS 版
     #     （取不到 android_id 时用服务端可写目录里持久化的 UUID，每台唯一、覆盖安装不变）。
+    # gh314: 先把「单机安卓版 v46 服务端」覆盖上来（32 个差异 .py，源=老板指定
+    #   Z:\我叫江湖-单机特别版v46.apk 内 assets/jhserver.zip）。
+    #   ★ 必须在下面 gh312 的 iOS 补丁**之前**：v46 的 _fz_device_code 还是安卓版，
+    #     要被 gh312 的 iOS 版替换掉；顺序反了就会盖回安卓逻辑（iOS 上算出同一常量码）。
+    #   ★ 只覆盖 v46 有差异的 .py；iOS 专有件（wjjh_aes/stub_server/role_action/
+    #     cryptography 垫片）不在包内，原样保留。
+    _v46srv = os.path.join(BUILD_DIR, 'res_patch_v46_server.zip')
+    if os.path.exists(_v46srv):
+        with zipfile.ZipFile(_v46srv) as _z:
+            _n = _z.namelist()
+            _z.extractall(app_dir)
+        print('[py-ios] gh314: v46 server overlay applied %d py files' % len(_n))
+    else:
+        print('[py-ios] gh314: res_patch_v46_server.zip not found, keep current server')
+
     _srv = os.path.join(app_dir, 'fz_boot_server.py')
     if os.path.exists(_srv):
         _t = open(_srv, 'r', encoding='utf-8', errors='replace').read()
