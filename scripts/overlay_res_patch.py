@@ -2137,6 +2137,24 @@ def main():
     else:
         print('[overlay] gh313: res_patch_v46.zip not found, skip v46 sync', flush=True)
 
+    # gh316: v46 新增资源补缺（38 件，9.4MB）——v46 lua 引用而 iOS 包里没有的真缺口：
+    #   10 张 specialEffect 特效图(321-330)、Skin_7 wenxian 换肤动画 5 件、
+    #   20 张新面具/头像框/商店图、Layer 2 新图(demo.jpg/hengtiao2.png)。
+    #   已按 iOS 目录映射落位（Anim/specialEffect、Anim/UIAnim/skin/Skin_7、Image/UI/...）。
+    #   ★ 必须在 pvr_compress_atlas 之前 ⇒ 新图集页同样走 RGBA4444 降采样管线（内存纪律）。
+    V46A = os.path.join(BUILD_DIR, 'res_patch_v46_assets.zip')
+    if os.path.exists(V46A):
+        with zipfile.ZipFile(V46A) as z:
+            names = z.namelist()
+            z.extractall(DEST)
+        miss = [n for n in names if not os.path.exists(os.path.join(DEST, n))]
+        print('[overlay] gh316: v46 asset gaps applied %d files (miss=%d)' % (len(names), len(miss)),
+              flush=True)
+        if miss:
+            print('[overlay] gh316: WARN missing: %s' % miss[:5], flush=True)
+    else:
+        print('[overlay] gh316: res_patch_v46_assets.zip not found, skip asset gaps', flush=True)
+
     # gh242: 必须跑在 game.zip 解压之后、CMake 打包之前。
     patch_animres_metadata_only()
     # gh257: UI 树遍历对「失效 userdata 节点」免疫（Helper/LifeCycleSupport/NodeEx）。
