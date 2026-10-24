@@ -2068,11 +2068,39 @@ def patch_ios_license_gate():
     new = b'elseif device.platform == "ios" then\r\n\t\tself:startGameForAndroid()'
     n = raw.count(old)
     if n == 1:
-        open(p, 'wb').write(raw.replace(old, new))
+        raw = raw.replace(old, new)
         print('[overlay] gh312: MainScene.lua -> iOS 启动改走授权闸 OK', flush=True)
     else:
-        print('[overlay] gh312: WARN expected 1 match for ios-dispatch, got %d -> left unchanged' % n,
+        print('[overlay] gh312: WARN expected 1 match for ios-dispatch, got %d -> unchanged' % n,
               flush=True)
+    # ---- gh319: 授权闸端口 7901 -> 7900 ----
+    #   v46 安卓客户端把 /fz_license 硬编码到 127.0.0.1:7901，而 iOS 私服监听 7900
+    #   ⇒ 请求打不通 ⇒ 空响应 ⇒ json.decode("") 抛错 ⇒ 黑屏（老板实测）。
+    oldp = b':setUrl("http://127.0.0.1:7901" .. path)'
+    newp = b':setUrl("http://127.0.0.1:7900" .. path)'
+    np_ = raw.count(oldp)
+    if np_ == 1:
+        raw = raw.replace(oldp, newp)
+        print('[overlay] gh319: 授权闸端口 7901->7900（对齐 iOS 私服）OK', flush=True)
+    else:
+        print('[overlay] gh319: WARN license-port anchor count=%d (unchanged)' % np_, flush=True)
+    # ---- gh319b: 空响应保护（服务端没起来/端口不通时也不要黑屏）----
+    #   原代码 `pcall(json.decode, tostring(response))`：json.decode("") 在 json.lua 里
+    #   是 error() 抛出的，pcall 能接住——但日志显示它仍刷满 error 且页面不出。
+    #   这里在解码前先判空，空响应时保持轮询、不显示错误。
+    oldj = (b'\t\tlocal okd, data = pcall(json.decode, tostring(response))\r\n'
+            b'\t\t\tif okd and type(data) == "table" then')
+    newj = (b'\t\tlocal __raw = tostring(response)\r\n'
+            b'\t\t\tif __raw == "" or __raw == "nil" then return end\r\n'
+            b'\t\t\tlocal okd, data = pcall(json.decode, __raw)\r\n'
+            b'\t\t\tif okd and type(data) == "table" then')
+    nj = raw.count(oldj)
+    if nj == 1:
+        raw = raw.replace(oldj, newj)
+        print('[overlay] gh319: /fz_license 空响应保护 OK', flush=True)
+    else:
+        print('[overlay] gh319: WARN empty-response anchor count=%d' % nj, flush=True)
+    open(p, 'wb').write(raw)
 
 
 def main():
